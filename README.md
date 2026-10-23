@@ -16,11 +16,13 @@
 
 ## 功能概览
 
-本插件包含两个核心功能模块：
+本插件包含以下功能模块：
 
 **自动生成小说** — 设定章节数和提示词，AI 持续创作，支持断点续传、弹窗兼容、标签提取、多格式导出。
 
 **[TXT转世界书](txtToWorldbook.md)** — 上传 TXT 小说，AI 自动提取角色/地点/组织等信息生成 SillyTavern 世界书。支持并行处理、智能重试、自动断点续传、增量导出、别名合并等。详见 [完整文档](txtToWorldbook.md)。
+
+**[小说导入改写](novelImporter.md)** — 把长篇小说一层一层交给 AI：起标题、替换主角称呼、按比例补写、提取世界书、填写记忆表格，遇到送女/NTR 等情节按规则改写；最后一键导入成角色卡 + 世界书 + 聊天，并让记忆表格插件逐层重建表格。详见 [完整文档](novelImporter.md)。
 
 ---
 
@@ -184,6 +186,10 @@ novel-auto-generator/
 ├── manifest.json          # 扩展配置
 ├── index.js               # 主程序（自动生成模块）
 ├── style.css              # 样式表
+├── novelImporter/         # 小说导入改写模块
+│   ├── core.js            # 分层、提示词、解析、补丁、世界书、表格模拟（不碰 DOM）
+│   ├── stBridge.js        # 和酒馆、记忆表格插件打交道
+│   └── ui.js              # 界面
 ├── txtToWorldbook/        # TXT转世界书模块
 │   ├── main.js            # 模块入口
 │   ├── core/              # 核心：状态、常量、工具
@@ -199,7 +205,8 @@ novel-auto-generator/
 │   └── REGRESSION.md      # 手动回归测试清单
 ├── README.md              # 本文档
 ├── CHANGELOG.md           # 更新日志
-└── txtToWorldbook.md      # TXT转世界书详细文档
+├── txtToWorldbook.md      # TXT转世界书详细文档
+└── novelImporter.md       # 小说导入改写详细文档
 ```
 
 ---
