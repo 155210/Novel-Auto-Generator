@@ -95,6 +95,15 @@ function createUI() {
                     <div style="margin-top: 10px; font-size: 12px; opacity: 0.7; text-align: center;">
                         TXT小说并发翻译成中文，导出带目录的EPUB
                     </div>
+
+                    <div class="nag-btn-row" style="margin-top: 15px;">
+                        <button id="nag-btn-novel-importer" class="menu_button" style="background: linear-gradient(135deg, #27ae60, #1e8449); width: 100%;">
+                            📥 小说导入改写
+                        </button>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 12px; opacity: 0.7; text-align: center;">
+                        小说分层改写导入酒馆聊天，同时生成世界书、填写记忆表格
+                    </div>
                 </div>
             </div>
         </div>
@@ -150,6 +159,28 @@ function bindEvents() {
             window.NovelTranslate.open();
         } else {
             toastr.error('小说翻译模块未加载');
+        }
+    });
+
+    $('#nag-btn-novel-importer').on('click', async () => {
+        if (typeof window.NovelImporter === 'undefined') {
+            try {
+                toastr.info('正在加载小说导入改写模块...');
+                if (typeof window.EpubToTxt === 'undefined') await loadScript('epubToTxt.js').catch(() => {});
+                await loadScript('novelImporter/core.js');
+                await loadScript('novelImporter/stBridge.js');
+                await loadScript('novelImporter/ui.js');
+            } catch (e) {
+                toastr.error('小说导入改写模块加载失败');
+                console.error('[NovelGen] 加载 novelImporter 失败:', e);
+                return;
+            }
+        }
+
+        if (typeof window.NovelImporter !== 'undefined') {
+            window.NovelImporter.open();
+        } else {
+            toastr.error('小说导入改写模块未加载');
         }
     });
 
