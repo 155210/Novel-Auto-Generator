@@ -232,6 +232,11 @@
                 }
             }
         }
+        // 插件每执行一层都会 console.log 整个聊天和全部表格；开着开发者工具时这些对象不会被回收，
+        // 上千层时内存一路涨到页面崩溃。重建期间先把普通日志静音，结束后恢复
+        const quiet = opts.quietConsole !== false && root.console;
+        const saved = quiet ? { log: root.console.log, info: root.console.info, debug: root.console.debug } : null;
+        if (quiet) root.console.log = root.console.info = root.console.debug = () => {};
         try {
             const chat = c.chat;
             const total = chat.length;
@@ -246,6 +251,7 @@
             }
             await c.saveChat();
         } finally {
+            if (saved) Object.assign(root.console, saved);
             Object.assign(ms || {}, restore);
             if (Object.keys(restore).length && typeof c.saveSettingsDebounced === 'function') c.saveSettingsDebounced();
         }
