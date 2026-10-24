@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.23';
+    const VERSION = '1.4.24';
 
     // ============================================
     // 默认配置
@@ -2350,6 +2350,17 @@ ${blocks}`;
         async function regenJson(i, extraPrompt, opts = {}) {
             const old = E.results[i];
             if (!old || old.status !== 'done') throw new Error('这一层还没完成');
+            if (E.running) throw new Error('正在处理中');
+            // 标成运行中，界面的停止按钮才能点
+            E.running = true;
+            try {
+                return await regenJsonInner(i, old, extraPrompt, opts);
+            } finally {
+                E.running = false;
+            }
+        }
+
+        async function regenJsonInner(i, old, extraPrompt, opts) {
             const st = replay(i);
             const prompt = buildJsonOnlyPrompt(i, st, extraPrompt);
             const messages = opts.usePreset

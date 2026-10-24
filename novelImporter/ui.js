@@ -2303,11 +2303,14 @@
                 jsonBtn.disabled = true;
                 log(`第 ${i + 1} 层只重新输出 JSON${extra ? `：${extra}` : ''}`);
                 try {
-                    const nr = await e.regenJson(i, extra, { usePreset });
+                    const job = e.regenJson(i, extra, { usePreset });
+                    renderButtons();
+                    const nr = await job;
                     toast(nr.warnings && nr.warnings.length ? `换上了能用的部分，还有：${nr.warnings.join('；')}` : '已换上新的 JSON', nr.warnings && nr.warnings.length ? 'warning' : 'success');
                 } catch (err) {
                     log(`第 ${i + 1} 层重新输出 JSON 失败：${err.message}`);
-                    toast(`没换成：${err.message}（原始输出在下面「请求记录」里）`, 'error');
+                    if (State.stopped) toast('已停止，这层结果没动', 'info');
+                    else toast(`没换成：${err.message}（原始输出在下面「请求记录」里）`, 'error');
                 }
                 saveProgress();
                 renderAll();
