@@ -528,10 +528,14 @@ describe('运行引擎', () => {
     });
 
     it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
+        let runningDuring = null;
         let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';
         const { engine, calls } = makeEngine((layer, last) => {
             if (/只修正格式/.test(last)) return '还是坏的';
-            if (/只按要求输出这一层的/.test(last)) return jsonReply;
+            if (/只按要求输出这一层的/.test(last)) {
+                runningDuring = engine.running;
+                return jsonReply;
+            }
             const r = normal(layer);
             return layer === 0 ? r.replace(/<表格>[\s\S]*?<\/表格>/, '<表格>{坏</表格>') : r;
         });
@@ -542,6 +546,9 @@ describe('运行引擎', () => {
         const nr = await engine.regenJson(0, '事件要写全');
         const req = calls[calls.length - 1];
         expect(req.info.purpose).toBe('json');
+        // 请求期间算运行中（停止按钮可用），完了恢复
+        expect(runningDuring).toBe(true);
+        expect(engine.running).toBe(false);
         expect(req.messages[0].role).toBe('system');
         expect(req.messages[1].content).toContain('事件要写全');
         expect(req.messages[1].content).toContain('{坏');
