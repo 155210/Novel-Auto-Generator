@@ -6,6 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "AutoNovel",
-    "version": "4.0.1",
+    "version": "4.1.0",
     "description": "EPUB转TXT、TXT转世界书、世界书导出三合一工具"
 }
