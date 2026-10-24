@@ -602,6 +602,11 @@ describe('运行引擎', () => {
         expect(mes.indexOf('<Calculated_data>') > mes.indexOf('</正文>')).toBe(true);
         expect(mes).not.toContain('<没有的>');
         expect(mes.split('<正文>').length).toBe(2);
+        engine.settings.floorTagsBefore = 'TimeFormat';
+        engine.results[0].raw += '\n<TimeFormat>第一天 夜</TimeFormat>';
+        const m2 = engine.renderFloors()[0].mes;
+        expect(m2.indexOf('</bt>') < m2.indexOf('<TimeFormat>')).toBe(true);
+        expect(m2.indexOf('</TimeFormat>') < m2.indexOf('<正文>')).toBe(true);
         const plain = makeEngine((layer) => normal(layer) + '\n<Plotline>伏笔一</Plotline>');
         await plain.engine.run();
         expect(plain.engine.renderFloors()[0].mes).not.toContain('Plotline');
