@@ -2024,6 +2024,32 @@
         return n >= 10000 ? `${(n / 10000).toFixed(1)} 万` : String(n);
     }
 
+    /** 这一层 AI 写进世界书的条目：和前面的层比，标出新增还是更新 */
+    function layerWorldbookHtml(e, i, r) {
+        const wb = (r.parsed && r.parsed.worldbook) || {};
+        const items = [];
+        for (const [cat, entries] of Object.entries(wb)) for (const [name, it] of Object.entries(entries || {})) if (it && typeof it === 'object') items.push({ cat, name, it });
+        if (!items.length) return `<div class="nim-sub">本层世界书</div><div class="nim-muted">这一层没有新增或更新条目</div>`;
+        let before = {};
+        try {
+            before = (e.replay(i) || {}).worldbook || {};
+        } catch (err) {
+            /* 比不出来就都当新增 */
+        }
+        const added = items.filter((x) => !(before[x.cat] && before[x.cat][x.name])).length;
+        return (
+            `<details class="nim-fold" open><summary>本层世界书（${items.length} 条：新增 ${added}，更新 ${items.length - added}）</summary><ul class="nim-wb-list">` +
+            items
+                .map(({ cat, name, it }) => {
+                    const isNew = !(before[cat] && before[cat][name]);
+                    const keys = Array.isArray(it.关键词) ? it.关键词.join('、') : String(it.关键词 || '');
+                    return `<li><div class="nim-wb-head"><span class="nim-pr-tag">${esc(cat)}</span><b>${esc(name)}</b><span class="nim-pr-tag ${isNew ? 'is-depth' : ''}">${isNew ? '新增' : '更新'}</span></div>${keys ? `<div class="nim-muted">关键词：${esc(keys)}</div>` : ''}<div class="nim-wb-content">${esc(String(it.内容 || ''))}</div></li>`;
+                })
+                .join('') +
+            `</ul></details>`
+        );
+    }
+
     function renderDetail() {
         const el = $('nim-detail');
         const e = State.engine;
@@ -2044,6 +2070,7 @@
             if (r.patchStats.failed.length)
                 body += `<div class="nim-sub">没对上的补丁</div><pre class="nim-pre">${esc(r.patchStats.failed.map((f) => `P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`).join('\n'))}</pre>`;
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
+            body += layerWorldbookHtml(e, i, r);
             if (r.parsed.terms && r.parsed.terms.length) body += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
             body += `<details class="nim-fold"><summary>AI 原始输出</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
         } else if (r && r.status === 'failed') {
@@ -2494,6 +2521,10 @@ select.nim-input{appearance:auto;}
 .nim-gl-row .nim-gl-note{grid-column:1/-1;font-size:12px;}
 .nim-gl-arrow{color:var(--muted);}
 .nim-gl-pager{justify-content:center;align-items:center;}
+.nim-wb-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.nim-wb-list li{padding:8px 10px;border-radius:10px;background:var(--surface2);font-size:13px;word-break:break-word;}
+.nim-wb-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px;}
+.nim-wb-content{white-space:pre-wrap;margin-top:4px;}
 .nim-cl-group{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:0 12px;}
 .nim-cl-group>summary{display:flex;justify-content:space-between;gap:8px;padding:12px 0;cursor:pointer;font-weight:600;font-size:13px;list-style:none;}
 .nim-cl-group>summary::-webkit-details-marker{display:none;}
