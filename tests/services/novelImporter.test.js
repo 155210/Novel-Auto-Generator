@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import * as TXT from '../../txtToWorldbook/services/presetImportService.js';
 
 // novelImporter/core.js 是浏览器端 IIFE，不碰 DOM，直接 eval 后取全局对象
 function loadCore() {
@@ -545,20 +546,39 @@ describe('酒馆预设条目', () => {
                     { identifier: 'chatHistory', enabled: true },
                     { identifier: 'jb', enabled: true },
                     { identifier: 'deep', enabled: true },
-                    { identifier: 'quiet', enabled: true },
+                    { identifier: 'quiet', enabled: false },
                 ],
             },
         ],
     };
 
-    it('按酒馆的顺序和开关导入，聊天记录换成本层提示词，没放进顺序的单独收着', () => {
+    it('按酒馆的顺序和开关导入，聊天记录换成本层提示词，没放进列表的不导入', () => {
         const r = C.parseSTPreset(PRESET);
         expect(r.entries.map((e) => e.id)).toEqual(['main', 'nsfw', C.PRESET_SLOT_ID, 'jb', 'deep', 'quiet']);
         expect(r.entries.map((e) => e.enabled)).toEqual([true, false, true, true, true, false]);
-        expect(r.extras.map((e) => [e.id, e.enabled])).toEqual([['orphan', false]]);
+        expect(r.extras).toBeUndefined();
+        expect(r.skipped).toBe(1);
         expect(r.droppedMarkers).toBe(1);
         expect(r.squash).toBe(true);
         expect(r.params.temperature).toBe(0.9);
+    });
+
+    it('和 TXT转世界书 一样：没有 100001 取最后一份列表，开关照酒馆里的（不看触发方式），没有列表按 prompts 原顺序', () => {
+        const prompts = [
+            { identifier: 'a', name: 'A', content: 'a' },
+            { identifier: 'b', name: 'B', content: 'b', injection_trigger: ['continue'] },
+            { identifier: 'c', name: 'C', content: 'c' },
+        ];
+        const prompt_order = [
+            { character_id: 7, order: [{ identifier: 'a', enabled: true }, { identifier: 'b', enabled: true }, { identifier: 'c', enabled: true }] },
+            { character_id: 8, order: [{ identifier: 'c', enabled: true }, { identifier: 'b', enabled: true }] },
+        ];
+        const r = C.parseSTPreset({ prompts, prompt_order });
+        expect(r.entries.map((e) => [e.id, e.enabled])).toEqual([['c', true], ['b', true], [C.PRESET_SLOT_ID, true]]);
+        expect(r.skipped).toBe(1);
+        const t = TXT.parseTavernPreset({ prompts, prompt_order });
+        expect(t.chain.map((m) => m.content)).toEqual(['c', 'b', '{PROMPT}']);
+        expect(C.parseSTPreset({ prompts }).entries.map((e) => e.id)).toEqual(['a', 'b', 'c', C.PRESET_SLOT_ID]);
     });
 
     it('拼消息：关掉的不发，相对按顺序，深度 0 放在本层提示词后面，宏交给酒馆展开，相邻 system 合并', () => {
@@ -598,6 +618,29 @@ describe('酒馆预设条目', () => {
         await engine.run();
         expect(seen[0]).toEqual({ role: 'system', content: '系统' });
         expect(seen[2].content).toContain('## 本层正文');
+    });
+});
+
+describe('酒馆世界书当作输出要求', () => {
+    it('关掉的和空的条目不要，按顺序值排，放进每层提示词', async () => {
+        const rules = C.buildOutputRules([
+            { name: '文风', entries: { 0: { comment: '第二条', content: '多写心理', order: 200 }, 1: { comment: '第一条', content: '第三人称', order: 100 }, 2: { comment: '关掉的', content: 'x', disable: true }, 3: { comment: '空', content: ' ' } } },
+            { name: '空书', entries: {} },
+        ]);
+        expect(rules).toBe('### 《文风》\n【第一条】\n第三人称\n\n【第二条】\n多写心理');
+        let seen;
+        const engine = C.createEngine({
+            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false },
+            outputRules: rules,
+            callModel: async (messages) => {
+                seen = messages;
+                return reply({});
+            },
+        });
+        engine.prepare('第一章 开始\n' + '正文。'.repeat(50));
+        await engine.run();
+        const text = seen.map((m) => m.content).join('\n');
+        expect(text).toContain('## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守）\n### 《文风》');
     });
 });
 

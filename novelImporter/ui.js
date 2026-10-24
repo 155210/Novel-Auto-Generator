@@ -31,6 +31,8 @@
         tableTemplate: null,
         seedWorldbook: null,
         seedGlossary: null, // [{source, target, note}]
+        stWorlds: null, // 酒馆里开着的世界书：[{name, source, count, chars, rules}]，开始处理时重读
+        outputRules: '', // 勾选的那几本拼成的输出要求
         images: [], // EPUB 插图：[{id, name, mime, data(base64)}]，正文里是〔插图id〕
         imagePaths: null, // 已上传到酒馆的插图：{card, map: {id: path}}
         tab: 'file',
@@ -225,6 +227,9 @@
                     ['off', '不停'],
                 ],
             },
+        ],
+        stwb: [
+            { key: 'stWorldEnabled', label: '把酒馆里开着的世界书当作输出要求发给 AI', type: 'check', hint: '全局、当前角色、当前聊天、人设绑定的世界书；关掉的条目不发' },
         ],
         alias: [
             { key: 'protagonistName', label: '主角原名', type: 'text', hint: '例如 路长远' },
@@ -564,6 +569,9 @@
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
             seedGlossary: State.seedGlossary,
+            get outputRules() {
+                return State.settings.stWorldEnabled ? State.outputRules : '';
+            },
             callModel,
             onEvent: onEngineEvent,
         });
@@ -621,6 +629,7 @@
             if (!confirm('还没导入记忆表格模板，这次不填表格，继续吗？')) return;
         }
         if (!State.settings.protagonistName && !confirm('没有填主角原名，正文里不会替换主角称呼，继续吗？')) return;
+        if (State.settings.stWorldEnabled && !(await loadOutputRulesForRun())) return;
         if (State.engine.reviewing !== null) State.engine.accept();
         State.stopped = false;
         renderAll();
@@ -630,6 +639,19 @@
             log('全部层已完成，可以在「导入酒馆」一键导入');
             switchTab('export');
         }
+    }
+
+    /** 开始前重读酒馆世界书；读不到就问一句要不要不带着继续 */
+    async function loadOutputRulesForRun() {
+        try {
+            await refreshStWorlds();
+        } catch (e) {
+            return confirm(`读取酒馆世界书失败（${e.message}），这次不带输出要求继续吗？`);
+        }
+        if (!State.outputRules) return confirm('勾选的酒馆世界书里没有可用的条目，这次不带输出要求继续吗？');
+        const n = (State.stWorlds || []).filter((b) => !(State.settings.stWorldExclude || []).includes(b.name) && b.rules).length;
+        log(`带上酒馆世界书 ${n} 本作为输出要求，约 ${State.outputRules.length} 字`);
+        return true;
     }
 
     function stop() {
@@ -1114,7 +1136,7 @@
     async function onPresetFile(file) {
         try {
             const p = C.parseSTPreset(JSON.parse(await readFileText(file)));
-            State.settings.preset = { name: file.name.replace(/\.json$/i, ''), entries: p.entries, extras: p.extras, squash: p.squash };
+            State.settings.preset = { name: file.name.replace(/\.json$/i, ''), entries: p.entries, squash: p.squash };
             if (p.params.temperature != null) State.settings.temperature = p.params.temperature;
             if (p.params.maxTokens) State.settings.maxTokens = p.params.maxTokens;
             saveSettings();
@@ -1124,7 +1146,7 @@
             renderPreset();
             const notes = [
                 `已导入 ${p.promptCount} 个条目（启用 ${p.enabledCount}）`,
-                p.extras.length ? `${p.extras.length} 个没在酒馆顺序里的条目收在下面「没在顺序里的条目」` : '',
+                p.skipped ? `酒馆条目列表里没放的 ${p.skipped} 个条目不导入（酒馆里也不发送）` : '',
                 p.droppedMarkers ? `角色卡、世界书等占位 ${p.droppedMarkers} 个不导入` : '',
                 p.hadChatHistory ? '' : '预设里没有聊天记录，本层提示词放在了末尾',
             ].filter(Boolean);
@@ -1151,25 +1173,23 @@
     // ============================================
 
     const ROLE_LABEL = { system: '系统', user: '用户', assistant: 'AI' };
-    const presetUi = { selecting: false, selected: new Set(), extrasOpen: false, dragId: null, editing: null };
+    const presetUi = { selecting: false, selected: new Set(), dragId: null, editing: null };
 
     function presetEntries() {
         return State.settings.preset.entries;
     }
 
-    function presetRow(e, inExtras) {
+    function presetRow(e) {
         const slot = e.id === C.PRESET_SLOT_ID;
         const picked = presetUi.selected.has(e.id);
-        const cls = ['nim-pr', slot ? 'is-slot' : '', !slot && (!e.enabled || inExtras) ? 'is-off' : '', presetUi.dragId === e.id ? 'is-dragging' : '', picked ? 'is-picked' : ''].join(' ');
+        const cls = ['nim-pr', slot ? 'is-slot' : '', !slot && !e.enabled ? 'is-off' : '', presetUi.dragId === e.id ? 'is-dragging' : '', picked ? 'is-picked' : ''].join(' ');
         let lead;
         if (slot) lead = '<span class="nim-pr-pin" title="固定条目：每层的提示词放在这里">📌</span>';
         else if (presetUi.selecting) lead = `<input type="checkbox" class="nim-pr-check" data-pick="${esc(e.id)}" ${picked ? 'checked' : ''} title="选择">`;
-        else if (inExtras) lead = '';
         else lead = `<label class="nim-pr-toggle" title="${e.enabled ? '关闭此条目' : '启用此条目'}"><input type="checkbox" data-toggle="${esc(e.id)}" ${e.enabled ? 'checked' : ''}><span class="nim-switch"></span></label>`;
         const tags = slot ? '' : `<span class="nim-pr-tag">${ROLE_LABEL[e.role]}</span><span class="nim-pr-tag ${e.position === 'depth' ? 'is-depth' : ''}">${e.position === 'depth' ? `深度 ${e.depth}` : '相对'}</span>`;
-        const handle = inExtras ? '' : `<span class="nim-pr-handle" data-drag="${esc(e.id)}" title="按住拖动排序"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>`;
-        const add = inExtras && !presetUi.selecting ? `<button class="nim-btn sm" data-append="${esc(e.id)}">加入末尾</button>` : '';
-        return `<li class="${cls}" data-id="${esc(e.id)}">${handle}${lead}<button class="nim-pr-open" data-open="${esc(e.id)}" ${slot ? 'disabled' : ''}><span class="nim-pr-name">${esc(e.name)}</span>${tags}</button>${add}</li>`;
+        const handle = `<span class="nim-pr-handle" data-drag="${esc(e.id)}" title="按住拖动排序"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>`;
+        return `<li class="${cls}" data-id="${esc(e.id)}">${handle}${lead}<button class="nim-pr-open" data-open="${esc(e.id)}" ${slot ? 'disabled' : ''}><span class="nim-pr-name">${esc(e.name)}</span>${tags}</button></li>`;
     }
 
     function renderPreset() {
@@ -1177,16 +1197,10 @@
         if (!box) return;
         const p = State.settings.preset;
         const real = p.entries.filter((e) => e.id !== C.PRESET_SLOT_ID);
-        const selectable = [...real, ...p.extras].map((e) => e.id);
+        const selectable = real.map((e) => e.id);
         const allPicked = selectable.length && selectable.every((id) => presetUi.selected.has(id));
         $('nim-preset-name').innerHTML = `${esc(p.name || '未导入预设')}${real.length ? ` <span class="nim-muted">已启用 ${real.filter((e) => e.enabled).length}/${real.length}</span>` : ''}`;
-        $('nim-preset-list').innerHTML = p.entries.map((e) => presetRow(e, false)).join('');
-        $('nim-preset-extras').innerHTML = p.extras.length
-            ? `<button class="nim-pr-extras-head" data-extras>没在顺序里的条目（${p.extras.length}）<span class="nim-chev ${presetUi.extrasOpen ? 'up' : ''}"></span></button>` +
-              (presetUi.extrasOpen
-                  ? `<div class="nim-muted">这些条目在预设的条目库里，但酒馆的条目列表没放，酒馆里看不到也不会发送。这里同样不发送，需要的点「加入末尾」。</div><ul class="nim-pr-list">${p.extras.map((e) => presetRow(e, true)).join('')}</ul>`
-                  : '')
-            : '';
+        $('nim-preset-list').innerHTML = p.entries.map((e) => presetRow(e)).join('');
         $('nim-preset-actions').innerHTML = presetUi.selecting
             ? `<button class="nim-btn sm" data-act="all">${allPicked ? '全不选' : '全选'}</button><button class="nim-btn sm danger-ghost" data-act="del" ${presetUi.selected.size ? '' : 'disabled'}>删除选中（${presetUi.selected.size}）</button><button class="nim-btn sm" data-act="done">完成</button>`
             : `<button class="nim-btn sm" data-act="add">新建条目</button>${selectable.length ? '<button class="nim-btn sm" data-act="select">多选删除</button>' : ''}${real.length ? '<button class="nim-btn sm danger-ghost" data-act="clear">清空预设</button>' : ''}`;
@@ -1195,7 +1209,7 @@
 
     function findPresetEntry(id) {
         const p = State.settings.preset;
-        return p.entries.find((e) => e.id === id) || p.extras.find((e) => e.id === id) || null;
+        return p.entries.find((e) => e.id === id) || null;
     }
 
     function presetChanged() {
@@ -1232,13 +1246,6 @@
                     else presetUi.selected.add(id);
                     renderPreset();
                 } else openPresetEdit(t.dataset.open);
-            } else if (t.dataset.append) {
-                const i = p.extras.findIndex((e) => e.id === t.dataset.append);
-                if (i >= 0) p.entries.push({ ...p.extras.splice(i, 1)[0], enabled: true });
-                presetChanged();
-            } else if (t.hasAttribute('data-extras')) {
-                presetUi.extrasOpen = !presetUi.extrasOpen;
-                renderPreset();
             } else if (t.dataset.act === 'add') {
                 const e = { id: `nim-custom-${Date.now().toString(36)}`, name: '新条目', role: 'system', content: '', enabled: true, position: 'relative', depth: 4, order: 100 };
                 p.entries.push(e);
@@ -1253,7 +1260,7 @@
                 presetUi.selected.clear();
                 renderPreset();
             } else if (t.dataset.act === 'all') {
-                const ids = [...p.entries.filter((e) => e.id !== C.PRESET_SLOT_ID), ...p.extras].map((e) => e.id);
+                const ids = p.entries.filter((e) => e.id !== C.PRESET_SLOT_ID).map((e) => e.id);
                 const all = ids.every((id) => presetUi.selected.has(id));
                 presetUi.selected.clear();
                 if (!all) ids.forEach((id) => presetUi.selected.add(id));
@@ -1261,7 +1268,6 @@
             } else if (t.dataset.act === 'del') {
                 if (!confirm(`删除选中的 ${presetUi.selected.size} 个条目？删除后要重新导入预设才能找回。`)) return;
                 p.entries = p.entries.filter((e) => e.id === C.PRESET_SLOT_ID || !presetUi.selected.has(e.id));
-                p.extras = p.extras.filter((e) => !presetUi.selected.has(e.id));
                 presetUi.selecting = false;
                 presetUi.selected.clear();
                 presetChanged();
@@ -1347,7 +1353,6 @@
         const id = presetUi.editing;
         const p = State.settings.preset;
         p.entries = p.entries.filter((e) => e.id !== id);
-        p.extras = p.extras.filter((e) => e.id !== id);
         presetUi.editing = null;
         $('nim-pe').hidden = true;
         presetChanged();
@@ -1538,12 +1543,97 @@
         </div></div>`;
     }
 
+    // ============================================
+    // 酒馆里开着的世界书：当作输出要求发给 AI
+    // ============================================
+
+    /** 重新读一遍酒馆现在开着的世界书，按勾选拼成输出要求 */
+    async function refreshStWorlds() {
+        const books = await ST.listActiveWorldbooks();
+        const list = [];
+        for (const b of books) {
+            try {
+                const rules = C.buildOutputRules([{ name: b.name, entries: await ST.loadWorldbookEntries(b.name) }]);
+                const count = rules ? (rules.match(/^【/gm) || []).length || 1 : 0;
+                list.push({ ...b, rules, count, chars: rules.length });
+            } catch (e) {
+                list.push({ ...b, rules: '', count: 0, chars: 0, error: e.message });
+            }
+        }
+        State.stWorlds = list;
+        updateOutputRules();
+        renderStWorlds();
+        return list;
+    }
+
+    function updateOutputRules() {
+        const ex = new Set(State.settings.stWorldExclude || []);
+        State.outputRules = (State.stWorlds || [])
+            .filter((b) => !ex.has(b.name) && b.rules)
+            .map((b) => b.rules)
+            .join('\n\n');
+    }
+
+    function renderStWorlds() {
+        const box = $('nim-stwb-list');
+        if (!box) return;
+        const list = State.stWorlds;
+        if (!list) {
+            box.innerHTML = '<div class="nim-muted">还没读取，点上面的按钮看看现在开着哪些世界书。</div>';
+            return;
+        }
+        if (!list.length) {
+            box.innerHTML = '<div class="nim-muted">酒馆里现在没有开着的世界书（全局、角色、聊天、人设都没绑）。</div>';
+            return;
+        }
+        const ex = new Set(State.settings.stWorldExclude || []);
+        const picked = list.filter((b) => !ex.has(b.name));
+        box.innerHTML =
+            list
+                .map(
+                    (b) =>
+                        `<label class="nim-check"><input type="checkbox" data-stwb="${esc(b.name)}" ${ex.has(b.name) ? '' : 'checked'}><span class="nim-switch"></span><span>${esc(b.name)} <span class="nim-pr-tag">${b.source}</span><span class="nim-hint">${b.error ? `读取失败：${esc(b.error)}` : `${b.count} 个条目，约 ${b.chars} 字`}</span></span></label>`,
+                )
+                .join('') + `<div class="nim-muted">勾选的 ${picked.length} 本合计约 ${State.outputRules.length} 字，每层都会带上。点「开始」时会重新读一遍，在酒馆里改了世界书不用再点读取。</div>`;
+    }
+
+    function bindStWorlds() {
+        const box = $('nim-stwb');
+        if (!box) return;
+        box.addEventListener('change', (ev) => {
+            const name = ev.target.dataset && ev.target.dataset.stwb;
+            if (name === undefined) return;
+            const ex = new Set(State.settings.stWorldExclude || []);
+            if (ev.target.checked) ex.delete(name);
+            else ex.add(name);
+            State.settings.stWorldExclude = [...ex];
+            saveSettings();
+            updateOutputRules();
+            renderStWorlds();
+        });
+        $('nim-stwb-refresh').addEventListener('click', async () => {
+            try {
+                const list = await refreshStWorlds();
+                toast(list.length ? `读到 ${list.length} 本开着的世界书` : '酒馆里没有开着的世界书', list.length ? 'success' : 'warning');
+            } catch (e) {
+                toast(`读取酒馆世界书失败：${e.message}`, 'error');
+            }
+        });
+    }
+
+    function stWorldsHtml() {
+        return `<div id="nim-stwb">
+          <div class="nim-muted">适合放写作规则、文风、输出格式这类要求的世界书。勾选的世界书里没关掉的条目会按顺序整理成「输出要求」，放进每层的提示词里，AI 写正文时照着做。</div>
+          <div class="nim-row"><button id="nim-stwb-refresh" class="nim-btn sm">读取酒馆已开的世界书</button></div>
+          <div id="nim-stwb-list"></div>
+        </div>`;
+    }
+
     function presetHtml() {
         return `<div id="nim-preset">
           <div class="nim-pr-bar"><div id="nim-preset-name" class="nim-pr-title"></div><label class="nim-btn primary sm">导入预设<input type="file" id="nim-preset-file" accept=".json,application/json" hidden></label></div>
           <div class="nim-muted">支持酒馆导出的聊天补全预设 JSON，顺序和开关和酒馆里一样。角色卡、世界书、示例对话等占位条目不导入；📌 是每层的提示词（小说正文和任务），相当于预设里「聊天记录」的位置。按住左边的抓手上下拖动调整顺序，点条目名编辑。</div>
           <ul id="nim-preset-list" class="nim-pr-list"></ul>
-          <div id="nim-preset-extras"></div>
           <div id="nim-preset-actions" class="nim-row"></div>
           <label class="nim-check"><input type="checkbox" id="nim-preset-squash"><span class="nim-switch"></span><span>合并相邻的系统消息<span class="nim-hint">和酒馆的「压缩系统消息」一样</span></span></label>
         </div>`;
@@ -1894,6 +1984,7 @@
       ${card('preset', '酒馆预设', '导入后每个条目可以开关、拖动排序、编辑', presetHtml())}
       ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate'))}
       ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite'))}
+      ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
       ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
       ${card('wb', '世界书', '提取分类（和 TXT转世界书 一样）、额外要求', categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
       ${card('table', '记忆表格', '表格角色、消息模板、大总结', f('table'))}
@@ -2133,7 +2224,6 @@ select.nim-input{appearance:auto;}
 .nim-pr-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;}
 .nim-pr-tag{flex:none;font-size:11px;padding:1px 7px;border-radius:999px;color:var(--muted);border:1px solid var(--line2);}
 .nim-pr-tag.is-depth{color:#bdb3ff;border-color:rgba(139,124,246,.6);}
-.nim-pr-extras-head{width:100%;display:flex;align-items:center;justify-content:space-between;padding:10px 2px;border:0;border-top:1px solid var(--line);background:none;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;}
 .nim-chev.up{transform:rotate(225deg);}
 .nim-icon-btn.sm{width:34px;height:34px;font-size:13px;}
 .nim-icon-btn:disabled{opacity:.3;cursor:not-allowed;}
@@ -2209,6 +2299,8 @@ select.nim-input{appearance:auto;}
         on('nim-close', 'click', close);
         bindPreset();
         bindCategories();
+        bindStWorlds();
+        renderStWorlds();
         onFile('nim-preset-file', onPresetFile);
         $('nim-pe').addEventListener('click', (ev) => {
             const b = ev.target.closest('[data-pe]');
@@ -2269,9 +2361,10 @@ select.nim-input{appearance:auto;}
             renderCategories();
         });
         on('nim-task-export', 'click', exportTask);
-        on('nim-preview', 'click', () => {
+        on('nim-preview', 'click', async () => {
             if (!State.engine) return toast('请先选择小说', 'warning');
             collectFields();
+            if (State.settings.stWorldEnabled) await refreshStWorlds().catch((e) => toast(`读取酒馆世界书失败：${e.message}`, 'error'));
             const i = State.selected ?? State.engine.results.findIndex((r) => !r || r.status !== 'done');
             const req = State.engine.buildRequestFor(Math.max(0, i));
             $('nim-stream').textContent = req.messages.map((m) => `【${m.role}】\n${m.content}`).join('\n\n');
