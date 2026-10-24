@@ -293,6 +293,13 @@
             { key: 'titleTag', label: '标题标签', type: 'text' },
             { key: 'bodyTag', label: '正文标签', type: 'text' },
             {
+                key: 'wordReplace',
+                label: '词语替换（导出和导入酒馆时替换）',
+                type: 'textarea',
+                rows: 4,
+                hint: '每行一条：原词 → 新词（也可以写 ->）；新词留空就是删掉；原词写成 /正则/ 按正则替换。楼层、世界书、表格、人设都会换，已生成的层不用重跑',
+            },
+            {
                 key: 'floorTags',
                 label: '楼层里额外放的标签',
                 type: 'text',

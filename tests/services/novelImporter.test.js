@@ -574,6 +574,19 @@ describe('运行引擎', () => {
         expect(C.adPatternsFor({ adPatterns: C.DEFAULT_AD_PATTERNS, keepSeparatorLines: true })).not.toContain('^=+$');
     });
 
+    it('词语替换：楼层、世界书、表格都换，已生成的层不用重跑', async () => {
+        const { engine } = makeEngine(normal);
+        await engine.run();
+        expect(engine.renderFloors()[0].mes).toContain('裘月寒');
+        engine.settings.wordReplace = '裘月寒 → 裘寒月\n/雨+/ -> 风\n不完整的一行\n推门 →';
+        const f = engine.renderFloors()[0];
+        expect(f.mes).not.toContain('裘月寒');
+        expect(f.mes).toContain('裘寒月抬眸道');
+        expect(f.mes).not.toContain('推门');
+        expect(JSON.stringify(engine.exportWorldbook())).not.toContain('雨');
+        expect(C.parseWordReplace('a → b\n/[/ → x\n没箭头').length).toBe(1);
+    });
+
     it('楼层里可以额外放 AI 回复里的标签', async () => {
         const { engine } = makeEngine((layer) => normal(layer) + '\n<Plotline>伏笔一</Plotline>\n<Calculated_data>次数: 1</Calculated_data>', { floorTags: 'Plotline，<Calculated_data>, 没有的, 正文' });
         await engine.run();
