@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.22';
+    const VERSION = '1.4.23';
 
     // ============================================
     // 默认配置
@@ -278,6 +278,39 @@
         title = title.replace(new RegExp(`^第\\s*[${CN_NUM}]+\\s*[章话話回节節]\\s*[：:、.．\\-—\\s]*`), '').trim();
         let out = fmt.replace(/\{n\}/g, String(n)).replace(/\{unit\}/g, unit).replace(/\{title\}/g, title);
         if (!title) out = out.replace(/[：:]\s*$/, '');
+        return out;
+    }
+
+    /**
+     * 正文里独占一行的章节标题（第X章/第X话 标题）改成和楼层标题一样的 <bt>#第X章：标题</bt>。
+     * opts.dropFirst：楼层标题就是取的本层第一个章节标题时，正文开头那行重复了，去掉。
+     * 行里可以带高亮标记，判断时忽略。
+     */
+    function formatBodyHeadings(paras, settings, bookUnit, opts = {}) {
+        const s = { ...DEFAULT_SETTINGS, ...settings };
+        const fmt = s.titleFormat || '#第{n}{unit}：{title}';
+        const re = new RegExp(`^第\\s*[${CN_NUM}]+\\s*[章话話回节節]`);
+        const out = [];
+        let first = true;
+        for (const line of paras) {
+            const t = stripMarks(line).trim();
+            // 「第3话说的是……」这种句子不算：章号后面要有空格/冒号，或者整行很短又没有句读
+            const m = t && t.length <= 40 ? re.exec(t) : null;
+            const rest = m ? t.slice(m[0].length) : '';
+            const ok = m && (!rest || /^[\s：:、.．\-—]/.test(rest) || (t.length <= 20 && !/[。，！？…“”「」,!?]/.test(rest)));
+            const p = ok ? parseChapterTitle(t) : null;
+            const wasFirst = first;
+            if (t) first = false;
+            if (!p) {
+                out.push(line);
+                continue;
+            }
+            if (wasFirst && opts.dropFirst) continue;
+            const unit = s.chapterUnit === '章' || s.chapterUnit === '话' ? s.chapterUnit : p.unit || bookUnit || '章';
+            let h = fmt.replace(/\{n\}/g, String(p.num)).replace(/\{unit\}/g, unit).replace(/\{title\}/g, p.title);
+            if (!p.title) h = h.replace(/[：:]\s*$/, '');
+            out.push(`<${s.titleTag}>\n${h}\n</${s.titleTag}>`);
+        }
         return out;
     }
 
@@ -2425,7 +2458,7 @@ ${blocks}`;
                     layer: i,
                     title: conv(r.parsed.title),
                     heading,
-                    body: conv(r.finalParas.join('\n')),
+                    body: conv(bodyParas(i, r.finalParas).join('\n')),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
                     divergence: r.inDivergence,
@@ -2466,7 +2499,14 @@ ${blocks}`;
             let n = 0;
             while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
             const st = replay(n);
-            return applyAliases(paras.join('\n'), st.aliases, aliasTargetOf(settings));
+            return applyAliases(bodyParas(i, paras).join('\n'), st.aliases, aliasTargetOf(settings));
+        }
+
+        /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
+        function bodyParas(i, paras) {
+            const layer = E.layers[i];
+            const dropFirst = settings.titleMode === 'original' && !!(layer.chapters || []).length;
+            return formatBodyHeadings(paras, settings, E.stats.chapterUnit, { dropFirst });
         }
 
         function finalState() {
@@ -2876,6 +2916,7 @@ ${sums}`;
         parseChapterTitle,
         detectChapterUnit,
         formatHeading,
+        formatBodyHeadings,
         detectForeign,
         IMAGE_MARKER_RE,
         ensureImageMarkers,
