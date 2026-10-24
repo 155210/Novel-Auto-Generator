@@ -26,10 +26,13 @@ function log(msg, type = 'info') {
 }
 
 // 动态加载JS文件
+// 每次打开酒馆都带上新的时间戳，免得更新扩展后浏览器（尤其手机）还用缓存里的旧脚本，新旧文件混在一起
+const LOAD_STAMP = Date.now();
+
 async function loadScript(filename) {
     return new Promise((resolve, reject) => {
         const script = document.createElement('script');
-        script.src = `${extensionFolderPath}/${filename}`;
+        script.src = `${extensionFolderPath}/${filename}?v=${LOAD_STAMP}`;
         script.onload = () => resolve();
         script.onerror = (e) => reject(e);
         document.head.appendChild(script);
