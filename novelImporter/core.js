@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.20';
+    const VERSION = '1.4.21';
 
     // ============================================
     // 默认配置
@@ -2285,6 +2285,95 @@ ${blocks}`;
             return res;
         }
 
+        /** 只让 AI 重新输出 JSON 的提示词：用这层处理完的正文当原文，不再要正文 */
+        function buildJsonOnlyPrompt(i, st, extraPrompt) {
+            const s = { ...DEFAULT_SETTINGS, ...settings };
+            const r = E.results[i];
+            const body = r.finalParas.join('\n');
+            const parts = [`你是小说资料整理助手。下面是一部小说第 ${i + 1} 层已经定稿的正文。正文不用改、也不要输出；只按要求输出这一层的 <改写判定>、<世界书>、<表格> 三段，每段都必须是能被 JSON.parse 解析的合法 JSON（键和字符串用英文双引号，字符串里的双引号写成 \\"，不要注释、尾逗号、代码块标记）。`];
+            const div = buildDivergenceSection(s, st, !!E.layers[i].translate);
+            if (div) parts.push(div);
+            if (s.worldbookEnabled) {
+                parts.push(buildWorldbookSection(s));
+                const rel = selectRelevantEntries(st.worldbook || {}, body, s.worldbookContextChars);
+                if (rel.length) parts.push(`## 相关世界书条目（已有内容）\n` + rel.map((x) => `### ${x.category} / ${x.name}\n关键词：${(x.entry.关键词 || []).join('、')}\n${x.entry.内容}`).join('\n\n'));
+            }
+            const table = buildTableSection(s, st, body);
+            if (table) parts.push(table);
+            const old = JSON_TAGS.map((t) => extractTag(r.raw, t)).some((x) => x.found)
+                ? `## 你上次给的（格式有问题或需要改，供参考）\n${JSON_TAGS.map((t) => `<${t}>\n${extractTag(r.raw, t).content}\n</${t}>`).join('\n')}`
+                : '';
+            if (old) parts.push(old);
+            if ((extraPrompt || '').trim()) parts.push(`## 用户的补充要求（优先遵守）\n${extraPrompt.trim()}`);
+            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>`);
+            parts.push(`## 本层定稿正文\n<原文>\n${body}\n</原文>`);
+            return parts.join('\n\n');
+        }
+
+        /**
+         * 正文不动，只让 AI 重新输出这层的 JSON（改写判定、世界书、表格），换进这层的结果里。
+         * opts.usePreset：套用户的酒馆预设（默认不套，免得预设让 AI 去写正文）。之后的层保留，状态按新结果重算。
+         */
+        async function regenJson(i, extraPrompt, opts = {}) {
+            const old = E.results[i];
+            if (!old || old.status !== 'done') throw new Error('这一层还没完成');
+            const st = replay(i);
+            const prompt = buildJsonOnlyPrompt(i, st, extraPrompt);
+            const messages = opts.usePreset
+                ? buildMessages(prompt)
+                : [
+                      { role: 'system', content: '你是小说资料整理助手，只输出要求的几段 JSON，不写正文、不写别的话。' },
+                      { role: 'user', content: prompt },
+                  ];
+            const r = { ...old, calls: (old.calls || []).slice(), tokens: old.tokens ? { ...old.tokens } : undefined };
+            let reply;
+            try {
+                reply = await callAndLog(r, messages, { layer: i, attempt: 0, prompt, purpose: 'json' }, true);
+            } catch (err) {
+                Object.assign(old, { calls: r.calls, tokens: r.tokens });
+                throw err;
+            }
+            let raw = old.raw;
+            const got = [];
+            for (const t of JSON_TAGS) {
+                const x = extractTag(reply, t);
+                if (!x.closed) continue;
+                got.push(t);
+                raw = extractTag(raw, t).closed ? replaceTag(raw, t, x.content) : `${raw}\n<${t}>${x.content}</${t}>`;
+            }
+            const rec = r.calls[r.calls.length - 1];
+            // 失败也把这次请求记在原结果上，方便看 AI 回了什么（不影响状态）
+            const keepLog = () => Object.assign(old, { calls: r.calls, tokens: r.tokens });
+            if (!got.length) {
+                keepLog();
+                rec.problem = '回复里没有 <改写判定>/<世界书>/<表格>';
+                throw new Error(rec.problem);
+            }
+            const layer = E.layers[i];
+            const popts = { translate: !!layer.translate, bodyTag: settings.bodyTag, sourceChars: layer.chars };
+            let parsed = parseLayerResponse(raw, popts);
+            if (!parsed.ok && parsed.jsonOnly) {
+                // 还有段 JSON 是坏的：能用的先换上，坏的那段照旧跳过
+                rec.problem = parsed.errors.join('；');
+                parsed = parseLayerResponse(raw, { ...popts, lenient: true });
+            }
+            if (!parsed.ok) {
+                rec.problem = parsed.errors.join('；');
+                keepLog();
+                throw new Error(rec.problem);
+            }
+            Object.assign(r, { raw, parsed, warnings: parsed.warnings });
+            const c = commit(st, i, r);
+            r.tableActions = c.out.tableActions;
+            r.tableLog = c.out.tableLog;
+            r.divergenceStart = c.out.divergenceStart;
+            r.inDivergence = c.out.inDivergence;
+            // 换成新对象，重放缓存会从这层往后重新算
+            E.results[i] = r;
+            emit('layer-done', { index: i, result: r });
+            return r;
+        }
+
         /** 带修改要求重做第 i 层（不用等审阅；之后的层作废） */
         async function redoWithFeedback(i, feedback) {
             if (!E.layers[i]) return null;
@@ -2486,6 +2575,7 @@ ${sums}`;
             reject,
             redoWithPrompt,
             redoWithFeedback,
+            regenJson,
             resetFrom,
             replay,
             renderFloors,

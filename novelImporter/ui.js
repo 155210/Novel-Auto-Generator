@@ -2012,7 +2012,7 @@
             const top = el.scrollTop;
             el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
             el.scrollTop = follow ? el.scrollHeight : top;
-            setStatus(`${info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : `第 ${info.layer + 1} 层输出`}中 · ${State.stream.length} 字`);
+            setStatus(`${info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`}中 · ${State.stream.length} 字`);
         });
     }
 
@@ -2174,7 +2174,7 @@
     function callsHtml(r) {
         const calls = r.calls || [];
         if (!calls.length) return '';
-        const NAME = { layer: '正文请求', repair: '修 JSON 格式' };
+        const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON' };
         return (
             `<details class="nim-fold"><summary>每次请求的原始输出（${calls.length} 次）</summary>` +
             calls
@@ -2249,7 +2249,7 @@
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
             body += layerWorldbookHtml(e, i, r);
             if (r.parsed.terms && r.parsed.terms.length) body += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
-            body += `<details class="nim-fold"><summary>程序最后用的回复${(r.calls || []).some((c) => c.purpose === 'repair') ? '（修过格式后拼回去的）' : ''}</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
+            body += `<details class="nim-fold"><summary>程序最后用的回复${(r.calls || []).some((c) => c.purpose === 'repair' || c.purpose === 'json') ? '（修过格式后拼回去的）' : ''}</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
         } else if (r && r.status === 'failed') {
             body += `<div class="nim-alert danger">失败：${esc(r.error)}</div>`;
         }
@@ -2257,6 +2257,14 @@
             body += `<div class="nim-sub">这层的修改要求</div>
               <textarea id="nim-layer-fb" class="nim-input nim-textarea" rows="3" placeholder="例如：NTR 那段改得更彻底；对话多补几句神态；译名统一用「花恋」"></textarea>
               <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">按要求重做这层</button><span class="nim-muted">会带上这层上次的输出，之后的层作废</span></div>`;
+        if (!reviewing && r && r.status === 'done') {
+            const bad = r.warnings && r.warnings.length;
+            body += `<details class="nim-fold"${bad ? ' open' : ''}><summary>只重新输出 JSON（正文不动）${bad ? '<span class="nim-muted">：这层有 JSON 没用上</span>' : ''}</summary>
+              <textarea id="nim-json-fb" class="nim-input nim-textarea" rows="3" placeholder="可留空。例如：表格 JSON 里的字符串引号要转义；世界书补上花恋的身高"></textarea>
+              <div class="nim-row"><label class="nim-muted"><input type="checkbox" id="nim-json-preset"> 套用酒馆预设（AI 拒绝时再勾）</label></div>
+              <div class="nim-row"><button id="nim-json-go" class="nim-btn sm">只重新输出 JSON</button><span class="nim-muted">只要改写判定、世界书、表格三段，之后的层保留</span></div>
+            </details>`;
+        }
         if (r) body += promptHtml(r);
         if (r) body += callsHtml(r);
         body += `<details class="nim-fold"><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
@@ -2280,6 +2288,25 @@
                 State.stopped = false;
                 log(`按要求重做第 ${i + 1} 层：${fb}`);
                 await e.redoWithFeedback(i, fb);
+                saveProgress();
+                renderAll();
+            };
+        const jsonBtn = $('nim-json-go');
+        if (jsonBtn)
+            jsonBtn.onclick = async () => {
+                if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
+                const extra = $('nim-json-fb').value.trim();
+                const usePreset = $('nim-json-preset').checked;
+                collectFields();
+                jsonBtn.disabled = true;
+                log(`第 ${i + 1} 层只重新输出 JSON${extra ? `：${extra}` : ''}`);
+                try {
+                    const nr = await e.regenJson(i, extra, { usePreset });
+                    toast(nr.warnings && nr.warnings.length ? `换上了能用的部分，还有：${nr.warnings.join('；')}` : '已换上新的 JSON', nr.warnings && nr.warnings.length ? 'warning' : 'success');
+                } catch (err) {
+                    log(`第 ${i + 1} 层重新输出 JSON 失败：${err.message}`);
+                    toast(`没换成：${err.message}（原始输出在下面「请求记录」里）`, 'error');
+                }
                 saveProgress();
                 renderAll();
             };
