@@ -403,11 +403,17 @@
     const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
 
     /** 流式调用，超时按「多久没收到新数据」算 */
+    // 有的中转站不认 stream_options，报错一次后就不再带
+    let usageOptOk = true;
+
+    /** 返回回复文本；接口给了真实用量就放在 State.lastUsage */
     async function callAPI(messages, onChunk) {
         const s = State.settings;
+        State.lastUsage = null;
         const timeout = Number(s.apiTimeout) || 300000;
         const body = { model: s.apiModel || 'gpt-4o', messages, temperature: Number(s.temperature), stream: true };
         if (s.maxTokens) body.max_tokens = Number(s.maxTokens);
+        if (usageOptOk) body.stream_options = { include_usage: true };
         const controller = new AbortController();
         State.abort = controller;
         let timer = setTimeout(() => controller.abort(), timeout);
@@ -423,6 +429,10 @@
         if (!resp.ok) {
             clearTimeout(timer);
             const t = await resp.text().catch(() => '');
+            if (usageOptOk && resp.status === 400 && /stream_options|include_usage/i.test(t)) {
+                usageOptOk = false;
+                return callAPI(messages, onChunk);
+            }
             const err = new Error(`API 返回 ${resp.status}：${t.slice(0, 300)}`);
             err.retryable = RETRYABLE.has(resp.status);
             throw err;
@@ -431,6 +441,7 @@
         if (!ct.includes('event-stream') || !resp.body) {
             clearTimeout(timer);
             const data = await resp.json();
+            if (data && data.usage) State.lastUsage = data.usage;
             const text = data?.choices?.[0]?.message?.content || '';
             if (onChunk) onChunk(text, text);
             return text;
@@ -460,6 +471,7 @@
                         continue;
                     }
                     if (j.error) throw new Error(`流式错误：${j.error.message || JSON.stringify(j.error)}`);
+                    if (j.usage) State.lastUsage = j.usage;
                     const delta = j.choices?.[0]?.delta?.content || j.choices?.[0]?.message?.content || '';
                     if (delta) {
                         full += delta;
@@ -487,10 +499,11 @@
             if (State.stopped) throw new Error('ABORTED');
             try {
                 State.stream = '';
-                return await callAPI(messages, (_d, full) => {
+                const text = await callAPI(messages, (_d, full) => {
                     State.stream = full;
                     renderStream(info);
                 });
+                return { text, usage: State.lastUsage };
             } catch (e) {
                 last = e;
                 if (!e.retryable || k === 3) throw e;
@@ -616,7 +629,10 @@
         else if (type === 'layer-repair') log(`第 ${p.index + 1} 层正文没问题，只是 JSON 格式坏了（${p.error}），只让 AI 修格式，不重写正文`);
         else if (type === 'layer-repair-failed') log(`第 ${p.index + 1} 层修格式的请求失败：${p.error}`);
         else if (type === 'layer-warn') log(`第 ${p.index + 1} 层：${p.warnings.join('；')}`);
-        else if (type === 'layer-failed') log(`第 ${p.index + 1} 层失败：${p.error}`);
+        else if (type === 'layer-failed') {
+            const r = State.engine && State.engine.results[p.index];
+            log(`第 ${p.index + 1} 层失败：${p.error}${r && r.tokens ? `；已用 ${tokenText(r.tokens)}` : ''}`);
+        }
         else if (type === 'layer-done') {
             const r = p.result;
             const f = r.patchStats.failed.length;
@@ -630,7 +646,8 @@
             log(
                 `第 ${p.index + 1} 层完成：${r.parsed.title}${r.divergenceStart ? '（改写起点）' : r.inDivergence ? '（改写中）' : ''}` +
                     (r.patchStats.rewritten ? '，整层改写' : `，补丁 ${r.patchStats.applied} 条${f ? `，${f} 条没对上` : ''}`) +
-                    (r.askedBigSummary ? '，已做大总结' : ''),
+                    (r.askedBigSummary ? '，已做大总结' : '') +
+                    (r.tokens ? `；${tokenText(r.tokens)}` : ''),
             );
             saveProgress();
         } else if (type === 'review') {
@@ -2019,7 +2036,13 @@
         const t = $('nim-progress');
         if (t) t.textContent = total ? `${done} / ${total} 层 · ${pct}%` : '还没有分层';
         const tk = $('nim-tokens');
-        if (tk) tk.textContent = e ? `估算 输入 ${fmtNum(e.stats.inputTokens)} · 输出 ${fmtNum(e.stats.outputTokens)} tokens` : '';
+        if (tk) tk.textContent = e ? `${e.stats.estimated ? '估算 ' : ''}输入 ${fmtNum(e.stats.inputTokens)}${e.stats.cachedTokens ? `（缓存 ${fmtNum(e.stats.cachedTokens)}）` : ''} · 输出 ${fmtNum(e.stats.outputTokens)} tokens` : '';
+    }
+
+    /** 一层的用量：输入 / 输出（缓存命中）· 请求次数；没有真实用量时标「估算」 */
+    function tokenText(t) {
+        if (!t || !t.calls) return '';
+        return `${t.estimated ? '估算 ' : ''}输入 ${fmtNum(t.input)}${t.cached ? `（缓存 ${fmtNum(t.cached)}）` : ''} · 输出 ${fmtNum(t.output)} tokens${t.calls > 1 ? ` · ${t.calls} 次请求` : ''}`;
     }
 
     function fmtNum(n) {
@@ -2068,6 +2091,7 @@
         if (r && r.status === 'done') {
             const floor = e.renderFloors()[i];
             const d = r.parsed.divergence;
+            if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
             body += `<div class="nim-sub">楼层内容</div><pre class="nim-pre">${esc(floor ? floor.mes : '')}</pre>`;
             if (r.patchStats.failed.length)
@@ -2087,7 +2111,7 @@
                  <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">按意见重做这层</button></div>
                </div>`
             : '';
-        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div></div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
+        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
         $('nim-rerun').onclick = () => {
             if (!confirm(`第 ${i + 1} 层及之后的结果会清空，确定吗？`)) return;
             e.resetFrom(i);

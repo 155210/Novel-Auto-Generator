@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.6';
+    const VERSION = '1.4.7';
 
     // ============================================
     // 默认配置
@@ -1799,7 +1799,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             settings,
             layers: [],
             results: [], // 每层：{status, raw, parsed, finalParas, tableActions, ...}
-            stats: { cleanedLines: 0, repeatedLines: 0, inlineAds: 0, emptyChapters: [], inputTokens: 0, outputTokens: 0 },
+            stats: { cleanedLines: 0, repeatedLines: 0, inlineAds: 0, emptyChapters: [], inputTokens: 0, outputTokens: 0, cachedTokens: 0 },
             running: false,
             pauseRequested: false,
             stopRequested: false,
@@ -1974,8 +1974,35 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             };
         }
 
+        /**
+         * 记一次请求的用量。callModel 可以只回字符串，也可以回 {text, usage}：
+         * usage 是接口返回的真实用量（OpenAI 的 prompt_tokens/completion_tokens 或 Claude 的 input_tokens/output_tokens），
+         * 没有就按字数估算。r 是层结果，记到 r.tokens 里；返回回复文本。
+         */
+        function addUsage(r, messages, res) {
+            const text = typeof res === 'string' ? res : String((res && res.text) || '');
+            const u = res && typeof res === 'object' ? res.usage : null;
+            const real = !!(u && (u.prompt_tokens || u.input_tokens || u.completion_tokens || u.output_tokens));
+            const input = real ? Number(u.prompt_tokens || u.input_tokens || 0) : estimateTokens(messages.map((m) => m.content).join('\n'));
+            const output = real ? Number(u.completion_tokens || u.output_tokens || 0) : estimateTokens(text);
+            const cached = real ? Number((u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || u.cache_read_input_tokens || u.prompt_cache_hit_tokens || 0) : 0;
+            E.stats.inputTokens += input;
+            E.stats.outputTokens += output;
+            E.stats.cachedTokens = (E.stats.cachedTokens || 0) + cached;
+            if (!real) E.stats.estimated = true;
+            if (r) {
+                const t = r.tokens || (r.tokens = { input: 0, output: 0, cached: 0, calls: 0, estimated: false });
+                t.input += input;
+                t.output += output;
+                t.cached += cached;
+                t.calls++;
+                if (!real) t.estimated = true;
+            }
+            return text;
+        }
+
         /** 把坏掉的 JSON 块单独发给 AI 修，返回替换好的回复；请求失败就原样返回 */
-        async function repairJsonBlocks(i, raw, errors) {
+        async function repairJsonBlocks(i, raw, errors, r) {
             const tags = JSON_TAGS.filter((t) => errors.includes(`<${t}> 不是合法 JSON`));
             const blocks = tags.map((t) => `<${t}>\n${extractTag(raw, t).content}\n</${t}>`).join('\n\n');
             const prompt = `下面几段本该是 JSON，但格式写坏了，解析不了。请只修正格式，让每段都是能被 JSON.parse 解析的合法 JSON：
@@ -1988,9 +2015,7 @@ ${blocks}`;
             try {
                 if (E.stopRequested) throw new Error('ABORTED');
                 const messages = buildMessages(prompt);
-                const fixed = await cfg.callModel(messages, { layer: i, attempt: 0, prompt, purpose: 'repair' });
-                E.stats.inputTokens += estimateTokens(messages.map((m) => m.content).join('\n'));
-                E.stats.outputTokens += estimateTokens(fixed);
+                const fixed = addUsage(r, messages, await cfg.callModel(messages, { layer: i, attempt: 0, prompt, purpose: 'repair' }));
                 let out = raw;
                 for (const t of tags) {
                     const x = extractTag(fixed, t);
@@ -2016,7 +2041,7 @@ ${blocks}`;
                 r.attempts = attempt + 1;
                 let raw;
                 try {
-                    raw = await cfg.callModel(req.messages, { layer: i, attempt, prompt: req.prompt });
+                    raw = addUsage(r, req.messages, await cfg.callModel(req.messages, { layer: i, attempt, prompt: req.prompt }));
                 } catch (e) {
                     lastErr = e;
                     emit('layer-retry', { index: i, attempt, error: String(e.message || e) });
@@ -2025,13 +2050,11 @@ ${blocks}`;
                 const layerNow = E.layers[i];
                 const popts = { translate: !!layerNow.translate, bodyTag: settings.bodyTag };
                 let parsed = parseLayerResponse(raw, popts);
-                E.stats.inputTokens += estimateTokens(req.messages.map((m) => m.content).join('\n'));
-                E.stats.outputTokens += estimateTokens(raw);
                 // 正文没问题、只是 JSON 块写坏了：单独让 AI 修格式（只回几个 JSON，很省），
                 // 修不好就丢掉坏的那几块，保住正文，不整层重写
                 if (!parsed.ok && parsed.jsonOnly) {
                     emit('layer-repair', { index: i, error: parsed.errors.join('；') });
-                    raw = await repairJsonBlocks(i, raw, parsed.errors);
+                    raw = await repairJsonBlocks(i, raw, parsed.errors, r);
                     parsed = parseLayerResponse(raw, popts);
                     if (!parsed.ok && parsed.jsonOnly) parsed = parseLayerResponse(raw, { ...popts, lenient: true });
                     if (parsed.warnings.length) emit('layer-warn', { index: i, warnings: parsed.warnings });
@@ -2236,7 +2259,7 @@ ${sums}`;
 
         async function generateCardInfo() {
             const req = buildCardInfoRequest();
-            const raw = await cfg.callModel(req.messages, { layer: -1, attempt: 0, prompt: req.prompt, purpose: 'card' });
+            const raw = addUsage(null, req.messages, await cfg.callModel(req.messages, { layer: -1, attempt: 0, prompt: req.prompt, purpose: 'card' }));
             E.cardInfo = { description: extractTag(raw, '简介').content, scenario: extractTag(raw, '场景').content };
             return E.cardInfo;
         }
