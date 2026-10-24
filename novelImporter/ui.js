@@ -179,6 +179,7 @@
             { key: 'alignToChapter', label: '尽量在章节标题处分层', type: 'check' },
             { key: 'chapterRegex', label: '章节标题正则', type: 'text', wide: true },
             { key: 'adPatterns', label: '广告行规则（每行一条正则，命中的行删掉）', type: 'lines' },
+            { key: 'keepSeparatorLines', label: '保留「=====」这类分隔线', type: 'check', hint: '不勾的话，按上面的「^=+$」等规则当广告行删掉；改了要重新选一次小说才生效' },
             { key: 'adRemovePrevLine', label: '同时删掉广告行上面那行短标题（如「书名」+「请收藏：」）', type: 'check' },
             { key: 'inlineAdPatterns', label: '行内水印规则（每行一条正则，只删命中的那段，如「bg90○ cc」）', type: 'lines' },
             { key: 'repeatParaLimit', label: '全书重复几次以上的段落当垃圾段删掉', type: 'number', hint: '盗版源常把整章换成同一段垃圾文字；0 为不删，默认 3' },

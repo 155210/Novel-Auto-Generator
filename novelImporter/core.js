@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.28';
+    const VERSION = '1.4.29';
 
     // ============================================
     // 默认配置
@@ -30,6 +30,19 @@
         '请收藏[:：]?',
         '(最新章节|全文阅读|免费阅读|手机阅读|无弹窗|笔趣阁|www\\.|\\.com|\\.net)',
     ];
+
+    /** 勾了「保留分隔线」时，去掉会删「=====」这类分隔线的广告规则 */
+    function adPatternsFor(settings) {
+        const list = (settings && settings.adPatterns) || [];
+        if (!settings || !settings.keepSeparatorLines) return list;
+        return list.filter((p) => {
+            try {
+                return !['=====', '＝＝＝＝＝', '-----', '*****', '~~~~~', '—————'].some((x) => new RegExp(p).test(x));
+            } catch (e) {
+                return true;
+            }
+        });
+    }
 
     // 行内水印：只删掉命中的那一段，不删整行（如「bg90○ cc」「xunbeiyi8点cc」）
     const DEFAULT_INLINE_AD_PATTERNS = [
@@ -134,6 +147,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         alignToChapter: true,
         chapterRegex: DEFAULT_CHAPTER_REGEX,
         adPatterns: DEFAULT_AD_PATTERNS.slice(),
+        keepSeparatorLines: false, // 保留「=====」这类分隔线（不按广告行删）
         adRemovePrevLine: true,
         inlineAdPatterns: DEFAULT_INLINE_AD_PATTERNS.slice(),
         // 全书出现这么多次以上的长段落当作盗版站塞的垃圾段删掉，0 为不删
@@ -2101,7 +2115,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         }
 
         function prepare(text) {
-            const cleaned = cleanText(text, settings.adPatterns, settings.adRemovePrevLine, settings.chapterRegex, {
+            const cleaned = cleanText(text, adPatternsFor(settings), settings.adRemovePrevLine, settings.chapterRegex, {
                 inlinePatterns: settings.inlineAdPatterns,
                 repeatLimit: settings.repeatParaLimit,
                 repeatMinChars: settings.repeatParaMinChars,
@@ -2983,6 +2997,7 @@ ${sums}`;
         DEFAULT_SETTINGS,
         DEFAULT_CHAPTER_REGEX,
         DEFAULT_AD_PATTERNS,
+        adPatternsFor,
         DEFAULT_INLINE_AD_PATTERNS,
         DEFAULT_REWRITE_PROMPT,
         DEFAULT_DIVERGENCE_RULES,
