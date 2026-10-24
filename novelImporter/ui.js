@@ -2298,6 +2298,8 @@
                 const extra = $('nim-json-fb').value.trim();
                 const usePreset = $('nim-json-preset').checked;
                 collectFields();
+                // 点过停止后这个标记还留着，不清掉请求一发就会被当成已停止
+                State.stopped = false;
                 jsonBtn.disabled = true;
                 log(`第 ${i + 1} 层只重新输出 JSON${extra ? `：${extra}` : ''}`);
                 try {
