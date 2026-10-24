@@ -297,7 +297,8 @@
                 label: '词语替换（导出和导入酒馆时替换）',
                 type: 'textarea',
                 rows: 4,
-                hint: '每行一条：原词 → 新词（也可以写 ->）；新词留空就是删掉；原词写成 /正则/ 按正则替换。楼层、世界书、表格、人设都会换，已生成的层不用重跑',
+                hint: '每行一条：原词 → 新词（也可以写 ->）；新词留空就是删掉；原词写成 /正则/ 按正则替换。楼层、世界书、表格、人设都会换。点「立即应用到已生成的层」会直接改掉已经存下来的内容',
+                button: { id: 'nim-wr-apply', label: '立即应用到已生成的层' },
             },
             {
                 key: 'floorTagsBefore',
@@ -366,7 +367,8 @@
             input = `<input id="${id}" class="nim-input" type="${t}" ${f.step ? `step="${f.step}"` : ''} data-key="${f.key}" data-type="${f.type}">`;
         }
         const reset = f.reset ? ` <button type="button" class="nim-btn ghost sm" data-reset="${f.key}">恢复默认</button>` : '';
-        return `<div class="nim-field${wide || f.wide ? ' wide' : ''}"><label for="${id}">${esc(f.label)}${hint}${reset}</label>${input}</div>`;
+        const btn = f.button ? ` <button type="button" class="nim-btn ghost sm" id="${f.button.id}">${esc(f.button.label)}</button>` : '';
+        return `<div class="nim-field${wide || f.wide ? ' wide' : ''}"><label for="${id}">${esc(f.label)}${hint}${reset}${btn}</label>${input}</div>`;
     }
 
     function fillFields() {
@@ -3021,6 +3023,22 @@ select.nim-input{appearance:auto;}
                 toast('已恢复默认', 'success');
             }),
         );
+        on('nim-wr-apply', 'click', (ev) => {
+            ev.preventDefault();
+            const e = State.engine;
+            if (!e) return toast('请先选择小说', 'warning');
+            if (e.running) return toast('正在处理中，先暂停再替换', 'warning');
+            collectFields();
+            const text = State.settings.wordReplace || '';
+            if (!C.parseWordReplace(text).length) return toast('还没填替换规则', 'warning');
+            if (!confirm('把替换规则直接写进已生成的层（正文、世界书、表格都会改）？改完不能撤销，只能重跑那一层。')) return;
+            const n = e.applyReplaceToResults(text);
+            if (!n) return toast('已生成的层里没有要替换的词', 'info');
+            saveProgress();
+            renderAll();
+            toast(`已替换 ${n} 层`, 'success');
+            log(`词语替换已写入 ${n} 层`);
+        });
         on('nim-preview', 'click', async () => {
             if (!State.engine) return toast('请先选择小说', 'warning');
             collectFields();

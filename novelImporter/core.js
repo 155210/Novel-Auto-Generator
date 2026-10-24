@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.36';
+    const VERSION = '1.4.37';
 
     // ============================================
     // 默认配置
@@ -2595,6 +2595,33 @@ ${blocks}`;
             return redoLayer(i, { customPrompt: String(prompt || '') });
         }
 
+        /**
+         * 词语替换直接改到已生成的层里（正文、标题、摘要、世界书、表格、原始回复），之后的展示、导出、重做都用改过的。
+         * 请求记录不动。返回改到的层数。
+         */
+        function applyReplaceToResults(text) {
+            const rules = parseWordReplace(text);
+            if (!rules.length) return 0;
+            const deep = (v) => {
+                if (typeof v === 'string') return applyWordReplace(v, rules);
+                if (Array.isArray(v)) return v.map(deep);
+                if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [applyWordReplace(k, rules), deep(x)]));
+                return v;
+            };
+            let changed = 0;
+            for (let i = 0; i < E.results.length; i++) {
+                const r = E.results[i];
+                if (!r || r.status !== 'done') continue;
+                const nr = { ...r, raw: deep(r.raw), finalParas: deep(r.finalParas), parsed: deep(r.parsed), tableActions: deep(r.tableActions) };
+                if (JSON.stringify([nr.raw, nr.finalParas, nr.parsed]) === JSON.stringify([r.raw, r.finalParas, r.parsed])) continue;
+                nr.appliedReplace = [r.appliedReplace, String(text).trim()].filter(Boolean).join('\n');
+                // 换成新对象，重放缓存从这层往后重新算（世界书、表格跟着变）
+                E.results[i] = nr;
+                changed++;
+            }
+            return changed;
+        }
+
         /** 从第 i 层起全部重跑 */
         function resetFrom(i) {
             for (let k = i; k < E.results.length; k++) E.results[k] = null;
@@ -2650,12 +2677,15 @@ ${blocks}`;
             const r = E.results[i];
             const layer = E.layers[i];
             if (!r || r.status !== 'done' || !layer) return null;
+            // 用「立即应用」改过存档的层，标记版也照样换一遍，才对得上
+            const appliedRules = r.appliedReplace ? parseWordReplace(r.appliedReplace) : [];
+            const applied = (arr) => (appliedRules.length ? arr.map((p) => applyWordReplace(p, appliedRules)) : arr);
             let paras;
             const mt = r.parsed && r.parsed.markedText;
             if (r.patchStats && r.patchStats.rewritten && mt) {
                 // 独占一行的标记并到相邻行，免得分段时多出只有标记的空段
                 const conv = mt.replace(/(^|\n)[ \t]*⟪[ \t]*\n/g, '$1⟪').replace(/\n[ \t]*⟫[ \t]*(?=\n|$)/g, '⟫').replace(/⟪/g, MARK_OPEN).replace(/⟫/g, MARK_CLOSE);
-                const marked = ensureImageMarkers(layer.paras, splitParagraphs(conv));
+                const marked = applied(ensureImageMarkers(layer.paras, splitParagraphs(conv)));
                 if (stripMarks(marked.join('\n')) === r.finalParas.join('\n')) paras = marked;
             }
             if (paras) {
@@ -2666,7 +2696,7 @@ ${blocks}`;
                 const orig = new Set(layer.paras.map((p) => norm(p.text)));
                 paras = r.finalParas.map((t) => (orig.has(norm(t)) || !norm(t) ? t : MARK_OPEN + t + MARK_CLOSE));
             } else {
-                paras = applyPatches(layer.paras, (r.parsed && r.parsed.patches) || [], { maxPatchChars: settings.maxPatchChars, mark: true }).paras;
+                paras = applied(applyPatches(layer.paras, (r.parsed && r.parsed.patches) || [], { maxPatchChars: settings.maxPatchChars, mark: true }).paras);
                 if (stripMarks(paras.join('\n')) !== r.finalParas.join('\n')) return null;
             }
             let n = 0;
@@ -2825,6 +2855,7 @@ ${sums}`;
             redoWithPrompt,
             redoWithFeedback,
             regenJson,
+            applyReplaceToResults,
             resetFrom,
             replay,
             renderFloors,

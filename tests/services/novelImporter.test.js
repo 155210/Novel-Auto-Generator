@@ -587,6 +587,27 @@ describe('运行引擎', () => {
         expect(C.parseWordReplace('a → b\n/[/ → x\n没箭头').length).toBe(1);
     });
 
+    it('词语替换可以直接写进已生成的层', async () => {
+        const { engine, calls } = makeEngine(normal);
+        await engine.run();
+        const before = calls.length;
+        expect(engine.applyReplaceToResults('')).toBe(0);
+        expect(engine.applyReplaceToResults('裘月寒 → 裘寒月')).toBeGreaterThan(0);
+        const r = engine.results[0];
+        expect(r.finalParas.join('')).toContain('裘寒月');
+        expect(r.finalParas.join('')).not.toContain('裘月寒');
+        expect(r.raw).not.toContain('裘月寒');
+        const f = engine.renderFloors()[0];
+        expect(f.mes).toContain('裘寒月');
+        expect(f.mes).not.toContain('裘月寒');
+        expect(JSON.stringify(engine.exportWorldbook())).not.toContain('裘月寒');
+        const marked = engine.markedBody(0);
+        expect(marked).not.toBeNull();
+        expect(C.stripMarks(marked)).toBe(f.body);
+        expect(engine.applyReplaceToResults('裘月寒 → 裘寒月')).toBe(0);
+        expect(calls.length).toBe(before);
+    });
+
     it('分隔线不会把上一行变成 Markdown 标题，**第二话** 也认成章节标题', () => {
         const lines = C.formatBodyHeadings(['笑了很久。', '---', '**第二话 试着幼驯染**', '正文', '=====', '后文', '***'], {}, '话');
         expect(C.fixSeparators(lines, 'bt')).toEqual(['笑了很久。', '<bt>\n#第2话：试着幼驯染\n</bt>', '正文', '', '=====', '后文']);
