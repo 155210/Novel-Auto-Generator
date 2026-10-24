@@ -574,6 +574,19 @@ describe('运行引擎', () => {
         expect(C.adPatternsFor({ adPatterns: C.DEFAULT_AD_PATTERNS, keepSeparatorLines: true })).not.toContain('^=+$');
     });
 
+    it('楼层里可以额外放 AI 回复里的标签', async () => {
+        const { engine } = makeEngine((layer) => normal(layer) + '\n<Plotline>伏笔一</Plotline>\n<Calculated_data>次数: 1</Calculated_data>', { floorTags: 'Plotline，<Calculated_data>, 没有的, 正文' });
+        await engine.run();
+        const mes = engine.renderFloors()[0].mes;
+        expect(mes).toContain('<Plotline>\n伏笔一\n</Plotline>');
+        expect(mes.indexOf('<Calculated_data>') > mes.indexOf('</正文>')).toBe(true);
+        expect(mes).not.toContain('<没有的>');
+        expect(mes.split('<正文>').length).toBe(2);
+        const plain = makeEngine((layer) => normal(layer) + '\n<Plotline>伏笔一</Plotline>');
+        await plain.engine.run();
+        expect(plain.engine.renderFloors()[0].mes).not.toContain('Plotline');
+    });
+
     it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
         let runningDuring = null;
         let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';

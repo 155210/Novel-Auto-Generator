@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.31';
+    const VERSION = '1.4.32';
 
     // ============================================
     // 默认配置
@@ -184,6 +184,7 @@ P段号 |  | ++新段落          在该段之后另起一段
 
         // 标签与标题
         titleTag: 'bt',
+        floorTags: '', // 额外放进楼层的标签：从 AI 原始回复里取，放在正文后面，逗号分隔
         bodyTag: '正文',
         titleMode: 'ai', // ai：AI 起标题；original：用原文章节标题
         titleFormat: '#第{n}{unit}：{title}',
@@ -2541,7 +2542,7 @@ ${blocks}`;
                     title: conv(r.parsed.title),
                     heading,
                     body: conv(parts.paras.join('\n')),
-                    extras: parts.extras.map(conv),
+                    extras: parts.extras.concat(floorTagBlocks(r, parts.extras)).map(conv),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
                     divergence: r.inDivergence,
@@ -2592,6 +2593,18 @@ ${blocks}`;
         /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
         function bodyParas(i, paras) {
             return floorParts(i, paras).paras;
+        }
+
+        /** 设置里要额外放进楼层的标签：从这层 AI 的原始回复里取（已经从正文里挪出来的不重复放） */
+        function floorTagBlocks(r, have) {
+            const out = [];
+            for (const tag of splitTagList(settings.floorTags)) {
+                if (tag === settings.titleTag || tag === settings.bodyTag) continue;
+                if (have.some((x) => x.startsWith(`<${tag}>`))) continue;
+                const x = extractTag(r.raw, tag);
+                if (x.closed && x.content) out.push(`<${tag}>\n${x.content}\n</${tag}>`);
+            }
+            return out;
         }
 
         /** 楼层正文拆成：正文段落（别的标签块拿掉）+ 拿出来的标签块 */

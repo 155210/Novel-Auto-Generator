@@ -292,6 +292,12 @@
             { key: 'aliasTarget', label: '自定义称呼', type: 'text' },
             { key: 'titleTag', label: '标题标签', type: 'text' },
             { key: 'bodyTag', label: '正文标签', type: 'text' },
+            {
+                key: 'floorTags',
+                label: '楼层里额外放的标签',
+                type: 'text',
+                hint: '逗号分隔，比如 Calculated_data, Plotline。从这层 AI 的原始回复里取，放在正文后面、表格前面；回复里没有就不放。想让 AI 输出这些标签，在「输出格式」里加上',
+            },
         ],
         worldbook: [
             { key: 'worldbookEnabled', label: '提取世界书', type: 'check' },
