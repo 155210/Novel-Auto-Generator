@@ -31,6 +31,10 @@
         engine: null,
         tableTemplate: null,
         seedWorldbook: null,
+        seedGlossary: null, // [{source, target, note}]
+        images: [], // EPUB 插图：[{id, name, mime, data(base64)}]，正文里是〔插图id〕
+        imagePaths: null, // 已上传到酒馆的插图：{card, map: {id: path}}
+        tab: 'file',
         meta: { cardName: '', worldName: '', avatar: '', description: '', scenario: '' },
         selected: null,
         stream: '',
@@ -143,12 +147,57 @@
         layer: [
             { key: 'layerChars', label: '每层字数', type: 'number', hint: '默认 15000' },
             { key: 'alignToChapter', label: '尽量在章节标题处分层', type: 'check' },
-            { key: 'chapterRegex', label: '章节标题正则', type: 'text' },
+            { key: 'chapterRegex', label: '章节标题正则', type: 'text', wide: true },
             { key: 'adPatterns', label: '广告行规则（每行一条正则，命中的行删掉）', type: 'lines' },
             { key: 'adRemovePrevLine', label: '同时删掉广告行上面那行短标题（如「书名」+「请收藏：」）', type: 'check' },
             { key: 'inlineAdPatterns', label: '行内水印规则（每行一条正则，只删命中的那段，如「bg90○ cc」）', type: 'lines' },
             { key: 'repeatParaLimit', label: '全书重复几次以上的段落当垃圾段删掉', type: 'number', hint: '盗版源常把整章换成同一段垃圾文字；0 为不删，默认 3' },
             { key: 'repeatParaMinChars', label: '参与重复检测的最短段落字数', type: 'number', hint: '默认 12，太短的句子不算' },
+        ],
+        translate: [
+            {
+                key: 'translateMode',
+                label: '外文小说翻译成简体中文',
+                type: 'select',
+                options: [
+                    ['auto', '自动识别（日文、英文、韩文等整本翻译）'],
+                    ['on', '总是翻译'],
+                    ['off', '不翻译'],
+                ],
+                hint: '改了要重新分层',
+            },
+            { key: 'glossaryEnabled', label: '翻译时用术语表统一人名地名', type: 'check', hint: '每层顺带补充新词，只发给 AI，不进正文' },
+            { key: 'glossaryMax', label: '每层最多带多少条术语', type: 'number', hint: '只带本层原文里出现的，默认 300' },
+            {
+                key: 'titleMode',
+                label: '楼层标题',
+                type: 'select',
+                options: [
+                    ['ai', 'AI 按剧情起标题，章号用层号'],
+                    ['original', '用原文章节标题和章号'],
+                ],
+            },
+            { key: 'titleFormat', label: '标题格式（写在 <bt> 里）', type: 'text', hint: '{n} 章号，{unit} 章或话，{title} 标题' },
+            {
+                key: 'chapterUnit',
+                label: '用「章」还是「话」',
+                type: 'select',
+                options: [
+                    ['auto', '跟原文'],
+                    ['章', '第X章'],
+                    ['话', '第X话'],
+                ],
+            },
+            {
+                key: 'imageMode',
+                label: 'EPUB 插图',
+                type: 'select',
+                options: [
+                    ['bbi', '柏宝绘格式（聊天记录导出能打包进 EPUB）'],
+                    ['img', '直接插入图片'],
+                    ['off', '不导入插图'],
+                ],
+            },
         ],
         rewrite: [
             { key: 'expansionRatio', label: '扩写比例 %', type: 'number', hint: '补充内容约占原文字数的比例，默认 10' },
@@ -196,6 +245,8 @@
         ],
         table: [
             { key: 'tablesEnabled', label: '每层填写记忆表格', type: 'check' },
+            { key: 'useMessageTemplate', label: '提示词里带上记忆插件的「消息模板」', type: 'check', hint: '只用里面的填写规则，insertRow 写法会去掉' },
+            { key: 'tableMessageTemplate', label: '消息模板（从插件读取或导入模板文件时自动填入）', type: 'textarea', rows: 6 },
             { key: 'writeTableEdit', label: '楼层里写入 <tableEdit>（导入酒馆后重建表格要用）', type: 'check' },
             { key: 'tableRoles.singleRow', label: '只保留一行的表（每行一个表名）', type: 'lines' },
             { key: 'tableRoles.appendOnly', label: '只能插入的表（每行一个表名）', type: 'lines' },
@@ -220,12 +271,14 @@
 
     function fieldHtml(f) {
         const id = `nim-f-${f.key.replace(/\./g, '-')}`;
-        const hint = f.hint ? ` <span class="nim-hint">${esc(f.hint)}</span>` : '';
         if (f.type === 'check') {
-            return `<label class="nim-check"><input type="checkbox" id="${id}" data-key="${f.key}" data-type="check"> ${esc(f.label)}</label>`;
+            const hint = f.hint ? `<span class="nim-hint">${esc(f.hint)}</span>` : '';
+            return `<label class="nim-check"><input type="checkbox" id="${id}" data-key="${f.key}" data-type="check"><span class="nim-switch"></span><span>${esc(f.label)}${hint}</span></label>`;
         }
+        const hint = f.hint ? ` <span class="nim-hint">· ${esc(f.hint)}</span>` : '';
         let input;
-        if (f.type === 'textarea' || f.type === 'lines' || f.type === 'json') {
+        const wide = f.type === 'textarea' || f.type === 'lines' || f.type === 'json';
+        if (wide) {
             input = `<textarea id="${id}" class="nim-input nim-textarea" rows="${f.rows || 4}" data-key="${f.key}" data-type="${f.type}"></textarea>`;
         } else if (f.type === 'select') {
             input = `<select id="${id}" class="nim-input" data-key="${f.key}" data-type="select">${f.options.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select>`;
@@ -233,7 +286,7 @@
             const t = f.type === 'number' ? 'number' : f.type === 'password' ? 'password' : 'text';
             input = `<input id="${id}" class="nim-input" type="${t}" ${f.step ? `step="${f.step}"` : ''} data-key="${f.key}" data-type="${f.type}">`;
         }
-        return `<div class="nim-field"><label for="${id}">${esc(f.label)}${hint}</label>${input}</div>`;
+        return `<div class="nim-field${wide || f.wide ? ' wide' : ''}"><label for="${id}">${esc(f.label)}${hint}</label>${input}</div>`;
     }
 
     function fillFields() {
@@ -459,6 +512,9 @@
             fileName: State.fileName,
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
+            seedGlossary: State.seedGlossary,
+            images: State.images,
+            imagePaths: State.imagePaths,
             meta: State.meta,
             engine: State.engine ? State.engine.serialize() : null,
         };
@@ -476,6 +532,9 @@
         State.fileName = snap.fileName || '';
         State.tableTemplate = snap.tableTemplate || null;
         State.seedWorldbook = snap.seedWorldbook || null;
+        State.seedGlossary = snap.seedGlossary || null;
+        State.images = snap.images || [];
+        State.imagePaths = snap.imagePaths || null;
         State.meta = { ...State.meta, ...(snap.meta || {}) };
         if (snap.engine) {
             State.engine = makeEngine(snap.engine.settings);
@@ -494,6 +553,7 @@
             messageChain: State.settings.messageChain,
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
+            seedGlossary: State.seedGlossary,
             callModel,
             onEvent: onEngineEvent,
         });
@@ -514,6 +574,8 @@
             saveProgress();
         } else if (type === 'review') {
             State.selected = p.index;
+            switchTab('run');
+            openDetail(true);
             saveProgress();
         } else if (type === 'error') log(`出错：${p.error}`);
         renderAll();
@@ -530,6 +592,7 @@
         State.selected = null;
         const st = State.engine.stats;
         log(`分成 ${State.engine.layers.length} 层，去掉广告行 ${st.cleanedLines} 行，重复垃圾段 ${st.repeatedLines} 段，行内水印 ${st.inlineAds} 处`);
+        log(`标题按「第X${st.chapterUnit}」${st.translate ? '，识别为外文小说，会整本翻译成简体中文' : ''}${st.images ? `，正文里有 ${st.images} 处插图` : ''}`);
         if (st.emptyChapters.length) {
             const list = st.emptyChapters.slice(0, 20).join('、') + (st.emptyChapters.length > 20 ? ` 等` : '');
             log(`⚠ 有 ${st.emptyChapters.length} 章去掉垃圾内容后没有正文，原文可能被盗版站替换了，建议换个源：${list}`);
@@ -554,12 +617,8 @@
         await State.engine.run();
         renderAll();
         if (State.engine.reviewing === null && State.engine.results.every((r) => r && r.status === 'done')) {
-            log('全部层已完成，可以在下面「导入酒馆与导出」一键导入');
-            const sec = $('nim-sec-export');
-            if (sec) {
-                sec.open = true;
-                sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            }
+            log('全部层已完成，可以在「导入酒馆」一键导入');
+            switchTab('export');
         }
     }
 
@@ -627,7 +686,7 @@
                 description: State.meta.description,
                 scenario: State.meta.scenario,
                 avatar: State.meta.avatar,
-                chatArray: out.chat,
+                chatArray: await attachImages(out.chat, out.cardName, true),
                 expectedTables: State.settings.tablesEnabled && State.tableTemplate ? out.tables : null,
                 onStep: (s) => log(`导入：${s}`),
                 onProgress: (i, n) => setStatus(`重建表格 ${i}/${n}`),
@@ -684,7 +743,7 @@
             return toast(e.message, 'warning');
         }
         const n = out.cardName;
-        if (kind === 'chat') download(C.chatToJsonl(out.chat), `${n}.jsonl`, 'application/jsonl');
+        if (kind === 'chat') attachImages(out.chat, n, false).then((chat) => download(C.chatToJsonl(chat), `${n}.jsonl`, 'application/jsonl'));
         else if (kind === 'world') download(JSON.stringify(out.worldbook, null, 2), `${out.worldName}.json`);
         else if (kind === 'card')
             download(
@@ -697,9 +756,10 @@
             );
         else if (kind === 'persona') download(out.persona.description, `${n}-用户人设.txt`, 'text/plain');
         else if (kind === 'tables') download(JSON.stringify(out.tables, null, 2), `${n}-表格.json`);
+        else if (kind === 'glossary') download(JSON.stringify(State.engine.finalState().glossary || [], null, 2), `${n}-术语表.json`);
         else if (kind === 'txt') {
             const txt = out.floors
-                .map((f) => `${f.title}\n\n${f.body}`)
+                .map((f) => `${f.heading || f.title}\n\n${f.body.replace(C.IMAGE_MARKER_RE, '[插图$1]')}`)
                 .join('\n\n');
             download(txt, `${n}-改写.txt`, 'text/plain');
         }
@@ -741,49 +801,247 @@
         }
     }
 
+
+    // ============================================
+    // 插图（EPUB）
+    // ============================================
+
+    const UPLOAD_FORMATS = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'];
+
+    /** 和柏宝绘、聊天记录导出插件同一个哈希：extra.bbiImage 按它找图 */
+    function bbiPromptHash(text) {
+        let h1 = 0xdeadbeef;
+        let h2 = 0x41c6ce57;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+    }
+
+    /** 酒馆收不了的格式（主要是 SVG）先画成 PNG */
+    async function toUploadable(img) {
+        const ext = (img.mime.split('/')[1] || '').replace('svg+xml', 'svg');
+        if (UPLOAD_FORMATS.includes(ext)) return { data: img.data, format: ext === 'jpeg' ? 'jpg' : ext };
+        const el = new Image();
+        el.src = `data:${img.mime};base64,${img.data}`;
+        await el.decode();
+        const cv = document.createElement('canvas');
+        cv.width = el.naturalWidth || 1000;
+        cv.height = el.naturalHeight || 1400;
+        cv.getContext('2d').drawImage(el, 0, 0, cv.width, cv.height);
+        return { data: cv.toDataURL('image/png').split(',')[1], format: 'png' };
+    }
+
+    /**
+     * 把楼层里的〔插图N〕换成插图。upload 为 true 时先把用到的图传到酒馆（user/images/角色卡名/）。
+     * 柏宝绘格式：正文写 <bbi_image>插图N</bbi_image>，路径记在 extra.bbiImage["0"][哈希] 里，
+     * 聊天记录导出插件按同样的规则找到图片打进 EPUB。
+     */
+    async function attachImages(chat, cardName, upload) {
+        const mode = State.settings.imageMode || 'bbi';
+        const re = () => new RegExp(C.IMAGE_MARKER_RE.source, 'g');
+        const used = new Set();
+        for (const m of chat.slice(1)) for (const x of m.mes.matchAll(re())) used.add(Number(x[1]));
+        if (!used.size) return chat;
+        if (!State.imagePaths || State.imagePaths.card !== cardName) State.imagePaths = { card: cardName, map: {} };
+        const paths = State.imagePaths.map;
+        const byId = new Map((State.images || []).map((im) => [im.id, im]));
+        if (upload && mode !== 'off') {
+            const todo = [...used].filter((id) => !paths[id] && byId.has(id));
+            let k = 0;
+            for (const id of todo) {
+                setStatus(`上传插图 ${++k}/${todo.length}`);
+                try {
+                    const u = await toUploadable(byId.get(id));
+                    paths[id] = await ST.uploadImage(cardName, `${baseName()}-插图${id}`, u.data, u.format);
+                } catch (e) {
+                    log(`插图 ${id} 上传失败：${e.message}`);
+                }
+            }
+            if (todo.length) log(`已上传插图 ${Object.keys(paths).length} 张`);
+            saveProgress();
+        }
+        return chat.map((m, i) => {
+            if (i === 0 || !re().test(m.mes)) return m;
+            let seq = 0;
+            const bucket = {};
+            const mes = m.mes
+                .replace(new RegExp(`\\n?${C.IMAGE_MARKER_RE.source}\\n?`, 'g'), (all, id) => {
+                    const path = paths[id];
+                    if (mode === 'off' || !path) return '\n';
+                    if (mode === 'img') return `\n<img src="${path}" alt="插图${id}">\n`;
+                    const tag = `<bbi_image>插图${id}</bbi_image>`;
+                    const h = bbiPromptHash(tag);
+                    (bucket[h] = bucket[h] || []).push({ path, slotSeq: seq++, status: 'success', createdAt: Date.now() });
+                    return `\n${tag}\n`;
+                })
+                .replace(/\n{3,}/g, '\n\n');
+            const extra = { ...(m.extra || {}) };
+            if (Object.keys(bucket).length) extra.bbiImage = { 0: bucket };
+            return { ...m, mes, swipes: [mes], extra };
+        });
+    }
+
+    /** 先用酒馆自带的 JSZip（不用联网），没有再走 CDN */
+    async function loadJSZip() {
+        if (window.JSZip) return window.JSZip;
+        try {
+            await import('/lib/jszip.min.js');
+            if (window.JSZip) return window.JSZip;
+        } catch (e) {
+            /* 老版本酒馆没有，走 CDN */
+        }
+        await new Promise((resolve, reject) => {
+            const sc = document.createElement('script');
+            sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+            sc.onload = resolve;
+            sc.onerror = () => reject(new Error('JSZip 加载失败'));
+            document.head.appendChild(sc);
+        });
+        return window.JSZip;
+    }
+
+    function resolvePath(base, href) {
+        const parts = (base + decodeURIComponent(href.split('#')[0])).split('/');
+        const out = [];
+        for (const p of parts) {
+            if (p === '..') out.pop();
+            else if (p !== '.' && p !== '') out.push(p);
+        }
+        return out.join('/');
+    }
+
+    /** 读 EPUB：按书脊顺序取正文，插图在原位置留〔插图N〕，图片数据另存 */
+    async function parseEpubWithImages(buf) {
+        const JSZip = await loadJSZip();
+        const zip = await JSZip.loadAsync(buf);
+        const xml = (t) => new DOMParser().parseFromString(t, 'application/xml');
+        const container = zip.file('META-INF/container.xml');
+        if (!container) throw new Error('不是有效的 EPUB');
+        const opfPath = xml(await container.async('string')).querySelector('rootfile')?.getAttribute('full-path');
+        const opfFile = opfPath && zip.file(opfPath);
+        if (!opfFile) throw new Error('不是有效的 EPUB');
+        const opf = xml(await opfFile.async('string'));
+        const base = opfPath.includes('/') ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1) : '';
+        const manifest = {};
+        opf.querySelectorAll('manifest > item, manifest item').forEach((it) => {
+            manifest[it.getAttribute('id')] = { href: it.getAttribute('href'), type: it.getAttribute('media-type') || '' };
+        });
+        const title = (opf.querySelector('metadata title') || opf.getElementsByTagName('dc:title')[0])?.textContent?.trim() || '';
+        const images = [];
+        const seen = new Map(); // zip 路径 -> id，同一张图多次出现只存一份
+        const texts = [];
+        for (const ref of opf.querySelectorAll('spine itemref')) {
+            const item = manifest[ref.getAttribute('idref')];
+            if (!item || !/html/.test(item.type)) continue;
+            const path = resolvePath(base, item.href);
+            const file = zip.file(path);
+            if (!file) continue;
+            const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+            const doc = new DOMParser().parseFromString(await file.async('string'), 'text/html');
+            if (!doc.body) continue;
+            doc.querySelectorAll('script, style').forEach((el) => el.remove());
+            for (const el of [...doc.body.querySelectorAll('img, image')]) {
+                const src = el.getAttribute('src') || el.getAttribute('href') || el.getAttribute('xlink:href') || '';
+                const zp = src && !/^(data|https?):/i.test(src) ? resolvePath(dir, src) : '';
+                const zf = zp && zip.file(zp);
+                let marker = '';
+                if (zf) {
+                    let id = seen.get(zp);
+                    if (!id) {
+                        id = images.length + 1;
+                        const ext = (zp.match(/\.([a-z0-9]+)$/i) || [])[1]?.toLowerCase() || 'png';
+                        const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp' }[ext] || 'image/png';
+                        images.push({ id, name: zp.split('/').pop(), mime, data: await zf.async('base64') });
+                        seen.set(zp, id);
+                    }
+                    marker = `\n〔插图${id}〕\n`;
+                }
+                // <svg><image/></svg> 整个换掉
+                const host = el.tagName.toLowerCase() === 'image' && el.closest('svg') ? el.closest('svg') : el;
+                host.replaceWith(doc.createTextNode(marker));
+            }
+            doc.querySelectorAll('br').forEach((el) => el.replaceWith('\n'));
+            doc.querySelectorAll('p, div, h1, h2, h3, h4, h5, h6, li, tr, blockquote, section, article').forEach((el) => el.append('\n'));
+            const text = (doc.body.textContent || '')
+                .replace(/[ \t]+/g, ' ')
+                .replace(/ ?\n ?/g, '\n')
+                .replace(/\n{2,}/g, '\n')
+                .trim();
+            if (text) texts.push(text);
+        }
+        return { title, text: texts.join('\n'), images };
+    }
+
     // ============================================
     // 文件导入
     // ============================================
 
     async function onNovelFile(file) {
         let text;
-        if (/\.epub$/i.test(file.name)) {
-            if (!window.EpubToTxt) return toast('EPUB 模块没加载，请先转成 TXT', 'error');
-            const r = await window.EpubToTxt.parseEpub(await file.arrayBuffer());
-            text = (r.chapters || []).map((c) => `${c.title || ''}\n${c.content || ''}`).join('\n\n') || r.content || '';
-        } else text = await decodeTxt(file);
+        State.images = [];
+        State.imagePaths = null;
+        try {
+            if (/\.epub$/i.test(file.name)) {
+                setStatus('正在读取 EPUB...');
+                const r = await parseEpubWithImages(await file.arrayBuffer());
+                text = r.text;
+                State.images = r.images;
+            } else text = await decodeTxt(file);
+        } catch (e) {
+            setStatus('');
+            return toast(`读取失败：${e.message}`, 'error');
+        }
+        setStatus('');
         State.text = text;
         State.fileName = file.name;
         State.engine = null;
         State.meta = { cardName: baseName(), worldName: baseName(), avatar: '', description: '', scenario: '' };
         renderExport();
-        log(`已读取 ${file.name}，${text.length} 字`);
+        log(`已读取 ${file.name}，${text.length} 字${State.images.length ? `，插图 ${State.images.length} 张` : ''}`);
         await prepareLayers();
+    }
+
+    function applyTemplate(tpl, messageTemplate, source) {
+        State.tableTemplate = tpl;
+        const withNotes = tpl.tables.filter((t) => t.note || t.insertNode || t.updateNode || t.deleteNode).length;
+        if (messageTemplate) {
+            State.settings.tableMessageTemplate = messageTemplate;
+            saveSettings();
+            fillFields();
+        }
+        const msg = `${source}：${tpl.tables.length} 张表，${withNotes} 张有填写说明${messageTemplate ? '，已读取消息模板' : '，没有消息模板'}`;
+        log(`${msg}（${tpl.tables.map((t) => t.name).join('、')}）`);
+        toast(msg, withNotes ? 'success' : 'warning');
+        // 还没开始跑的话，用新模板重建引擎
+        if (State.engine && !State.engine.results.some((r) => r && r.status === 'done')) {
+            State.engine = makeEngine(State.engine.settings);
+            State.engine.prepare(State.text);
+        }
+        saveProgress();
+        renderAll();
     }
 
     async function onTemplateFile(file) {
         try {
-            State.tableTemplate = C.parseTableTemplate(JSON.parse(await readFileText(file)));
-            log(`表格模板：${State.tableTemplate.tables.map((t) => t.name).join('、')}`);
-            // 还没开始跑的话，用新模板重建引擎
-            if (State.engine && !State.engine.results.some((r) => r && r.status === 'done')) {
-                State.engine = makeEngine(State.engine.settings);
-                State.engine.prepare(State.text);
-            }
-            saveProgress();
-            renderAll();
+            const json = JSON.parse(await readFileText(file));
+            applyTemplate(C.parseTableTemplate(json), (json && typeof json.message_template === 'string' && json.message_template) || '', '已导入表格模板');
         } catch (e) {
             toast(e.message, 'error');
         }
     }
 
+    /** 从插件读：表名和列取当前聊天里的表，填写说明和消息模板取插件设置 */
     function templateFromPlugin() {
         const live = ST.readPluginTables();
         if (!live || !live.length) return toast('没读到记忆插件的表格：请先打开一个有表格的聊天', 'warning');
-        State.tableTemplate = C.parseTableTemplate(live);
-        log(`从记忆插件读取表格：${State.tableTemplate.tables.map((t) => t.name).join('、')}（没有填写说明，建议用导出的模板文件）`);
-        saveProgress();
-        renderAll();
+        const notes = ST.readPluginTemplateNotes();
+        const list = live.map((t) => ({ tableName: t.name, columns: t.data[0] || [], ...(notes[t.name] || {}) }));
+        applyTemplate(C.parseTableTemplate(list), ST.readMessageTemplate(), '已从记忆插件读取');
     }
 
     async function onWorldbookFile(file) {
@@ -795,6 +1053,49 @@
             renderAll();
         } catch (e) {
             toast(`世界书读取失败：${e.message}`, 'error');
+        }
+    }
+
+    function setSeedGlossary(list, source) {
+        State.seedGlossary = C.normalizeGlossary(list);
+        log(`${source}：术语 ${State.seedGlossary.length} 条`);
+        toast(`术语表 ${State.seedGlossary.length} 条`, 'success');
+        if (State.engine) State.engine = rebuildEngineKeepResults();
+        saveProgress();
+        renderAll();
+    }
+
+    /** 换了初始术语表或世界书后，已跑完的层保留，后面的层用新的 */
+    function rebuildEngineKeepResults() {
+        const snap = State.engine.serialize();
+        const e = makeEngine(snap.settings);
+        e.restore(snap);
+        return e;
+    }
+
+    function glossaryFromTranslator() {
+        try {
+            const s = JSON.parse(localStorage.getItem('novelTranslateSettings') || '{}');
+            if (!Array.isArray(s.glossary) || !s.glossary.length) return toast('小说翻译模块里还没有术语表', 'warning');
+            setSeedGlossary(s.glossary, '已从小说翻译模块读取');
+        } catch (e) {
+            toast(`读取失败：${e.message}`, 'error');
+        }
+    }
+
+    async function onGlossaryFile(file) {
+        try {
+            const t = await readFileText(file);
+            let list;
+            try {
+                const j = JSON.parse(t);
+                list = Array.isArray(j) ? j : j.glossary || [];
+            } catch (e) {
+                list = C.parseGlossaryLines(t);
+            }
+            setSeedGlossary(list, `已导入 ${file.name}`);
+        } catch (e) {
+            toast(`术语表读取失败：${e.message}`, 'error');
         }
     }
 
@@ -823,6 +1124,8 @@
         if (!el) return;
         el.textContent = (el.textContent ? el.textContent + '\n' : '') + line;
         el.scrollTop = el.scrollHeight;
+        const last = $('nim-last-log');
+        if (last) last.textContent = msg;
     }
 
     function setStatus(s) {
@@ -839,44 +1142,96 @@
             if (!el) return;
             el.textContent = State.stream.slice(-3000);
             el.scrollTop = el.scrollHeight;
-            setStatus(`第 ${info.layer + 1} 层输出中：${State.stream.length} 字`);
+            setStatus(`第 ${info.layer + 1} 层输出中 · ${State.stream.length} 字`);
         });
     }
 
-    function statusIcon(r) {
-        if (!r) return '⏳';
-        return { running: '🔄', done: '✅', failed: '❌' }[r.status] || '⏳';
+    function switchTab(name) {
+        State.tab = name;
+        document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
+        document.querySelectorAll('#nim-modal .nim-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === name));
+        const body = document.querySelector('#nim-modal .nim-body');
+        if (body) body.scrollTop = 0;
     }
+
+    /** 手机上分层列表和单层详情分两屏，点一层进详情，「返回」回列表 */
+    function openDetail(on) {
+        const box = document.querySelector('#nim-modal .nim-runbox');
+        if (box) box.classList.toggle('detail-open', !!on);
+        const body = document.querySelector('#nim-modal .nim-body');
+        if (body && on && window.matchMedia('(max-width: 760px)').matches) body.scrollTop = 0;
+    }
+
+    function layerState(r, i, e) {
+        if (e.reviewing === i) return 'review';
+        if (!r) return 'todo';
+        return r.status;
+    }
+
+    const STATE_TEXT = { todo: '未开始', running: '处理中', done: '完成', failed: '失败', review: '待审阅' };
 
     function renderLayers() {
         const el = $('nim-layers');
         const e = State.engine;
         if (!el) return;
         if (!e || !e.layers.length) {
-            el.innerHTML = '<div class="nim-hint">选择文件后会显示分层</div>';
+            el.innerHTML = '<div class="nim-empty">选择小说后，这里会列出每一层</div>';
             return;
         }
-        const done = e.results.filter((r) => r && r.status === 'done').length;
-        $('nim-progress').textContent = `${done}/${e.layers.length} 层，估算已用 输入 ${e.stats.inputTokens} / 输出 ${e.stats.outputTokens} tokens`;
-        el.innerHTML = e.layers
-            .map((l, i) => {
-                const r = e.results[i];
-                const title = r && r.parsed ? r.parsed.title : (l.chapters[0] || l.paras[0].text).slice(0, 30);
-                const flags = [];
-                if (r && r.divergenceStart) flags.push('<span class="nim-tag nim-tag-red">改写起点</span>');
-                else if (r && r.inDivergence) flags.push('<span class="nim-tag nim-tag-orange">改写中</span>');
-                if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag">${r.patchStats.failed.length} 条补丁没对上</span>`);
-                if (r && r.askedBigSummary) flags.push('<span class="nim-tag nim-tag-blue">大总结</span>');
-                if (e.reviewing === i) flags.push('<span class="nim-tag nim-tag-orange">待审阅</span>');
-                return `<div class="nim-layer ${State.selected === i ? 'sel' : ''}" data-i="${i}">${statusIcon(r)} <b>${i + 1}</b> ${esc(title)} <span class="nim-hint">${l.chars} 字</span> ${flags.join(' ')}</div>`;
-            })
-            .join('');
+        // 上千层时只画选中层附近和正在跑的层附近，免得每层刷新都重排整个列表
+        const n = e.layers.length;
+        const runningAt = e.results.findIndex((r) => !r || r.status !== 'done');
+        const focus = State.selected ?? (runningAt < 0 ? n - 1 : runningAt);
+        const from = n > 300 ? Math.max(0, focus - 100) : 0;
+        const to = n > 300 ? Math.min(n, from + 200) : n;
+        const rows = [];
+        if (from > 0) rows.push(`<div class="nim-more">前面还有 ${from} 层</div>`);
+        for (let i = from; i < to; i++) {
+            const l = e.layers[i];
+            const r = e.results[i];
+            const st = layerState(r, i, e);
+            const title = r && r.parsed ? r.parsed.title : (l.chapters[0] || l.paras[0].text).slice(0, 30);
+            const flags = [];
+            if (r && r.divergenceStart) flags.push('<span class="nim-tag red">改写起点</span>');
+            else if (r && r.inDivergence) flags.push('<span class="nim-tag orange">改写中</span>');
+            if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag">${r.patchStats.failed.length} 条补丁没对上</span>`);
+            if (r && r.askedBigSummary) flags.push('<span class="nim-tag blue">大总结</span>');
+            if (l.translate) flags.push('<span class="nim-tag violet">翻译</span>');
+            rows.push(
+                `<button class="nim-layer ${State.selected === i ? 'sel' : ''}" data-i="${i}" title="${STATE_TEXT[st] || ''}">
+                   <span class="nim-dot ${st}"></span><span class="nim-layer-no">${i + 1}</span>
+                   <span class="nim-layer-title">${esc(title)}</span>
+                   <span class="nim-layer-meta">${flags.join('')}<span class="nim-muted">${l.chars} 字</span></span>
+                 </button>`,
+            );
+        }
+        if (to < n) rows.push(`<div class="nim-more">后面还有 ${n - to} 层</div>`);
+        el.innerHTML = rows.join('');
         el.querySelectorAll('.nim-layer').forEach((d) =>
             d.addEventListener('click', () => {
                 State.selected = Number(d.dataset.i);
+                openDetail(true);
                 renderAll();
             }),
         );
+    }
+
+    function renderProgress() {
+        const e = State.engine;
+        const total = e ? e.layers.length : 0;
+        const done = e ? e.results.filter((r) => r && r.status === 'done').length : 0;
+        const pct = total ? Math.round((done / total) * 100) : 0;
+        const bar = $('nim-progress-bar');
+        if (bar) bar.style.width = `${pct}%`;
+        const t = $('nim-progress');
+        if (t) t.textContent = total ? `${done} / ${total} 层 · ${pct}%` : '还没有分层';
+        const tk = $('nim-tokens');
+        if (tk) tk.textContent = e ? `估算 输入 ${fmtNum(e.stats.inputTokens)} · 输出 ${fmtNum(e.stats.outputTokens)} tokens` : '';
+    }
+
+    function fmtNum(n) {
+        n = Number(n) || 0;
+        return n >= 10000 ? `${(n / 10000).toFixed(1)} 万` : String(n);
     }
 
     function renderDetail() {
@@ -885,7 +1240,7 @@
         if (!el) return;
         const i = State.selected;
         if (!e || i === null || i === undefined || !e.layers[i]) {
-            el.innerHTML = '';
+            el.innerHTML = '<div class="nim-empty">选一层查看结果</div>';
             return;
         }
         const r = e.results[i];
@@ -894,24 +1249,25 @@
         if (r && r.status === 'done') {
             const floor = e.renderFloors()[i];
             const d = r.parsed.divergence;
-            body += d.triggered || r.inDivergence ? `<div class="nim-warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
+            body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
             body += `<div class="nim-sub">楼层内容</div><pre class="nim-pre">${esc(floor ? floor.mes : '')}</pre>`;
             if (r.patchStats.failed.length)
                 body += `<div class="nim-sub">没对上的补丁</div><pre class="nim-pre">${esc(r.patchStats.failed.map((f) => `P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`).join('\n'))}</pre>`;
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
-            body += `<details><summary>AI 原始输出</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
+            if (r.parsed.terms && r.parsed.terms.length) body += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
+            body += `<details class="nim-fold"><summary>AI 原始输出</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
         } else if (r && r.status === 'failed') {
-            body += `<div class="nim-warn">失败：${esc(r.error)}</div>`;
+            body += `<div class="nim-alert danger">失败：${esc(r.error)}</div>`;
         }
-        body += `<details><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
+        body += `<details class="nim-fold"><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
         const reviewHtml = reviewing
             ? `<div class="nim-review">
-                 <div class="nim-sub">审阅这一层：可以就继续，不行就写修改意见重做这一层</div>
+                 <div class="nim-sub">审阅这一层：没问题就继续，不行就写修改意见重做</div>
                  <textarea id="nim-feedback" class="nim-input nim-textarea" rows="3" placeholder="例如：第 3 段的补充太长了；这里的改写和前面冲突了"></textarea>
-                 <div class="nim-row"><button id="nim-accept" class="nim-btn nim-btn-primary">✅ 可以，继续</button><button id="nim-reject" class="nim-btn">✏️ 按意见重做这层</button></div>
+                 <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">按意见重做这层</button></div>
                </div>`
             : '';
-        el.innerHTML = `<div class="nim-row"><b>第 ${i + 1} 层</b><button id="nim-rerun" class="nim-btn-small">从这层开始重跑</button></div>${reviewHtml}${body}`;
+        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div></div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
         $('nim-rerun').onclick = () => {
             if (!confirm(`第 ${i + 1} 层及之后的结果会清空，确定吗？`)) return;
             e.resetFrom(i);
@@ -941,7 +1297,7 @@
         $('nim-card-name').value = State.meta.cardName || baseName();
         $('nim-world-name').value = State.meta.worldName || State.meta.cardName || baseName();
         $('nim-card-desc').value = State.meta.description || '';
-        $('nim-card-avatar').textContent = State.meta.avatar ? `已绑定角色卡：${State.meta.avatar}（再次导入会更新这张卡，并新建一个聊天）` : '导入时新建角色卡';
+        $('nim-card-avatar').textContent = State.meta.avatar ? `已绑定角色卡 ${State.meta.avatar}，再次导入会更新这张卡并新建一个聊天` : '导入时会新建角色卡';
     }
 
     function readMetaInputs() {
@@ -951,27 +1307,58 @@
         State.meta.description = $('nim-card-desc').value;
     }
 
-    function renderInfo() {
-        const el = $('nim-info');
+    function setRes(id, ok, text) {
+        const el = $(id);
         if (!el) return;
-        const parts = [];
-        parts.push(State.fileName ? `📄 ${esc(State.fileName)}（${State.text.length} 字）` : '还没选小说');
-        parts.push(State.tableTemplate ? `📊 表格：${State.tableTemplate.tables.length} 张` : '📊 没有表格模板');
-        if (State.seedWorldbook) parts.push(`📚 初始世界书 ${Object.values(State.seedWorldbook).reduce((a, x) => a + Object.keys(x).length, 0)} 条`);
-        el.innerHTML = parts.join(' · ');
+        el.textContent = text;
+        el.closest('.nim-res')?.classList.toggle('ok', !!ok);
+    }
+
+    function renderInfo() {
+        const e = State.engine;
+        const st = e ? e.stats : null;
+        const head = $('nim-info');
+        if (head) head.textContent = State.fileName ? `${State.fileName} · ${fmtNum(State.text.length)} 字${e ? ` · ${e.layers.length} 层` : ''}` : '把小说一层层导入成角色卡、世界书和聊天';
+        const drop = $('nim-drop-text');
+        if (drop) drop.textContent = State.fileName ? `已选 ${State.fileName}，点这里换一本` : '点这里选择小说，或把文件拖进来';
+        const chips = $('nim-file-stats');
+        if (chips) {
+            const c = [];
+            if (State.fileName) c.push(['字数', fmtNum(State.text.length)]);
+            if (e) c.push(['层数', e.layers.length]);
+            if (st && st.chapterUnit) c.push(['标题', `第X${st.chapterUnit}`]);
+            if (st) c.push(['翻译', st.translate ? '整本翻译' : '不需要']);
+            if (State.images.length) c.push(['插图', `${State.images.length} 张`]);
+            if (st && st.cleanedLines + st.repeatedLines + st.inlineAds) c.push(['清掉广告', `${st.cleanedLines + st.repeatedLines + st.inlineAds} 处`]);
+            if (st && st.emptyChapters.length) c.push(['空章', `${st.emptyChapters.length} 章`, 'warn']);
+            chips.innerHTML = c.map(([k, v, cls]) => `<div class="nim-stat ${cls || ''}"><div class="nim-stat-v">${esc(v)}</div><div class="nim-stat-k">${esc(k)}</div></div>`).join('');
+        }
+        const tpl = State.tableTemplate;
+        setRes('nim-res-tpl', tpl, tpl ? `${tpl.tables.length} 张表${State.settings.tableMessageTemplate ? ' · 有消息模板' : ''}` : '还没导入');
+        const wbN = State.seedWorldbook ? Object.values(State.seedWorldbook).reduce((a, x) => a + Object.keys(x).length, 0) : 0;
+        setRes('nim-res-wb', wbN, wbN ? `${wbN} 条` : '可选，从头建');
+        const gNow = e ? (e.finalState().glossary || []).length : 0;
+        const gSeed = (State.seedGlossary || []).length;
+        setRes('nim-res-gloss', gSeed || gNow, gNow || gSeed ? `${gSeed} 条初始${gNow > gSeed ? `，已积累到 ${gNow} 条` : ''}` : st && st.translate ? '会边翻译边积累' : '翻译外文小说时用');
     }
 
     function renderButtons() {
         const e = State.engine;
         const running = !!(e && e.running);
-        $('nim-start').disabled = running;
-        $('nim-start').textContent = e && e.results.some((r) => r && r.status === 'done') ? '▶️ 继续' : '▶️ 开始';
+        const allDone = !!(e && e.layers.length && e.reviewing === null && e.results.every((r) => r && r.status === 'done'));
+        $('nim-start').disabled = running || allDone;
+        $('nim-start').textContent = running ? '处理中…' : allDone ? '已完成' : e && e.results.some((r) => r && r.status === 'done') ? '继续' : '开始';
+        if (!running && !State.importing) setStatus('');
         $('nim-pause').disabled = !running;
         $('nim-stop').disabled = !running;
+        $('nim-modal').classList.toggle('is-running', running);
+        const badge = $('nim-run-badge');
+        if (badge) badge.hidden = !(e && e.reviewing !== null);
     }
 
     function renderAll() {
         renderInfo();
+        renderProgress();
         renderLayers();
         renderDetail();
         renderButtons();
@@ -981,143 +1368,330 @@
     // 弹窗
     // ============================================
 
-    function section(id, title, inner, open = false) {
-        return `<details class="nim-section" ${open ? 'open' : ''} id="nim-sec-${id}"><summary>${title}</summary><div class="nim-section-body">${inner}</div></details>`;
+    function card(id, title, desc, inner, open = false) {
+        return `<details class="nim-card" ${open ? 'open' : ''} id="nim-sec-${id}">
+          <summary><div><div class="nim-card-title">${title}</div>${desc ? `<div class="nim-card-desc">${desc}</div>` : ''}</div><span class="nim-chev"></span></summary>
+          <div class="nim-card-body">${inner}</div></details>`;
+    }
+
+    function res(id, icon, title, inner) {
+        return `<div class="nim-res"><div class="nim-res-icon">${icon}</div><div class="nim-res-main"><div class="nim-res-title">${title}</div><div class="nim-res-state" id="${id}"></div></div><div class="nim-res-actions">${inner}</div></div>`;
     }
 
     function buildHtml() {
-        const f = (k) => FIELDS[k].map(fieldHtml).join('');
+        const f = (k) => `<div class="nim-grid">${FIELDS[k].map(fieldHtml).join('')}</div>`;
+        const tabs = [
+            ['file', '1', '📖', '小说'],
+            ['settings', '2', '⚙️', '设置'],
+            ['run', '3', '📝', '处理'],
+            ['export', '4', '🎴', '导入酒馆'],
+        ];
         return `
-<div id="nim-modal" class="nim-overlay"><div class="nim-modal">
-  <div class="nim-header"><b>📥 小说导入改写 v${C.VERSION}</b><button id="nim-close" class="nim-close">✕</button></div>
-  <div class="nim-body">
-    <div id="nim-info" class="nim-info"></div>
-    ${section(
-        'file',
-        '📄 小说与分层',
-        `<div class="nim-row">
-           <label class="nim-btn">选择小说（TXT / EPUB）<input type="file" id="nim-file" accept=".txt,.epub" hidden></label>
-           <button id="nim-prepare" class="nim-btn">按当前设置重新分层</button>
-         </div>${f('layer')}`,
-        true,
-    )}
-    ${section(
-        'api',
-        '🔧 API 与预设',
-        `${f('api')}
-         <div class="nim-row">
-           <button id="nim-models" class="nim-btn-small">拉取模型列表</button>
-           <select id="nim-model-list" class="nim-input" style="flex:1"></select>
-           <button id="nim-test" class="nim-btn-small">测试</button>
-           <label class="nim-btn-small">导入酒馆预设<input type="file" id="nim-preset" accept=".json" hidden></label>
-         </div>`,
-    )}
-    ${section('rewrite', '✍️ 改写与剧情改写', f('rewrite'))}
-    ${section('alias', '👤 主角称呼与标签', f('alias'))}
-    ${section(
-        'wb',
-        '📚 世界书',
-        `<div class="nim-row"><label class="nim-btn-small">导入已有世界书（可用「TXT转世界书」的导出）<input type="file" id="nim-seed-wb" accept=".json" hidden></label><button id="nim-clear-wb" class="nim-btn-small">清除</button></div>${f('worldbook')}`,
-    )}
-    ${section(
-        'table',
-        '📊 记忆表格',
-        `<div class="nim-row">
-           <label class="nim-btn-small">导入表格模板（记忆插件导出的设置 JSON）<input type="file" id="nim-tpl" accept=".json" hidden></label>
-           <button id="nim-tpl-live" class="nim-btn-small">从当前聊天的记忆插件读取</button>
-         </div>${f('table')}`,
-    )}
-    ${section(
-        'cfg',
-        '💾 配置与任务',
-        `<div class="nim-row">
-           <button id="nim-cfg-export" class="nim-btn-small">导出配置</button>
-           <label class="nim-btn-small">导入配置<input type="file" id="nim-cfg-import" accept=".json" hidden></label>
-           <button id="nim-cfg-reset" class="nim-btn-small">恢复默认提示词</button>
-           <button id="nim-task-export" class="nim-btn-small">导出任务进度</button>
-           <label class="nim-btn-small">导入任务进度<input type="file" id="nim-task-import" accept=".json" hidden></label>
-           <button id="nim-preview" class="nim-btn-small">预览当前层提示词</button>
-         </div>`,
-    )}
-    <div class="nim-section nim-run">
-      <div class="nim-row">
-        <button id="nim-start" class="nim-btn nim-btn-primary">▶️ 开始</button>
-        <button id="nim-pause" class="nim-btn" title="当前这层写完后停下，让你审阅">⏸️ 这层写完后暂停</button>
-        <button id="nim-stop" class="nim-btn">⏹️ 停止</button>
-        <span id="nim-progress" class="nim-hint"></span>
-      </div>
-      <div id="nim-status" class="nim-hint"></div>
-      <div class="nim-split">
-        <div id="nim-layers" class="nim-layers"></div>
-        <div id="nim-detail" class="nim-detail"></div>
-      </div>
-      <details><summary>实时输出</summary><pre id="nim-stream" class="nim-pre"></pre></details>
-      <pre id="nim-log" class="nim-pre nim-log"></pre>
+<div id="nim-modal" class="nim-overlay"><div class="nim-modal" role="dialog" aria-label="小说导入改写">
+  <header class="nim-header">
+    <div class="nim-brand">
+      <div class="nim-logo">📥</div>
+      <div class="nim-brand-text"><div class="nim-title">小说导入改写 <span class="nim-ver">v${C.VERSION}</span></div><div id="nim-info" class="nim-subtitle"></div></div>
     </div>
-    ${section(
-        'export',
-        '🎴 导入酒馆与导出',
-        `<div class="nim-row">
-           <div class="nim-field"><label>角色卡名</label><input id="nim-card-name" class="nim-input"></div>
-           <div class="nim-field"><label>世界书名</label><input id="nim-world-name" class="nim-input"></div>
-         </div>
-         <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn-small">AI 生成</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="4"></textarea></div>
-         <div id="nim-card-avatar" class="nim-hint"></div>
-         <div class="nim-row">
-           <button id="nim-import" class="nim-btn nim-btn-primary">一键导入酒馆（角色卡 + 世界书 + 聊天 + 重建表格）</button>
-           <button id="nim-rebuild" class="nim-btn-small">只在当前聊天重建表格</button>
-           <button id="nim-persona" class="nim-btn-small">主角人设写入当前用户人设</button>
-         </div>
-         <div class="nim-row">
-           <button class="nim-btn-small" data-export="chat">下载聊天 JSONL</button>
-           <button class="nim-btn-small" data-export="world">下载世界书</button>
-           <button class="nim-btn-small" data-export="card">下载角色卡 JSON</button>
-           <button class="nim-btn-small" data-export="persona">下载用户人设</button>
-           <button class="nim-btn-small" data-export="tables">下载表格</button>
-           <button class="nim-btn-small" data-export="txt">下载改写后的 TXT</button>
-         </div>`,
-    )}
-  </div>
+    <button id="nim-close" class="nim-icon-btn" title="关闭">✕</button>
+  </header>
+  <nav class="nim-tabs">${tabs
+      .map(([k, n, ic, t]) => `<button class="nim-tab ${k === State.tab ? 'active' : ''}" data-tab="${k}"><span class="nim-tab-no">${n}</span><span class="nim-tab-ico">${ic}</span><span class="nim-tab-lbl">${t}</span>${k === 'run' ? '<span id="nim-run-badge" class="nim-badge" hidden>审阅</span>' : ''}</button>`)
+      .join('')}</nav>
+  <main class="nim-body">
+
+    <section class="nim-panel" data-panel="file">
+      <label class="nim-drop" id="nim-drop">
+        <input type="file" id="nim-file" accept=".txt,.epub" hidden>
+        <div class="nim-drop-icon">📖</div>
+        <div class="nim-drop-main" id="nim-drop-text"></div>
+        <div class="nim-muted">TXT 或 EPUB，按 1000 万字设计；EPUB 的插图会留在原位置</div>
+      </label>
+      <div id="nim-file-stats" class="nim-stats"></div>
+      <div class="nim-res-list">
+        ${res('nim-res-tpl', '📊', '记忆表格模板', `<label class="nim-btn sm">导入文件<input type="file" id="nim-tpl" accept=".json" hidden></label><button id="nim-tpl-live" class="nim-btn sm">从记忆插件读取</button>`)}
+        ${res('nim-res-wb', '📚', '初始世界书', `<label class="nim-btn sm">导入<input type="file" id="nim-seed-wb" accept=".json" hidden></label><button id="nim-clear-wb" class="nim-btn ghost sm">清除</button>`)}
+        ${res(
+            'nim-res-gloss',
+            '🔤',
+            '术语表',
+            `<button id="nim-gloss-nt" class="nim-btn sm">从小说翻译读取</button><label class="nim-btn sm">导入<input type="file" id="nim-gloss-file" accept=".json,.txt" hidden></label><button id="nim-gloss-clear" class="nim-btn ghost sm">清除</button>`,
+        )}
+      </div>
+      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button></div>`)}
+    </section>
+
+    <section class="nim-panel" data-panel="settings">
+      ${card(
+          'api',
+          'API 与预设',
+          'OpenAI 兼容接口；可以导入酒馆预设',
+          `${f('api')}
+           <div class="nim-row">
+             <button id="nim-models" class="nim-btn sm">拉取模型列表</button>
+             <select id="nim-model-list" class="nim-input nim-grow"></select>
+             <button id="nim-test" class="nim-btn sm">测试</button>
+             <label class="nim-btn sm">导入酒馆预设<input type="file" id="nim-preset" accept=".json" hidden></label>
+           </div>`,
+      )}
+      ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate'))}
+      ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite'))}
+      ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
+      ${card('wb', '世界书', '分类和每类要写的内容', f('worldbook'))}
+      ${card('table', '记忆表格', '表格角色、消息模板、大总结', f('table'))}
+      ${card(
+          'cfg',
+          '配置与任务',
+          '导入导出配置和任务进度',
+          `<div class="nim-row">
+             <button id="nim-cfg-export" class="nim-btn sm">导出配置</button>
+             <label class="nim-btn sm">导入配置<input type="file" id="nim-cfg-import" accept=".json" hidden></label>
+             <button id="nim-cfg-reset" class="nim-btn ghost sm">恢复默认提示词</button>
+           </div>
+           <div class="nim-row">
+             <button id="nim-task-export" class="nim-btn sm">导出任务进度</button>
+             <label class="nim-btn sm">导入任务进度<input type="file" id="nim-task-import" accept=".json" hidden></label>
+             <button id="nim-preview" class="nim-btn sm">预览当前层提示词</button>
+           </div>`,
+      )}
+    </section>
+
+    <section class="nim-panel" data-panel="run">
+      <div class="nim-runbox">
+        <div class="nim-split">
+          <div class="nim-col"><div class="nim-col-head">分层</div><div id="nim-layers" class="nim-layers"></div></div>
+          <div class="nim-col nim-col-wide"><button id="nim-detail-back" class="nim-back">‹ 返回分层列表</button><div id="nim-detail" class="nim-detail"></div></div>
+        </div>
+        <details class="nim-fold" id="nim-stream-box"><summary>实时输出</summary><pre id="nim-stream" class="nim-pre"></pre></details>
+        <details class="nim-fold" open><summary>日志</summary><pre id="nim-log" class="nim-pre nim-log"></pre></details>
+      </div>
+    </section>
+
+    <section class="nim-panel" data-panel="export" id="nim-sec-export">
+      <div class="nim-card static"><div class="nim-card-body">
+        <div class="nim-grid">
+          <div class="nim-field"><label>角色卡名</label><input id="nim-card-name" class="nim-input"></div>
+          <div class="nim-field"><label>世界书名</label><input id="nim-world-name" class="nim-input"></div>
+        </div>
+        <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn ghost xs">AI 生成</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="5"></textarea></div>
+        <div id="nim-card-avatar" class="nim-muted"></div>
+        <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
+        <div class="nim-muted nim-center">角色卡 + 世界书 + 聊天楼层 + 插图，然后让记忆插件逐层重建表格并核对</div>
+      </div></div>
+      <div class="nim-card static"><div class="nim-card-body">
+        <div class="nim-sub">其他操作</div>
+        <div class="nim-row">
+          <button id="nim-rebuild" class="nim-btn sm">只在当前聊天重建表格</button>
+          <button id="nim-persona" class="nim-btn sm">主角人设写入当前用户人设</button>
+        </div>
+        <div class="nim-sub">下载</div>
+        <div class="nim-dl">
+          <button class="nim-btn sm" data-export="chat">聊天 JSONL</button>
+          <button class="nim-btn sm" data-export="world">世界书</button>
+          <button class="nim-btn sm" data-export="card">角色卡 JSON</button>
+          <button class="nim-btn sm" data-export="persona">用户人设</button>
+          <button class="nim-btn sm" data-export="tables">表格</button>
+          <button class="nim-btn sm" data-export="glossary">术语表</button>
+          <button class="nim-btn sm" data-export="txt">改写后的 TXT</button>
+        </div>
+      </div></div>
+    </section>
+  </main>
+  <footer class="nim-footer">
+    <div class="nim-foot-info">
+      <div class="nim-foot-line"><span id="nim-progress"></span><span id="nim-status" class="nim-status"></span></div>
+      <div class="nim-bar"><div id="nim-progress-bar" class="nim-bar-fill"></div></div>
+      <div class="nim-foot-line nim-foot-sub nim-muted"><span id="nim-last-log" class="nim-ellipsis"></span><span id="nim-tokens"></span></div>
+    </div>
+    <div class="nim-foot-actions">
+      <button id="nim-start" class="nim-btn primary">开始</button>
+      <button id="nim-pause" class="nim-btn" title="当前这层写完后停下，让你审阅" aria-label="这层写完后暂停"><span class="nim-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></span><span class="nim-lbl">这层后暂停</span></button>
+      <button id="nim-stop" class="nim-btn danger-ghost" title="停止" aria-label="停止"><span class="nim-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span><span class="nim-lbl">停止</span></button>
+    </div>
+  </footer>
 </div></div>`;
     }
 
     const STYLE = `
-/* 手机版酒馆会改写弹窗的尺寸，inset:0 在手机上高度会变成 0，和其他模块一样写死宽高并加 !important */
-.nim-overlay{position:fixed !important;top:0 !important;left:0 !important;right:0 !important;bottom:0 !important;width:100vw !important;height:100vh !important;height:100dvh !important;max-height:none !important;display:block !important;background:rgba(0,0,0,.75);z-index:99999 !important;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;box-sizing:border-box;}
-.nim-modal{max-width:1000px;margin:16px auto;box-sizing:border-box;background:var(--SmartThemeBlurTintColor,#1e1e1e);color:var(--SmartThemeBodyColor,#eee);border:1px solid var(--SmartThemeBorderColor,#444);border-radius:10px;}
-.nim-header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#1c1c1c;border-bottom:1px solid #444;border-radius:10px 10px 0 0;}
-.nim-close{background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;}
-.nim-body{padding:12px;}
-.nim-info{font-size:12px;opacity:.8;margin-bottom:10px;}
-.nim-section{background:rgba(0,0,0,.2);border-radius:8px;margin-bottom:10px;}
-.nim-section>summary{padding:10px 14px;cursor:pointer;font-weight:500;}
-.nim-section-body{padding:4px 14px 14px;}
-.nim-run{padding:12px 14px;}
-.nim-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0;}
-.nim-field{margin-bottom:10px;flex:1 1 200px;}
-.nim-field>label{display:block;font-size:12px;opacity:.85;margin-bottom:4px;}
-.nim-input{width:100%;box-sizing:border-box;background:rgba(0,0,0,.3);border:1px solid #555;border-radius:6px;color:#fff;padding:8px 10px;font-size:13px;}
-.nim-textarea{font-family:monospace;font-size:12px;resize:vertical;}
-.nim-bad{border-color:#e74c3c;}
-.nim-check{display:block;margin:6px 0 10px;font-size:13px;cursor:pointer;}
-.nim-hint{font-size:11px;opacity:.6;}
-.nim-btn,.nim-btn-small{border:1px solid #555;border-radius:6px;background:rgba(255,255,255,.08);color:#fff;cursor:pointer;}
-.nim-btn{padding:8px 14px;font-size:13px;}
-.nim-btn-small{padding:5px 10px;font-size:12px;}
-.nim-btn:disabled{opacity:.45;cursor:not-allowed;}
-.nim-btn-primary{background:linear-gradient(135deg,#27ae60,#1e8449);border-color:transparent;}
-.nim-split{display:flex;gap:10px;flex-wrap:wrap;}
-.nim-layers{flex:1 1 300px;max-height:420px;overflow-y:auto;border:1px solid #333;border-radius:6px;}
-.nim-detail{flex:2 1 400px;max-height:420px;overflow-y:auto;}
-.nim-layer{padding:6px 8px;font-size:12px;border-bottom:1px solid rgba(255,255,255,.06);cursor:pointer;}
-.nim-layer.sel{background:rgba(52,152,219,.25);}
-.nim-tag{font-size:10px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.12);}
-.nim-tag-red{background:#c0392b;}.nim-tag-orange{background:#d35400;}.nim-tag-blue{background:#2471a3;}
-.nim-pre{white-space:pre-wrap;word-break:break-word;font-size:12px;background:rgba(0,0,0,.3);padding:8px;border-radius:6px;max-height:300px;overflow-y:auto;}
-.nim-log{max-height:160px;}
-.nim-sub{font-size:12px;font-weight:bold;margin:8px 0 4px;}
-.nim-warn{background:rgba(211,84,0,.25);padding:6px 8px;border-radius:6px;font-size:12px;margin:6px 0;}
-.nim-review{border:1px solid #d35400;border-radius:6px;padding:8px;margin:8px 0;}
+/* 手机版酒馆会改写弹窗的尺寸，inset:0 在手机上高度会变成 0，所以写死宽高并加 !important */
+.nim-overlay{position:fixed !important;top:0 !important;left:0 !important;right:0 !important;bottom:0 !important;width:100vw !important;height:100vh !important;height:100dvh !important;max-height:none !important;display:flex !important;align-items:center;justify-content:center;background:rgba(8,8,14,.62);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:99999 !important;box-sizing:border-box;padding:24px;}
+.nim-modal{--bg:#15161c;--surface:#1c1d25;--surface2:#242530;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.14);--text:#ececf2;--muted:#9496a8;--accent:#8b7cf6;--accent2:#6aa8ff;--ok:#3ccf91;--warn:#f2b441;--bad:#f06464;
+  position:relative;display:flex;flex-direction:column;width:min(1080px,100%);height:min(900px,100%);background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:18px;box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:hidden;font-size:14px;line-height:1.5;text-align:left;}
+.nim-modal *{box-sizing:border-box;}
+.nim-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(139,124,246,.10),transparent);}
+.nim-brand{display:flex;align-items:center;gap:12px;min-width:0;}
+.nim-logo{width:38px;height:38px;flex:none;border-radius:11px;display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 6px 18px rgba(139,124,246,.35);}
+.nim-brand-text{min-width:0;}
+.nim-title{font-size:16px;font-weight:650;letter-spacing:.2px;}
+.nim-ver{font-size:11px;font-weight:500;color:var(--muted);margin-left:4px;}
+.nim-subtitle{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nim-icon-btn{flex:none;width:34px;height:34px;border-radius:10px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:15px;cursor:pointer;}
+.nim-icon-btn:hover{background:var(--surface2);color:var(--text);}
+.nim-tabs{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--line);overflow-x:auto;scrollbar-width:none;}
+.nim-tabs::-webkit-scrollbar{display:none;}
+.nim-tab{flex:none;display:flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;border:1px solid transparent;background:transparent;color:var(--muted);font-size:13px;font-weight:550;cursor:pointer;white-space:nowrap;}
+.nim-tab:hover{color:var(--text);background:var(--surface);}
+.nim-tab.active{color:var(--text);background:var(--surface2);border-color:var(--line2);}
+.nim-tab-ico,.nim-ico,.nim-back{display:none;}
+.nim-header{order:0;}.nim-tabs{order:1;}.nim-body{order:2;}.nim-footer{order:3;}
+.nim-tab-no{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;background:var(--surface2);color:var(--muted);}
+.nim-tab.active .nim-tab-no{background:var(--accent);color:#fff;}
+.nim-badge{font-size:10px;padding:1px 7px;border-radius:999px;background:var(--warn);color:#1b1404;}
+.nim-body{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 18px 20px;}
+.nim-panel{display:none;flex-direction:column;gap:14px;}
+.nim-panel.active{display:flex;}
+.nim-muted{color:var(--muted);font-size:12px;}
+.nim-center{text-align:center;margin-top:8px;}
+.nim-ellipsis{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.nim-empty{padding:28px 12px;text-align:center;color:var(--muted);font-size:13px;}
+/* 选文件 */
+.nim-drop{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 16px;border:1.5px dashed var(--line2);border-radius:16px;background:var(--surface);cursor:pointer;text-align:center;transition:border-color .15s,background .15s;}
+.nim-drop:hover,.nim-drop.over{border-color:var(--accent);background:rgba(139,124,246,.08);}
+.nim-drop-icon{font-size:30px;}
+.nim-drop-main{font-size:15px;font-weight:600;}
+.nim-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;}
+.nim-stats:empty{display:none;}
+.nim-stat{padding:10px 12px;border-radius:12px;background:var(--surface);border:1px solid var(--line);}
+.nim-stat-v{font-size:16px;font-weight:650;}
+.nim-stat-k{font-size:11px;color:var(--muted);}
+.nim-stat.warn .nim-stat-v{color:var(--warn);}
+.nim-res-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden;}
+.nim-res{display:flex;align-items:center;gap:12px;padding:12px 14px;flex-wrap:wrap;}
+.nim-res+.nim-res{border-top:1px solid var(--line);}
+.nim-res-icon{width:34px;height:34px;flex:none;border-radius:10px;display:grid;place-items:center;background:var(--surface2);}
+.nim-res-main{flex:1 1 140px;min-width:0;}
+.nim-res-title{font-weight:600;font-size:13px;}
+.nim-res-state{font-size:12px;color:var(--muted);}
+.nim-res.ok .nim-res-state{color:var(--ok);}
+.nim-res-actions{display:flex;gap:6px;flex-wrap:wrap;}
+/* 卡片 */
+.nim-card{border:1px solid var(--line);border-radius:14px;background:var(--surface);}
+.nim-card>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:13px 16px;cursor:pointer;}
+.nim-card>summary::-webkit-details-marker{display:none;}
+.nim-card-title{font-weight:600;}
+.nim-card-desc{font-size:12px;color:var(--muted);}
+.nim-chev{flex:none;width:8px;height:8px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform .2s;margin-right:4px;}
+.nim-card[open]>summary .nim-chev{transform:rotate(225deg);}
+.nim-card[open]>summary{border-bottom:1px solid var(--line);}
+.nim-card-body{padding:14px 16px 16px;}
+.nim-card.static .nim-card-body{display:flex;flex-direction:column;gap:10px;}
+.nim-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 14px;}
+.nim-field{min-width:0;}
+.nim-field.wide{grid-column:1/-1;}
+.nim-field>label{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;font-weight:550;color:var(--muted);margin-bottom:5px;}
+.nim-hint{font-weight:400;opacity:.8;}
+.nim-input{width:100%;background:var(--bg);border:1px solid var(--line2);border-radius:10px;color:var(--text);padding:9px 11px;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s;font-family:inherit;}
+.nim-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(139,124,246,.22);}
+select.nim-input{appearance:auto;}
+.nim-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;resize:vertical;line-height:1.55;}
+.nim-bad{border-color:var(--bad) !important;}
+.nim-grow{flex:1 1 160px;width:auto;}
+/* 开关 */
+.nim-check{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;user-select:none;}
+.nim-check input{position:absolute;opacity:0;pointer-events:none;}
+.nim-switch{flex:none;position:relative;width:38px;height:22px;border-radius:999px;background:var(--surface2);border:1px solid var(--line2);transition:background .15s;}
+.nim-switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#cfd0dc;transition:transform .15s;}
+.nim-check input:checked+.nim-switch{background:var(--accent);border-color:transparent;}
+.nim-check input:checked+.nim-switch::after{transform:translateX(16px);background:#fff;}
+.nim-check input:focus-visible+.nim-switch{box-shadow:0 0 0 3px rgba(139,124,246,.3);}
+.nim-check .nim-hint{display:block;font-size:11px;color:var(--muted);}
+/* 按钮 */
+.nim-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;}
+.nim-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 16px;border-radius:10px;border:1px solid var(--line2);background:var(--surface2);color:var(--text);font-size:13px;font-weight:550;cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s,opacity .15s;font-family:inherit;}
+.nim-btn:hover{border-color:var(--accent);}
+.nim-btn:disabled{opacity:.4;cursor:not-allowed;border-color:var(--line2);}
+.nim-btn.sm{padding:6px 12px;font-size:12px;border-radius:9px;}
+.nim-btn.xs{padding:2px 8px;font-size:11px;border-radius:7px;}
+.nim-btn.ghost{background:transparent;}
+.nim-btn.primary{background:linear-gradient(135deg,var(--accent),#6f62e8);border-color:transparent;color:#fff;box-shadow:0 6px 16px rgba(139,124,246,.3);}
+.nim-btn.primary:hover{filter:brightness(1.08);}
+.nim-btn.danger-ghost{background:transparent;color:var(--bad);border-color:rgba(240,100,100,.35);}
+.nim-btn.block{width:100%;padding:13px;font-size:15px;margin-top:4px;}
+.nim-dl{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px;}
+.nim-sub{font-size:12px;font-weight:650;color:var(--muted);margin:12px 0 6px;text-transform:none;}
+.nim-card.static .nim-sub:first-child{margin-top:0;}
+/* 处理 */
+.nim-split{display:grid;grid-template-columns:minmax(260px,1fr) 2fr;gap:14px;min-height:0;}
+.nim-col{min-width:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden;}
+.nim-col-head{padding:10px 14px;font-size:12px;font-weight:650;color:var(--muted);border-bottom:1px solid var(--line);}
+.nim-layers{max-height:520px;overflow-y:auto;padding:6px;}
+.nim-layer{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border:0;border-radius:10px;background:transparent;color:var(--text);font-size:13px;text-align:left;cursor:pointer;font-family:inherit;}
+.nim-layer:hover{background:var(--surface2);}
+.nim-layer.sel{background:rgba(139,124,246,.16);box-shadow:inset 0 0 0 1px rgba(139,124,246,.45);}
+.nim-layer-no{flex:none;min-width:28px;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;}
+.nim-layer-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.nim-layer-meta{flex:none;display:flex;gap:4px;align-items:center;}
+.nim-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--line2);}
+.nim-dot.done{background:var(--ok);}.nim-dot.running{background:var(--accent2);animation:nimPulse 1s infinite;}.nim-dot.failed{background:var(--bad);}.nim-dot.review{background:var(--warn);}
+@keyframes nimPulse{50%{opacity:.35;}}
+.nim-more{padding:6px 10px;font-size:11px;color:var(--muted);text-align:center;}
+.nim-tag{font-size:10px;padding:1px 6px;border-radius:6px;background:var(--surface2);color:var(--muted);white-space:nowrap;}
+.nim-tag.red{background:rgba(240,100,100,.18);color:#ff9a9a;}.nim-tag.orange{background:rgba(242,180,65,.18);color:#ffcf75;}.nim-tag.blue{background:rgba(106,168,255,.18);color:#9cc5ff;}.nim-tag.violet{background:rgba(139,124,246,.18);color:#bdb3ff;}
+.nim-detail{padding:14px;max-height:620px;overflow-y:auto;}
+.nim-detail-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.nim-detail-title{font-size:15px;font-weight:650;}
+.nim-pre{white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.6;background:var(--bg);border:1px solid var(--line);padding:10px 12px;border-radius:10px;max-height:340px;overflow-y:auto;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+.nim-log{max-height:200px;}
+.nim-fold{margin-top:10px;}
+.nim-fold>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);padding:4px 0;}
+.nim-runbox .nim-fold{border:1px solid var(--line);border-radius:14px;background:var(--surface);padding:8px 12px;}
+.nim-alert{padding:9px 12px;border-radius:10px;font-size:12px;margin:6px 0;}
+.nim-alert.warn{background:rgba(242,180,65,.12);border:1px solid rgba(242,180,65,.3);}
+.nim-alert.danger{background:rgba(240,100,100,.12);border:1px solid rgba(240,100,100,.3);}
+.nim-review{border:1px solid rgba(242,180,65,.45);background:rgba(242,180,65,.06);border-radius:12px;padding:12px;margin:8px 0;}
+.nim-review .nim-sub{margin-top:0;}
+/* 底栏 */
+.nim-footer{display:flex;align-items:center;gap:16px;padding:12px 18px;border-top:1px solid var(--line);background:var(--surface);}
+.nim-foot-info{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px;}
+.nim-foot-line{display:flex;justify-content:space-between;gap:10px;font-size:12px;min-width:0;}
+.nim-status{color:var(--accent2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nim-bar{height:6px;border-radius:999px;background:var(--surface2);overflow:hidden;}
+.nim-bar-fill{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s;}
+.is-running .nim-bar-fill{background-size:200% 100%;animation:nimFlow 1.6s linear infinite;background-image:linear-gradient(90deg,var(--accent),var(--accent2),var(--accent));}
+@keyframes nimFlow{to{background-position:-200% 0;}}
+.nim-foot-actions{flex:none;display:flex;gap:8px;}
+/* 手机：导航放到底部拇指够得着的地方，底栏压成一行，分层列表和详情分两屏 */
+@media (max-width:760px){
+  .nim-overlay{padding:0;align-items:stretch;}
+  .nim-modal{width:100%;height:100%;border-radius:0;border:0;font-size:15px;}
+  .nim-header{padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));}
+  .nim-logo{width:34px;height:34px;font-size:18px;}
+  .nim-icon-btn{width:40px;height:40px;}
+  .nim-tabs{order:4;display:grid;grid-template-columns:repeat(4,1fr);gap:0;padding:4px;padding-bottom:max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);border-bottom:0;background:var(--surface);overflow:visible;}
+  .nim-tab{position:relative;flex-direction:column;gap:2px;padding:6px 2px;border-radius:12px;font-size:11px;min-height:52px;justify-content:center;}
+  .nim-tab.active{background:rgba(139,124,246,.14);border-color:transparent;color:var(--text);}
+  .nim-tab-no{display:none;}
+  .nim-tab-ico{display:block;font-size:19px;line-height:1;}
+  .nim-badge{position:absolute;top:2px;right:8px;}
+  .nim-body{padding:12px;}
+  .nim-grid{grid-template-columns:1fr;}
+  .nim-card>summary{padding:14px;min-height:56px;}
+  .nim-card-body{padding:12px 14px 16px;}
+  .nim-footer{gap:10px;padding:8px 12px;}
+  .nim-foot-sub{display:none;}
+  .nim-foot-actions .nim-btn{min-height:42px;}
+  #nim-start{min-width:86px;}
+  .nim-foot-actions .nim-lbl{display:none;}
+  .nim-foot-actions .nim-ico{display:inline-flex;}
+  #nim-pause,#nim-stop{width:44px;padding:0;}
+  .nim-btn{min-height:42px;}
+  .nim-btn.sm{min-height:40px;font-size:13px;}
+  .nim-btn.xs{min-height:28px;}
+  .nim-input{font-size:16px;padding:11px 12px;}
+  .nim-res-actions{width:100%;}
+  .nim-res-actions .nim-btn{flex:1;}
+  .nim-row .nim-btn{flex:1 1 auto;}
+  .nim-split{grid-template-columns:1fr;}
+  .nim-layers{max-height:none;padding:4px;}
+  .nim-layer{min-height:50px;padding:10px;}
+  .nim-col-wide{display:none;}
+  .nim-runbox.detail-open .nim-col:not(.nim-col-wide),.nim-runbox.detail-open>.nim-fold{display:none;}
+  .nim-runbox.detail-open .nim-col-wide{display:flex;}
+  .nim-back{display:block;width:100%;padding:13px 14px;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--accent2);font-size:14px;text-align:left;cursor:pointer;font-family:inherit;}
+  .nim-detail{max-height:none;}
+  .nim-pre{max-height:50vh;}
+  .nim-dl{grid-template-columns:1fr 1fr;}
+}
 `;
 
     function bind() {
@@ -1132,20 +1706,42 @@
                 if (file) fn(file);
             });
         on('nim-close', 'click', close);
+        on('nim-detail-back', 'click', () => openDetail(false));
+        document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
         onFile('nim-file', onNovelFile);
+        const drop = $('nim-drop');
+        ['dragenter', 'dragover'].forEach((t) =>
+            drop.addEventListener(t, (ev) => {
+                ev.preventDefault();
+                drop.classList.add('over');
+            }),
+        );
+        ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('over')));
+        drop.addEventListener('drop', (ev) => {
+            ev.preventDefault();
+            const file = ev.dataTransfer && ev.dataTransfer.files[0];
+            if (file) onNovelFile(file);
+        });
         onFile('nim-tpl', onTemplateFile);
         onFile('nim-seed-wb', onWorldbookFile);
+        onFile('nim-gloss-file', onGlossaryFile);
         onFile('nim-preset', onPresetFile);
         onFile('nim-cfg-import', importConfig);
         onFile('nim-task-import', importTask);
         on('nim-prepare', 'click', prepareLayers);
         on('nim-tpl-live', 'click', templateFromPlugin);
+        on('nim-gloss-nt', 'click', glossaryFromTranslator);
+        on('nim-gloss-clear', 'click', () => setSeedGlossary([], '已清除初始术语表'));
         on('nim-clear-wb', 'click', () => {
             State.seedWorldbook = null;
+            if (State.engine) State.engine = rebuildEngineKeepResults();
             saveProgress();
             renderAll();
         });
-        on('nim-start', 'click', start);
+        on('nim-start', 'click', () => {
+            switchTab('run');
+            start();
+        });
         on('nim-pause', 'click', () => {
             if (State.engine) State.engine.pauseAfterCurrentLayer();
             log('这一层写完后会暂停');
@@ -1165,9 +1761,9 @@
             collectFields();
             const i = State.selected ?? State.engine.results.findIndex((r) => !r || r.status !== 'done');
             const req = State.engine.buildRequestFor(Math.max(0, i));
-            const el = $('nim-stream');
-            el.textContent = req.messages.map((m) => `【${m.role}】\n${m.content}`).join('\n\n');
-            el.closest('details').open = true;
+            $('nim-stream').textContent = req.messages.map((m) => `【${m.role}】\n${m.content}`).join('\n\n');
+            $('nim-stream-box').open = true;
+            switchTab('run');
         });
         on('nim-models', 'click', async () => {
             collectFields();
@@ -1201,7 +1797,10 @@
         on('nim-rebuild', 'click', rebuildOnly);
         on('nim-persona', 'click', writePersona);
         document.querySelectorAll('#nim-modal [data-export]').forEach((b) => b.addEventListener('click', () => exportFile(b.dataset.export)));
-        document.querySelectorAll('#nim-modal [data-key]').forEach((el) => el.addEventListener('change', () => collectFields()));
+        document.querySelectorAll('#nim-modal [data-key]').forEach((el) => el.addEventListener('change', () => {
+            collectFields();
+            renderAll();
+        }));
         // 世界书名没单独改过时跟着角色卡名走
         on('nim-card-name', 'input', () => {
             const w = $('nim-world-name');
@@ -1229,6 +1828,7 @@
         document.body.appendChild(wrap.firstElementChild);
         bind();
         fillFields();
+        switchTab(State.tab);
         if (!State.text) {
             const snap = await dbGet();
             if (snap && snap.text) {
@@ -1245,5 +1845,5 @@
         if (el) el.remove();
     }
 
-    window.NovelImporter = { open, close, _state: State };
+    window.NovelImporter = { open, close, switchTab, _state: State, _bbiPromptHash: bbiPromptHash, _parseEpub: parseEpubWithImages };
 })();

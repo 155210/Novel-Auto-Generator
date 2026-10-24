@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.0.0';
+    const VERSION = '1.1.0';
 
     // ============================================
     // 默认配置
@@ -113,6 +113,9 @@
 
         // 翻译：auto 时原文大部分不是中文就整层翻译成简体中文
         translateMode: 'auto',
+        imageMode: 'bbi', // bbi：柏宝绘格式（聊天记录导出能打进 EPUB）；img：直接 <img>；off：不导入插图
+        tableMessageTemplate: '', // 记忆插件设置里的「消息模板」，从插件读取或手填
+        useMessageTemplate: true,
         glossaryEnabled: true, // 翻译时用术语表统一人名地名（只发给 AI，不进正文）
         glossaryMax: 300, // 每层最多带多少条（只带本层原文里出现的）
         writeTableEdit: true,
@@ -483,6 +486,32 @@ ${guide}
 ${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? custom + '\n' : ''}格式：{"角色": {"条目名": {"关键词": ["名称", "别称"], "定位": "女主", "内容": "markdown 文本"}}, "地点": {"条目名": {"关键词": [], "内容": "markdown 文本"}}}`;
     }
 
+    /**
+     * 记忆插件的「消息模板」是写给聊天里的 AI 的：里面的填写规则要照做，
+     * 但 insertRow 这套写法和行号在这里用不上（这里按主键输出，程序换算行号），去掉免得 AI 混着写。
+     */
+    function condenseMessageTemplate(tpl) {
+        let t = String(tpl || '');
+        if (!t.trim()) return '';
+        t = t.replace(/\{\{tableData\}\}/g, '（表格数据见下面的「当前表格」）');
+        t = t.replace(/^[ \t]*<OperateRule>[\s\S]*?<\/OperateRule>[ \t]*$/gim, '');
+        // <tableEdit> 示例里只留 // 开头的注释（大多是规则），函数调用示例去掉
+        // 只认单独成行的标签，正文里顺嘴提到的「<tableEdit>标签内……」不算
+        t = t.replace(/^[ \t]*<tableEdit>[ \t]*$([\s\S]*?)^[ \t]*<\/tableEdit>[ \t]*$/gim, (m, inner) =>
+            inner
+                .split('\n')
+                .filter((l) => /^\s*\/\//.test(l))
+                .map((l) => l.replace(/^\s*\/\/\s*/, '- '))
+                .join('\n'),
+        );
+        t = t
+            .split('\n')
+            .filter((l) => !/^\s*(insertRow|updateRow|deleteRow)\s*\(/.test(l) && !/^\s*例如[：:]\s*(insertRow|updateRow|deleteRow)/.test(l))
+            .join('\n');
+        t = t.replace(/<\/?tableThink>|<!--|-->/gi, '');
+        return t.replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+    }
+
     function buildTableSection(settings, state, layerText) {
         if (!settings.tablesEnabled || !state.tables) return '';
         const t = state.tables;
@@ -493,21 +522,25 @@ ${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? c
                     .filter(Boolean)
                     .join('；')
                     .replace(/\s+/g, ' ')
-                    .slice(0, 300);
+                    .slice(0, 600);
                 let kind = '主键为第一列，同主键的行会被更新';
                 if (roles.singleRow.includes(tb.name)) kind = '只保留一行，输出当前最新状态即可';
                 else if (roles.appendOnly.includes(tb.name)) kind = '只能插入，不能更新或删除';
                 if (tb.name === roles.summaryTable) kind = '由程序在需要时单独要求填写，平时不要输出';
-                return `- ${tb.name}（列：${tb.columns.join('、')}）：${kind}。${notes}`;
+                return `- [${tb.index}:${tb.name}]（列：${tb.columns.join('、')}）：${kind}。${notes}`;
             })
             .join('\n');
         const custom = (settings.tablePrompt || '').trim();
+        const mt = settings.useMessageTemplate !== false ? condenseMessageTemplate(settings.tableMessageTemplate) : '';
+        const mtBlock = mt
+            ? `\n### 记忆插件「消息模板」里的规则\n其中的填写要求照做；但修改方式以本节最后的 JSON 格式为准，不要输出 insertRow / updateRow / deleteRow 或 <tableEdit>。提到的 tableIndex 就是表名前的编号。\n<消息模板>\n${mt}\n</消息模板>\n`
+            : '';
         return `## 记忆表格任务
 根据本层正文更新下列表格。这是导入原著，不是聊天：
 - 只填原文明确写出的信息；原文没写的列留空字符串，不要编造，不要随机生成数值
 - 「${roles.eventTable}」本层插入 ${roles.eventsPerLayer} 行，按时间顺序概括本层的重要事件，每行 30 到 50 字，必须有主语
 - 单元格里不要用逗号和双引号，语义分隔用 /
-${custom ? custom + '\n' : ''}表格定义：
+${custom ? custom + '\n' : ''}${mtBlock}表格定义：
 ${defs}
 
 当前表格中与本层相关的行：
@@ -1811,12 +1844,17 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             const st = replay(done.length);
             const target = aliasTargetOf(settings);
             const conv = (s) => applyAliases(s, st.aliases, target);
+            let lastHeading = '';
             return done.map((i) => {
                 const r = E.results[i];
+                let heading = conv(formatHeading(E.layers[i], r.parsed.title, settings, E.stats.chapterUnit));
+                // 原文标题模式下，一章被切成几层时后面的层沿用这一章的标题，免得章号跳成层号
+                if (settings.titleMode === 'original' && !(E.layers[i].chapters || []).length && lastHeading) heading = lastHeading.replace(/（续）$/, '') + '（续）';
+                lastHeading = heading;
                 const floor = {
                     layer: i,
                     title: conv(r.parsed.title),
-                    heading: conv(formatHeading(E.layers[i], r.parsed.title, settings, E.stats.chapterUnit)),
+                    heading,
                     body: conv(r.finalParas.join('\n')),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
@@ -2039,6 +2077,7 @@ ${sums}`;
         detectForeign,
         IMAGE_MARKER_RE,
         ensureImageMarkers,
+        condenseMessageTemplate,
         normalizeGlossary,
         mergeGlossary,
         parseGlossaryLines,
