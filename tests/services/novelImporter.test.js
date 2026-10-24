@@ -689,7 +689,31 @@ describe('运行引擎', () => {
         const p = calls[n].messages.map((m) => m.content).join('\n');
         expect(p).toContain('对话多补神态');
         expect(p).toContain('你上一次的输出');
+        // 修改要求放在提示词最后，不会埋在原文和上一次输出中间
+        expect(p.trim().endsWith('对话多补神态')).toBe(true);
         expect(engine.results[1]).toBe(null);
+    });
+
+    it('单层重做时可以停止，停了原来的结果放回去', async () => {
+        let hang = false;
+        let runningDuring = null;
+        const { engine } = makeEngine((layer) => {
+            if (hang) {
+                runningDuring = engine.running;
+                engine.stop();
+                throw new Error('aborted');
+            }
+            return normal(layer);
+        });
+        await engine.run();
+        const before = engine.results.slice();
+        hang = true;
+        const res = await engine.redoWithFeedback(1, '改改');
+        expect(runningDuring).toBe(true);
+        expect(res).toBe(null);
+        expect(engine.running).toBe(false);
+        expect(engine.results).toEqual(before);
+        expect(engine.results[1]).toBe(before[1]);
     });
 
     it('逐层跑完：补丁、称呼、表格、世界书都进楼层', async () => {
@@ -753,7 +777,7 @@ describe('运行引擎', () => {
 
     it('审阅：停在这一层，不通过就带意见重做', async () => {
         const { engine, calls } = makeEngine((layer, prompt) => {
-            if (prompt.includes('修改意见')) return reply({ title: '重做', summary: '按意见改了' });
+            if (prompt.includes('修改要求（最优先')) return reply({ title: '重做', summary: '按意见改了' });
             return normal(layer);
         });
         engine.pauseAfterCurrentLayer();

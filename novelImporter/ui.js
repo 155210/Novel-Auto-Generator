@@ -2331,7 +2331,9 @@
                 collectFields();
                 State.stopped = false;
                 log(`按要求重做第 ${i + 1} 层：${fb}`);
-                await e.redoWithFeedback(i, fb);
+                const job = e.redoWithFeedback(i, fb);
+                renderButtons();
+                await job;
                 saveProgress();
                 renderAll();
             };
@@ -2369,7 +2371,9 @@
                 collectFields();
                 State.stopped = false;
                 log(`用改过的提示词重做第 ${i + 1} 层`);
-                await e.redoWithPrompt(i, p);
+                const job = e.redoWithPrompt(i, p);
+                renderButtons();
+                await job;
                 saveProgress();
                 renderAll();
             };
@@ -2396,7 +2400,9 @@
                 collectFields();
                 State.stopped = false;
                 log(`按意见重做第 ${i + 1} 层`);
-                await e.reject(fb);
+                const job = e.reject(fb);
+                renderButtons();
+                await job;
                 saveProgress();
                 renderAll();
             };
