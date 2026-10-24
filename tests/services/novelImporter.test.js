@@ -312,6 +312,23 @@ describe('解析回复', () => {
 });
 
 describe('JSON 修复', () => {
+    it('模型先「想」时提到的格式不算：取最后一个完整标签', () => {
+        const think = '先想想格式：<bt>标题</bt> <正文>译文</正文> <世界书>JSON</世界书>\n好，开始输出。\n';
+        const real = '<bt>雨夜</bt>\n<摘要>摘要</摘要>\n<正文>\n' + '这是译文。'.repeat(100) + '\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{}</表格>';
+        const r = C.parseLayerResponse(think + real, { translate: true, sourceChars: 500 });
+        expect(r.ok).toBe(true);
+        expect(r.title).toBe('雨夜');
+        expect(r.rewrittenText.length).toBeGreaterThan(400);
+    });
+
+    it('译文比原文短太多（抄了格式说明）不算成功', () => {
+        const raw = '<bt>标题</bt>\n<摘要>摘要</摘要>\n<正文>\n译文\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{}</表格>';
+        const r = C.parseLayerResponse(raw, { translate: true, sourceChars: 22509 });
+        expect(r.ok).toBe(false);
+        expect(r.jsonOnly).toBe(false);
+        expect(r.errors.join()).toContain('译文不完整');
+    });
+
     it('中文引号、字符串里的换行、无、缺引号的键都能读', () => {
         expect(C.parseLooseJson('无')).toEqual({});
         expect(C.parseLooseJson('{“触发”: false， “说明”: “他说\n走吧”}')).toEqual({ 触发: false, 说明: '他说\n走吧' });
@@ -591,7 +608,9 @@ describe('翻译模式', () => {
     const JP = ['第1話 雨の夜', '「来たか」と月寒は言った。', '路長遠は扉を押して入った。', fill('雨の音がする'), '第2話 旅立ち', '「行こう」', '長安道人は笑った。', fill('風の音がする')].join('\n');
     const tr = (layer, prompt) => {
         const terms = layer === 0 ? '路長遠 → 路长远\n月寒 → 月寒（女主）' : '長安道人 → 长安道人';
-        const body = layer === 0 ? '第1话 雨夜\n“来了啊。”月寒说道。\n路长远推门而入。\n〔插图1〕' : '第2话 启程\n“走吧。”\n长安道人笑了。';
+        // 译文长度要像样（太短会被当成没译完）
+        const pad = '\n' + '雨一直下个不停。'.repeat(30);
+        const body = layer === 0 ? '第1话 雨夜\n“来了啊。”月寒说道。\n路长远推门而入。' + pad + '\n〔插图1〕' : '第2话 启程\n“走吧。”\n长安道人笑了。' + pad;
         return [`<bt>${layer === 0 ? '雨夜' : '启程'}</bt>`, `<摘要>摘要${layer}</摘要>`, `<正文>\n${body}\n</正文>`, '<改写判定>{"触发":false}</改写判定>', '<称呼></称呼>', '<世界书>{}</世界书>', '<表格>{}</表格>', `<新术语>\n${terms}\n</新术语>`].join('\n');
     };
 

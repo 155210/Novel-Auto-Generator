@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.11';
+    const VERSION = '1.4.12';
 
     // ============================================
     // 默认配置
@@ -856,16 +856,23 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     // 解析回复
     // ============================================
 
+    /**
+     * 取标签内容。模型常在正式输出前先「想」一遍，想的时候会提到 <bt>标题</bt>、<正文>译文</正文> 这样的格式，
+     * 所以取最后一个完整闭合的；都没闭合就取最后一个开头（被截断）。
+     */
     function extractTag(raw, tag) {
         const s = String(raw || '');
-        const open = new RegExp(`<${escapeRegExp(tag)}>`, 'i');
-        const m = open.exec(s);
-        if (!m) return { found: false, closed: false, content: '' };
-        const start = m.index + m[0].length;
+        const open = new RegExp(`<${escapeRegExp(tag)}>`, 'gi');
         const closeTag = `</${tag}>`;
-        const end = s.indexOf(closeTag, start);
-        if (end < 0) return { found: true, closed: false, content: s.slice(start).trim() };
-        return { found: true, closed: true, content: s.slice(start, end).trim() };
+        const starts = [];
+        let m;
+        while ((m = open.exec(s))) starts.push(m.index + m[0].length);
+        if (!starts.length) return { found: false, closed: false, content: '' };
+        for (let k = starts.length - 1; k >= 0; k--) {
+            const end = s.indexOf(closeTag, starts[k]);
+            if (end >= 0) return { found: true, closed: true, content: s.slice(starts[k], end).trim() };
+        }
+        return { found: true, closed: false, content: s.slice(starts[starts.length - 1]).trim() };
     }
 
     /**
@@ -1022,8 +1029,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 
         if (!title.closed) errors.push('缺少 <bt> 标题');
         if (!summary.closed) errors.push('缺少 <摘要>');
+        // 正文太短多半是把格式说明抄了一遍（比如只写了「译文」两个字），不能当成功
+        const tooShort = (t) => opts.sourceChars > 200 && t.replace(/\s+/g, '').length < opts.sourceChars * 0.1;
         if (opts.translate) {
             if (!rewritten.closed || !rewritten.content) errors.push(`缺少完整的 <${bodyTag}> 译文（或被截断）`);
+            else if (tooShort(rewritten.content)) errors.push(`<${bodyTag}> 只有 ${rewritten.content.length} 字，原文 ${opts.sourceChars} 字，译文不完整`);
         } else {
             if (rewritten.found && !rewritten.closed) errors.push('<改写正文> 被截断');
             if (!rewritten.found && !patch.closed) errors.push('缺少 <补丁>（或被截断）');
@@ -2066,7 +2076,7 @@ ${blocks}`;
                     continue;
                 }
                 const layerNow = E.layers[i];
-                const popts = { translate: !!layerNow.translate, bodyTag: settings.bodyTag };
+                const popts = { translate: !!layerNow.translate, bodyTag: settings.bodyTag, sourceChars: layerNow.chars };
                 let parsed = parseLayerResponse(raw, popts);
                 // 正文没问题、只是 JSON 块写坏了：单独让 AI 修格式（只回几个 JSON，很省），
                 // 修不好就丢掉坏的那几块，保住正文，不整层重写
