@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.3';
+    const VERSION = '1.4.4';
 
     // ============================================
     // 默认配置
@@ -678,7 +678,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 
     const TRANSLATE_RULES = `## 翻译要求
 - **完整翻译**：不得省略、概括或跳过原文的任何内容，逐句翻译成简体中文
-- **保持格式**：原文的分段、换行、对话格式全部保留，一个原文段落对应一个译文段落（不要输出 [P段号]）
+- **只输出译文**：<正文> 里直接写中文译文，不要复述原文，不要写段号（P1、[P1]）、「→」或原文对照，否则输出量翻倍
+- **保持格式**：原文的分段、换行、对话格式全部保留，一个原文段落对应一个译文段落
 - **自然流畅**：符合中文小说的表达习惯，不要生硬直译
 - **章节标题也要翻译**成中文
 - 人名、地名、招式等专有名词的译名全书统一：「相关世界书条目」里已有译名的必须沿用
@@ -821,7 +822,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             parts.push(`## 用户对上一次结果的修改意见（优先遵守）\n${extra.feedback}`);
             if (extra.previousRaw) parts.push(`## 你上一次的输出\n${extra.previousRaw}`);
         }
-        parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${layer.paras.map((p) => `[P${p.id}]${p.text}`).join('\n')}\n</原文>`);
+        // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
+        const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
+        parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
         return parts.join('\n\n');
     }
 
@@ -899,6 +902,37 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return { patches, bad };
     }
 
+    /**
+     * AI 有时把译文写成「P29: 原文 → 译文」逐段对照，或者每段带 [P29] 段号。
+     * 对照格式只留箭头后面的译文，段号去掉；正常的译文原样返回。
+     */
+    function stripEchoedSource(text) {
+        const lines = String(text || '').split('\n');
+        const NUM = /^\s*\[?P\d+\]?\s*[:：]?\s*/;
+        const ARROW = /^\s*(?:→|->|=>)\s*/;
+        const numbered = lines.filter((l) => NUM.test(l) && /^\s*\[?P\d+/.test(l)).length;
+        if (numbered < 2) return text;
+        const arrows = lines.filter((l) => ARROW.test(l) || /\s(?:→|->)\s/.test(l)).length;
+        if (arrows < 2) return lines.map((l) => (/^\s*\[?P\d+/.test(l) ? l.replace(NUM, '') : l)).join('\n');
+        const out = [];
+        let inTarget = false;
+        for (const l of lines) {
+            if (/^\s*\[?P\d+/.test(l)) {
+                // 同一行里「原文 → 译文」
+                const m = l.match(/\s(?:→|->)\s(.*)$/);
+                inTarget = !!m;
+                if (m && m[1].trim()) out.push(m[1].trim());
+            } else if (ARROW.test(l)) {
+                inTarget = true;
+                const t = l.replace(ARROW, '').trim();
+                if (t) out.push(t);
+            } else if (!l.trim()) {
+                inTarget = false;
+            } else if (inTarget || /^〔插图\d+〕$/.test(l.trim())) out.push(l.trim());
+        }
+        return out.join('\n');
+    }
+
     function parseLayerResponse(raw, opts = {}) {
         const errors = [];
         const title = extractTag(raw, 'bt');
@@ -973,7 +1007,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             summary: summary.content,
             patches,
             badPatchLines: bad,
-            rewrittenText: rewritten.closed ? rewritten.content : null,
+            rewrittenText: rewritten.closed ? (opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
             divergence,
             aliases,
             worldbook,
@@ -2431,6 +2465,7 @@ ${sums}`;
         parseGlossaryLines,
         selectGlossary,
         buildOutputRules,
+        stripEchoedSource,
         protagonistOf,
         aliasTargetOf,
         cleanCell,

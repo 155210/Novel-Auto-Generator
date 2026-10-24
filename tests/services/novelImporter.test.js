@@ -556,6 +556,17 @@ describe('翻译模式', () => {
         expect(engine.finalState().glossary.map((g) => g.source)).toContain('長安道人');
     });
 
+    it('原文不带段号；AI 写成「P段号: 原文 → 译文」对照时只留译文', () => {
+        const prompt = C.buildLayerPrompt({ index: 0, paras: [{ id: 1, text: '雨の音' }], chars: 3, chapters: [], translate: true }, { tablesEnabled: false, worldbookEnabled: false }, { worldbook: {}, aliases: [], divergence: {} });
+        expect(prompt).toContain('<原文>\n雨の音\n</原文>');
+        expect(prompt).toContain('不要复述原文');
+        const echoed = 'P29: 黙り込む俺に希望を見て取ったのか。\n→ 也许是从我的沉默中看到了希望。\n\nP30: 「お願い」\n→ "求你了。"\n\n〔插图1〕\n\nP31: 鈴を振るような声。 → 清澈的嗓音。';
+        expect(C.stripEchoedSource(echoed)).toBe('也许是从我的沉默中看到了希望。\n"求你了。"\n〔插图1〕\n清澈的嗓音。');
+        expect(C.stripEchoedSource('[P1]第一段\n[P2]第二段')).toBe('第一段\n第二段');
+        const normal = '“来了啊。”月寒说道。\n路长远推门而入。';
+        expect(C.stripEchoedSource(normal)).toBe(normal);
+    });
+
     it('整层重写时漏掉的插图占位行按位置补回', () => {
         const src = [{ text: 'a' }, { text: '〔插图1〕' }, { text: 'b' }, { text: 'c' }, { text: '〔插图2〕' }];
         expect(C.ensureImageMarkers(src, ['A', 'B', 'C', '〔插图2〕'])).toEqual(['A', '〔插图1〕', 'B', 'C', '〔插图2〕']);
