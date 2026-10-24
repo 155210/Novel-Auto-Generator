@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.25';
+    const VERSION = '1.4.26';
 
     // ============================================
     // 默认配置
@@ -279,6 +279,27 @@
         let out = fmt.replace(/\{n\}/g, String(n)).replace(/\{unit\}/g, unit).replace(/\{title\}/g, title);
         if (!title) out = out.replace(/[：:]\s*$/, '');
         return out;
+    }
+
+    // 正文里常见的排版标签，不算「别的标签」
+    const INLINE_TAGS = new Set(['b', 'i', 'u', 's', 'em', 'strong', 'span', 'font', 'ruby', 'rt', 'rp', 'sup', 'sub', 'small', 'big', 'center', 'p', 'br', 'mark', 'q']);
+    // 插件自己的协议标签：夹在正文里的直接丢掉（表格由程序按 <表格> 生成 tableEdit，留着会重复插入）
+    const PROTOCOL_TAGS = new Set(['bt', '摘要', '补丁', '改写判定', '称呼', '世界书', '表格', '新术语', '主角', '大总结', '改写正文', '正文', 'tableedit', '上一层结尾', '原文']);
+
+    /**
+     * AI 有时把别的标签（状态栏、Calculated_data 之类）写进 <正文> 里。
+     * 独占行的 <X>…</X> 整块拿出来：协议标签丢掉，其余放到正文后面（extras）。
+     */
+    function splitBodyBlocks(text, bodyTag) {
+        const extras = [];
+        const re = /^[ \t\uE000\uE001]*<([^<>\/\s][^<>\/]{0,40}?)>[\s\S]*?<\/\1>[ \t\uE000\uE001]*$/gm;
+        const body = String(text || '').replace(re, (m, tag) => {
+            const name = String(tag).trim().toLowerCase();
+            if (INLINE_TAGS.has(name)) return m;
+            if (!PROTOCOL_TAGS.has(name) && name !== String(bodyTag || '').toLowerCase()) extras.push(m.trim());
+            return '';
+        });
+        return { body: body.replace(/\n{3,}/g, '\n\n'), extras };
     }
 
     /**
@@ -898,7 +919,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
         parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
         // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
-        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + JSON_REMINDER);
+        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + JSON_REMINDER);
         return parts.join('\n\n');
     }
 
@@ -1809,6 +1830,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (mark) heading = /[：:]/.test(heading) ? heading.replace(/[：:]/, (c) => c + mark) : mark + heading;
         parts.push(`<${s.titleTag}>\n${heading}\n</${s.titleTag}>`);
         parts.push(`<${s.bodyTag}>\n${floor.body}\n</${s.bodyTag}>`);
+        // 夹在正文里的别的标签挪到正文后面、tableEdit 前面
+        for (const x of floor.extras || []) parts.push(x);
         if (s.writeTableEdit && floor.tableEdit) parts.push(floor.tableEdit);
         return parts.join('\n');
     }
@@ -2080,7 +2103,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             const prev = i > 0 ? E.results[i - 1] : null;
             const prevDone = prev && prev.status === 'done';
             const tailN = Math.max(0, Number(settings.prevTailChars) || 0);
-            const prevTail = prevDone && tailN && prev.finalParas ? tailText(prev.finalParas.join('\n'), tailN) : '';
+            const prevTail = prevDone && tailN && prev.finalParas ? tailText(splitBodyBlocks(prev.finalParas.join('\n'), settings.bodyTag).body, tailN) : '';
             // 像表格一样带「最新的一份」：上一层没输出这个标签，就往前找最近一次有的，状态不会断
             const carryTags = splitTagList(settings.carryTags)
                 .map((tag) => {
@@ -2325,7 +2348,7 @@ ${blocks}`;
         function buildJsonOnlyPrompt(i, st, extraPrompt) {
             const s = { ...DEFAULT_SETTINGS, ...settings };
             const r = E.results[i];
-            const body = r.finalParas.join('\n');
+            const body = splitBodyBlocks(r.finalParas.join('\n'), settings.bodyTag).body;
             const parts = [`你是小说资料整理助手。下面是一部小说第 ${i + 1} 层已经定稿的正文。正文不用改、也不要输出；只按要求输出这一层的 <改写判定>、<世界书>、<表格> 三段，每段都必须是能被 JSON.parse 解析的合法 JSON（键和字符串用英文双引号，字符串里的双引号写成 \\"，不要注释、尾逗号、代码块标记）。`];
             const div = buildDivergenceSection(s, st, !!E.layers[i].translate);
             if (div) parts.push(div);
@@ -2468,11 +2491,13 @@ ${blocks}`;
                 // 原文标题模式下，一章被切成几层时后面的层沿用这一章的标题，免得章号跳成层号
                 if (settings.titleMode === 'original' && !(E.layers[i].chapters || []).length && lastHeading) heading = lastHeading.replace(/（续）$/, '') + '（续）';
                 lastHeading = heading;
+                const parts = floorParts(i, r.finalParas);
                 const floor = {
                     layer: i,
                     title: conv(r.parsed.title),
                     heading,
-                    body: conv(bodyParas(i, r.finalParas).join('\n')),
+                    body: conv(parts.paras.join('\n')),
+                    extras: parts.extras.map(conv),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
                     divergence: r.inDivergence,
@@ -2518,9 +2543,16 @@ ${blocks}`;
 
         /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
         function bodyParas(i, paras) {
+            return floorParts(i, paras).paras;
+        }
+
+        /** 楼层正文拆成：正文段落（别的标签块拿掉）+ 拿出来的标签块 */
+        function floorParts(i, paras) {
             const layer = E.layers[i];
+            const split = splitBodyBlocks(paras.join('\n'), settings.bodyTag);
+            const clean = split.body.split('\n').filter((l) => stripMarks(l).trim().length > 0);
             const dropFirst = settings.titleMode === 'original' && !!(layer.chapters || []).length;
-            return formatBodyHeadings(paras, settings, E.stats.chapterUnit, { dropFirst });
+            return { paras: formatBodyHeadings(clean, settings, E.stats.chapterUnit, { dropFirst }), extras: split.extras };
         }
 
         function finalState() {
@@ -2931,6 +2963,7 @@ ${sums}`;
         detectChapterUnit,
         formatHeading,
         formatBodyHeadings,
+        splitBodyBlocks,
         detectForeign,
         IMAGE_MARKER_RE,
         ensureImageMarkers,
