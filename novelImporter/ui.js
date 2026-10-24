@@ -2076,6 +2076,18 @@
         );
     }
 
+    /** 楼层内容转成 HTML，AI 补充的部分用 <mark> 标出来（只在界面里，不改楼层本身） */
+    function floorHtml(e, i, floor) {
+        const mes = floor ? floor.mes : '';
+        if (State.hlOff || !floor || typeof e.markedBody !== 'function') return esc(mes);
+        const marked = e.markedBody(i);
+        if (!marked || C.stripMarks(marked) !== floor.body || !/\uE000/.test(marked)) return esc(mes);
+        const at = mes.indexOf(floor.body);
+        if (at < 0) return esc(mes);
+        const hl = esc(marked).replace(/\uE000/g, '<mark class="nim-hl">').replace(/\uE001/g, '</mark>');
+        return esc(mes.slice(0, at)) + hl + esc(mes.slice(at + floor.body.length));
+    }
+
     function renderDetail() {
         const el = $('nim-detail');
         const e = State.engine;
@@ -2093,7 +2105,7 @@
             const d = r.parsed.divergence;
             if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
-            body += `<div class="nim-sub">楼层内容</div><pre class="nim-pre">${esc(floor ? floor.mes : '')}</pre>`;
+            body += `<div class="nim-sub">楼层内容${State.hlOff ? '' : '<span class="nim-muted">（<mark class="nim-hl">高亮</mark>是 AI 补充的，只在这里显示，导出不带）</span>'}<button id="nim-hl-toggle" class="nim-btn ghost sm" style="margin-left:8px">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div><pre class="nim-pre">${floorHtml(e, i, floor)}</pre>`;
             if (r.patchStats.failed.length)
                 body += `<div class="nim-sub">没对上的补丁</div><pre class="nim-pre">${esc(r.patchStats.failed.map((f) => `P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`).join('\n'))}</pre>`;
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
@@ -2112,6 +2124,12 @@
                </div>`
             : '';
         el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
+        const hlBtn = $('nim-hl-toggle');
+        if (hlBtn)
+            hlBtn.onclick = () => {
+                State.hlOff = !State.hlOff;
+                renderDetail();
+            };
         $('nim-rerun').onclick = () => {
             if (!confirm(`第 ${i + 1} 层及之后的结果会清空，确定吗？`)) return;
             e.resetFrom(i);
@@ -2494,6 +2512,7 @@ select.nim-input{appearance:auto;}
 .nim-detail-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .nim-detail-title{font-size:15px;font-weight:650;}
 .nim-pre{white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.6;background:var(--bg);border:1px solid var(--line);padding:10px 12px;border-radius:10px;max-height:340px;overflow-y:auto;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+.nim-hl{background:rgba(242,180,65,.35);color:inherit;border-radius:3px;padding:0 1px;}
 .nim-log{max-height:200px;}
 .nim-fold{margin-top:10px;}
 .nim-fold>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);padding:4px 0;}
