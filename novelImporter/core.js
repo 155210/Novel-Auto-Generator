@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.18';
+    const VERSION = '1.4.19';
 
     // ============================================
     // 默认配置
@@ -846,7 +846,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const prevSummary = (state.summaries || []).slice(-2).map((x) => `- ${x.title}：${x.summary}`).join('\n');
         if (prevSummary) parts.push(`## 前情提要\n${prevSummary}`);
         if (extra.prevTail) parts.push(`## 上一层正文的结尾（只用来承接，让本层开头衔接自然；不要重复输出这段）\n<上一层结尾>\n${extra.prevTail}\n</上一层结尾>`);
-        for (const t of extra.carryTags || []) parts.push(`## 上一层的 <${t.tag}>（供参考，本层照常输出自己的内容）\n<${t.tag}>\n${t.content}\n</${t.tag}>`);
+        for (const t of extra.carryTags || [])
+            parts.push(`## 目前最新的 <${t.tag}>（来自第 ${t.layer + 1} 层，在这个基础上更新；本层照常输出完整的 <${t.tag}>）\n<${t.tag}>\n${t.content}\n</${t.tag}>`);
         let format = OUTPUT_FORMAT.replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
         const guide = String(s.summaryGuide || '').trim();
         if (guide) format = format.replace('<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>', () => `<摘要>${guide}</摘要>`);
@@ -2024,12 +2025,18 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             const prevDone = prev && prev.status === 'done';
             const tailN = Math.max(0, Number(settings.prevTailChars) || 0);
             const prevTail = prevDone && tailN && prev.finalParas ? tailText(prev.finalParas.join('\n'), tailN) : '';
-            const carryTags = prevDone
-                ? splitTagList(settings.carryTags)
-                      .map((tag) => ({ tag, content: extractTag(prev.raw, tag) }))
-                      .filter((x) => x.content.closed && x.content.content)
-                      .map((x) => ({ tag: x.tag, content: x.content.content }))
-                : [];
+            // 像表格一样带「最新的一份」：上一层没输出这个标签，就往前找最近一次有的，状态不会断
+            const carryTags = splitTagList(settings.carryTags)
+                .map((tag) => {
+                    for (let k = i - 1; k >= 0; k--) {
+                        const r = E.results[k];
+                        if (!r || r.status !== 'done') continue;
+                        const x = extractTag(r.raw, tag);
+                        if (x.closed && x.content) return { tag, content: x.content, layer: k };
+                    }
+                    return null;
+                })
+                .filter(Boolean);
             // 用户在界面里改过这一层的提示词就直接用改过的（预设部分照常套）
             const prompt = typeof extra.customPrompt === 'string' && extra.customPrompt.trim() ? extra.customPrompt : buildLayerPrompt(layer, settings, st, {
                 outputRules: typeof cfg.outputRules === 'string' ? cfg.outputRules : '',
