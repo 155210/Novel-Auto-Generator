@@ -415,6 +415,12 @@ describe('运行引擎', () => {
         expect(l0[1].info.purpose).toBe('repair');
         expect(engine.results[0].status).toBe('done');
         expect(engine.results[0].parsed.worldbook.角色.路长远.内容).toBe('修好了');
+        const cs = engine.results[0].calls;
+        expect(cs.map((c) => c.purpose)).toEqual(['layer', 'repair']);
+        expect(cs[0].problem).toContain('<世界书> 不是合法 JSON');
+        expect(cs[0].raw).toContain('{"角色": {{坏');
+        expect(cs[1].raw).toContain('修好了');
+        expect(cs[1].request.map((m) => m.content).join()).toContain('只修正格式');
     });
 
     it('每层记下输入输出 token：接口给了用量就用真实的，没给就估算', async () => {

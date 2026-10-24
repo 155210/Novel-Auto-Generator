@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.12';
+    const VERSION = '1.4.13';
 
     // ============================================
     // 默认配置
@@ -2029,6 +2029,26 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             return text;
         }
 
+        /**
+         * 发一次请求并把原始输出记在 r.calls 里（每次请求一条：用途、第几次、原始输出或错误、用量），
+         * 给界面逐次查看。keepRequest 时连发出去的消息一起存（修格式那种小请求）。
+         */
+        async function callAndLog(r, messages, info, keepRequest) {
+            const rec = { purpose: info.purpose || 'layer', attempt: info.attempt || 0, time: Date.now() };
+            if (keepRequest) rec.request = messages.map((m) => ({ role: m.role, content: m.content }));
+            if (r) (r.calls || (r.calls = [])).push(rec);
+            const before = r && r.tokens ? { ...r.tokens } : { input: 0, output: 0, cached: 0 };
+            try {
+                const text = addUsage(r, messages, await cfg.callModel(messages, info));
+                rec.raw = text;
+                if (r && r.tokens) rec.tokens = { input: r.tokens.input - before.input, output: r.tokens.output - before.output, cached: r.tokens.cached - before.cached, estimated: r.tokens.estimated };
+                return text;
+            } catch (e) {
+                rec.error = String(e.message || e);
+                throw e;
+            }
+        }
+
         /** 把坏掉的 JSON 块单独发给 AI 修，返回替换好的回复；请求失败就原样返回 */
         async function repairJsonBlocks(i, raw, errors, r) {
             const tags = JSON_TAGS.filter((t) => errors.includes(`<${t}> 不是合法 JSON`));
@@ -2043,7 +2063,7 @@ ${blocks}`;
             try {
                 if (E.stopRequested) throw new Error('ABORTED');
                 const messages = buildMessages(prompt);
-                const fixed = addUsage(r, messages, await cfg.callModel(messages, { layer: i, attempt: 0, prompt, purpose: 'repair' }));
+                const fixed = await callAndLog(r, messages, { layer: i, attempt: 0, prompt, purpose: 'repair' }, true);
                 let out = raw;
                 for (const t of tags) {
                     const x = extractTag(fixed, t);
@@ -2069,7 +2089,7 @@ ${blocks}`;
                 r.attempts = attempt + 1;
                 let raw;
                 try {
-                    raw = addUsage(r, req.messages, await cfg.callModel(req.messages, { layer: i, attempt, prompt: req.prompt }));
+                    raw = await callAndLog(r, req.messages, { layer: i, attempt, prompt: req.prompt });
                 } catch (e) {
                     lastErr = e;
                     emit('layer-retry', { index: i, attempt, error: String(e.message || e) });
@@ -2078,6 +2098,8 @@ ${blocks}`;
                 const layerNow = E.layers[i];
                 const popts = { translate: !!layerNow.translate, bodyTag: settings.bodyTag, sourceChars: layerNow.chars };
                 let parsed = parseLayerResponse(raw, popts);
+                const mainRec = r.calls[r.calls.length - 1];
+                if (!parsed.ok) mainRec.problem = parsed.errors.join('；');
                 // 正文没问题、只是 JSON 块写坏了：单独让 AI 修格式（只回几个 JSON，很省），
                 // 修不好就丢掉坏的那几块，保住正文，不整层重写
                 if (!parsed.ok && parsed.jsonOnly) {
@@ -2086,6 +2108,8 @@ ${blocks}`;
                     parsed = parseLayerResponse(raw, popts);
                     if (!parsed.ok && parsed.jsonOnly) parsed = parseLayerResponse(raw, { ...popts, lenient: true });
                     if (parsed.warnings.length) emit('layer-warn', { index: i, warnings: parsed.warnings });
+                    const fixRec = r.calls[r.calls.length - 1];
+                    if (fixRec !== mainRec) fixRec.problem = parsed.ok ? (parsed.warnings.length ? `修好一部分：${parsed.warnings.join('；')}` : '') : parsed.errors.join('；');
                 }
                 if (!parsed.ok) {
                     lastErr = new Error(parsed.errors.join('；'));

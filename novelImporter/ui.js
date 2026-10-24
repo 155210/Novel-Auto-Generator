@@ -2148,6 +2148,25 @@
         );
     }
 
+    /** 这一层每次请求的原始输出（首次、重试、修格式），按顺序列出来 */
+    function callsHtml(r) {
+        const calls = r.calls || [];
+        if (!calls.length) return '';
+        const NAME = { layer: '正文请求', repair: '修 JSON 格式' };
+        return (
+            `<details class="nim-fold"><summary>每次请求的原始输出（${calls.length} 次）</summary>` +
+            calls
+                .map((c, k) => {
+                    const head = `第 ${k + 1} 次 · ${NAME[c.purpose] || c.purpose}${c.purpose === 'layer' ? `（第 ${c.attempt + 1} 次尝试）` : ''}${c.tokens ? ` · ${tokenText({ ...c.tokens, calls: 1 })}` : ''}`;
+                    const state = c.error ? `<div class="nim-alert danger">请求失败：${esc(c.error)}</div>` : c.problem ? `<div class="nim-alert warn">${esc(c.problem)}</div>` : '';
+                    const req = c.request ? `<details class="nim-fold"><summary>发出去的内容</summary><pre class="nim-pre">${esc(c.request.map((m) => `【${m.role}】\n${m.content}`).join('\n\n'))}</pre></details>` : '';
+                    return `<details class="nim-fold"><summary>${esc(head)}</summary>${state}${req}<pre class="nim-pre">${esc(c.raw || '')}</pre></details>`;
+                })
+                .join('') +
+            `</details>`
+        );
+    }
+
     /** 楼层内容转成 HTML，AI 补充的部分用 <mark> 标出来（只在界面里，不改楼层本身） */
     function floorHtml(e, i, floor) {
         const mes = floor ? floor.mes : '';
@@ -2208,10 +2227,11 @@
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
             body += layerWorldbookHtml(e, i, r);
             if (r.parsed.terms && r.parsed.terms.length) body += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
-            body += `<details class="nim-fold"><summary>AI 原始输出</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
+            body += `<details class="nim-fold"><summary>程序最后用的回复${(r.calls || []).some((c) => c.purpose === 'repair') ? '（修过格式后拼回去的）' : ''}</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
         } else if (r && r.status === 'failed') {
             body += `<div class="nim-alert danger">失败：${esc(r.error)}</div>`;
         }
+        if (r) body += callsHtml(r);
         body += `<details class="nim-fold"><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
         const reviewHtml = reviewing
             ? `<div class="nim-review">
