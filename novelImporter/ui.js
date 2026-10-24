@@ -31,6 +31,7 @@
         tableTemplate: null,
         seedWorldbook: null,
         seedGlossary: null, // [{source, target, note}]
+        glossaryRemoved: [], // 用户在术语表里删掉的原文，AI 之后再报也不收
         stWorlds: null, // 酒馆里开着的世界书：[{name, source, count, chars, rules}]，开始处理时重读
         outputRules: '', // 勾选的那几本拼成的输出要求
         images: [], // EPUB 插图：[{id, name, mime, data(base64)}]，正文里是〔插图id〕
@@ -81,20 +82,31 @@
         return file.text();
     }
 
+    /**
+     * 认编码：能按 UTF-8 完整解码就用 UTF-8（GB18030 几乎能把任何字节解出字来，按字数比会误判）；
+     * 否则在 GB18030 和 Big5 里取乱码最少的；带 UTF-16 BOM 的按 UTF-16。
+     */
     async function decodeTxt(file) {
         const buf = await file.arrayBuffer();
-        let best = { text: '', score: -Infinity };
-        for (const enc of ['utf-8', 'gb18030', 'big5']) {
+        const b = new Uint8Array(buf.slice(0, 2));
+        if (b[0] === 0xff && b[1] === 0xfe) return new TextDecoder('utf-16le').decode(buf);
+        if (b[0] === 0xfe && b[1] === 0xff) return new TextDecoder('utf-16be').decode(buf);
+        try {
+            return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+        } catch (e) {
+            /* 不是 UTF-8 */
+        }
+        let best = null;
+        for (const enc of ['gb18030', 'big5', 'utf-8']) {
             try {
-                const text = new TextDecoder(enc, { fatal: false }).decode(buf);
-                const bad = (text.match(/�/g) || []).length;
-                const score = text.length - bad * 50;
-                if (score > best.score) best = { text, score };
+                const text = new TextDecoder(enc).decode(buf);
+                const bad = (text.match(/\uFFFD/g) || []).length;
+                if (!best || bad < best.bad) best = { text, bad };
             } catch (e) {
                 /* 不支持的编码 */
             }
         }
-        return best.text;
+        return best ? best.text : '';
     }
 
     function getPath(obj, path) {
@@ -153,6 +165,14 @@
     }
 
     // 界面字段定义：type 为 text/number/textarea/check/select/lines/json
+    const POS_OPTIONS = [
+        [0, '在角色定义之前'],
+        [1, '在角色定义之后'],
+        [2, '在作者注释之前'],
+        [3, '在作者注释之后'],
+        [4, '自定义深度'],
+    ];
+
     const FIELDS = {
         layer: [
             { key: 'layerChars', label: '每层字数', type: 'number', hint: '默认 15000' },
@@ -253,7 +273,11 @@
             { key: 'worldbookEnabled', label: '提取世界书', type: 'check' },
             { key: 'worldbookPrompt', label: '世界书额外要求', type: 'textarea', rows: 3 },
             { key: 'worldbookContextChars', label: '每层带给 AI 的已有条目字数上限', type: 'number' },
+            { key: 'summaryGuide', label: '每层摘要的写法', type: 'textarea', rows: 3, hint: '摘要会导出为「剧情 - 第N层」条目，也用在下一层的前情提要和角色卡简介里' },
             { key: 'plotSummaryEntries', label: '每层摘要也导出为「剧情」条目', type: 'check' },
+            { key: 'plotPosition', label: '剧情条目的位置', type: 'select', options: POS_OPTIONS },
+            { key: 'plotDepth', label: '剧情条目的深度（位置选自定义深度时）', type: 'number' },
+            { key: 'plotOrder', label: '剧情条目的顺序', type: 'number', hint: '默认 50' },
         ],
         table: [
             { key: 'tablesEnabled', label: '每层填写记忆表格', type: 'check' },
@@ -524,6 +548,7 @@
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
             seedGlossary: State.seedGlossary,
+            glossaryRemoved: State.glossaryRemoved,
             images: State.images,
             imagePaths: State.imagePaths,
             meta: State.meta,
@@ -544,6 +569,7 @@
         State.tableTemplate = snap.tableTemplate || null;
         State.seedWorldbook = snap.seedWorldbook || null;
         State.seedGlossary = snap.seedGlossary || null;
+        State.glossaryRemoved = Array.isArray(snap.glossaryRemoved) ? snap.glossaryRemoved : [];
         State.images = snap.images || [];
         State.imagePaths = snap.imagePaths || null;
         State.meta = { ...State.meta, ...(snap.meta || {}) };
@@ -568,7 +594,13 @@
             substitute: substituteMacros,
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
-            seedGlossary: State.seedGlossary,
+            // 术语表在面板里随时能改，引擎每次取最新的
+            get seedGlossary() {
+                return State.seedGlossary;
+            },
+            get glossaryRemoved() {
+                return State.glossaryRemoved;
+            },
             get outputRules() {
                 return State.settings.stWorldEnabled ? State.outputRules : '';
             },
@@ -1363,14 +1395,6 @@
     // ============================================
 
     const catUi = { editing: null };
-    const POS_OPTIONS = [
-        [0, '在角色定义之前'],
-        [1, '在角色定义之后'],
-        [2, '在作者注释之前'],
-        [3, '在作者注释之后'],
-        [4, '自定义深度'],
-    ];
-
     function categories() {
         return State.settings.worldbookCategories;
     }
@@ -1639,6 +1663,174 @@
         </div>`;
     }
 
+    // ============================================
+    // 清掉的内容：分层时删掉的广告行、行内水印、重复垃圾段、空章，给用户核对
+    // ============================================
+
+    function openCleanLog() {
+        const e = State.engine;
+        const lg = e && e.stats && e.stats.cleanLog;
+        if (!lg) return toast(e && e.layers.length ? '这份任务是旧版本分的层，点「按当前设置重新分层」后才能看清掉的内容' : '先选择小说并分层，才有清掉的内容', 'warning');
+        const empty = (e.stats.emptyChapters || []).map((t) => ({ text: t }));
+        const chap = (c) => (c ? `<div class="nim-cl-chap">${esc(c)}</div>` : '');
+        const group = (title, list, row, note) =>
+            `<details class="nim-cl-group" ${list.length ? '' : 'disabled'}><summary>${title}<span class="nim-muted">${list.length ? '' : '无'}</span></summary>${note ? `<div class="nim-muted">${note}</div>` : ''}<ul class="nim-cl-list">${list.map(row).join('')}</ul>${list.length >= 3000 ? '<div class="nim-muted">太多了，只列出前 3000 条</div>' : ''}</details>`;
+        $('nim-cl-body').innerHTML =
+            `<div class="nim-muted">分层时清掉的内容都在这里，按类别展开看。发现删错了，到设置「分层与清洗」里改对应的规则，再点「按当前设置重新分层」。</div>` +
+            group(
+                `广告行（${lg.ads.length} 行${lg.ads.some((a) => a.prev) ? `，连带上一行 ${lg.ads.filter((a) => a.prev).length} 行` : ''}）`,
+                lg.ads,
+                (a) => `<li>${chap(a.chapter)}${a.prev ? `<div class="nim-cl-prev">连带删掉：${esc(a.prev)}</div>` : ''}<div>${esc(a.text)}</div></li>`,
+                '「连带删掉」是广告上面那行没有句末标点的短行，可以在设置里关掉「同时删掉广告行上面那行短标题」。',
+            ) +
+            group(
+                `行内水印（${lg.inline.length} 处）`,
+                lg.inline,
+                (a) => {
+                    // 水印前后各带 30 个字，看得出删的是哪儿
+                    const at = Math.max(0, a.line.indexOf(a.text));
+                    const before = a.line.slice(Math.max(0, at - 30), at);
+                    const after = a.line.slice(at + a.text.length, at + a.text.length + 30);
+                    return `<li>${chap(a.chapter)}<div>${at > 30 ? '…' : ''}${esc(before)}<mark class="nim-cl-mark">${esc(a.text)}</mark>${esc(after)}${at + a.text.length + 30 < a.line.length ? '…' : ''}</div></li>`;
+                },
+            ) +
+            group(
+                `重复垃圾段（${lg.repeated.length} 种，共 ${e.stats.repeatedLines} 段）`,
+                lg.repeated,
+                (a) => `<li>${chap(a.chapter)}<div>${esc(a.text)}</div><div class="nim-cl-prev">${a.reason === 'chapter' ? '这一章大半是垃圾段，剩下的零星几行一起删' : '全书重复出现'}，删了 ${a.count} 处</div></li>`,
+                '同一段只列一次，章节是第一次出现的位置。',
+            ) +
+            group(`没有正文的章（${empty.length} 章）`, empty, (a) => `<li><div>${esc(a.text)}</div></li>`, '这些章去掉垃圾内容后没有正文，原文可能被盗版站替换了，建议换个源。');
+        $('nim-cl').hidden = false;
+    }
+
+    // ============================================
+    // 术语表：看、搜、改、删、加（和小说翻译模块的术语表一样，分页显示）
+    // ============================================
+
+    const GLOSS_PAGE = 50;
+    const glossUi = { list: [], opened: [], page: 0, q: '' };
+
+    function currentGlossary() {
+        const e = State.engine;
+        try {
+            if (e && e.layers.length) return e.finalState().glossary || [];
+        } catch (err) {
+            /* 退回初始表 */
+        }
+        return C.normalizeGlossary(State.seedGlossary);
+    }
+
+    function openGlossary() {
+        glossUi.list = currentGlossary().map((t) => ({ ...t }));
+        glossUi.opened = glossUi.list.map((t) => t.source);
+        glossUi.page = 0;
+        glossUi.q = '';
+        $('nim-gl-search').value = '';
+        renderGlossaryEdit();
+        $('nim-gl').hidden = false;
+    }
+
+    function renderGlossaryEdit() {
+        const q = glossUi.q.trim().toLowerCase();
+        const rows = glossUi.list.map((t, i) => ({ t, i })).filter(({ t }) => !q || [t.source, t.target, t.note].some((v) => String(v || '').toLowerCase().includes(q)));
+        const pages = Math.max(1, Math.ceil(rows.length / GLOSS_PAGE));
+        glossUi.page = Math.min(Math.max(0, glossUi.page), pages - 1);
+        const slice = rows.slice(glossUi.page * GLOSS_PAGE, (glossUi.page + 1) * GLOSS_PAGE);
+        $('nim-gl-count').textContent = `共 ${glossUi.list.length} 条${q ? `，搜到 ${rows.length} 条` : ''}`;
+        $('nim-gl-list').innerHTML = slice.length
+            ? slice
+                  .map(
+                      ({ t, i }) => `<li class="nim-gl-row">
+                <input class="nim-input" data-gl="${i}" data-f="source" value="${esc(t.source)}" placeholder="原文">
+                <span class="nim-gl-arrow">→</span>
+                <input class="nim-input" data-gl="${i}" data-f="target" value="${esc(t.target)}" placeholder="译名">
+                <button class="nim-icon-btn sm" data-gl-del="${i}" title="删除">✕</button>
+                <input class="nim-input nim-gl-note" data-gl="${i}" data-f="note" value="${esc(t.note || '')}" placeholder="说明（可选）">
+              </li>`,
+                  )
+                  .join('')
+            : `<li class="nim-empty">${glossUi.list.length ? '没有匹配的术语' : '还没有术语。翻译外文小说时会自动积累，也可以手动添加。'}</li>`;
+        $('nim-gl-pager').innerHTML =
+            pages > 1
+                ? `<button class="nim-btn sm" data-gl-page="-1" ${glossUi.page ? '' : 'disabled'}>上一页</button><span class="nim-muted">${glossUi.page + 1} / ${pages}</span><button class="nim-btn sm" data-gl-page="1" ${glossUi.page < pages - 1 ? '' : 'disabled'}>下一页</button>`
+                : '';
+    }
+
+    /** 完成：存成初始术语表（优先于 AI 报的），删掉的词记下来，之后 AI 再报也不收 */
+    function saveGlossaryEdit() {
+        const list = C.normalizeGlossary(glossUi.list);
+        const keep = new Set(list.map((t) => t.source));
+        const gone = glossUi.opened.filter((src) => !keep.has(src));
+        State.glossaryRemoved = [...new Set([...(State.glossaryRemoved || []).filter((src) => !keep.has(src)), ...gone])];
+        State.seedGlossary = list;
+        $('nim-gl').hidden = true;
+        log(`术语表已保存：${list.length} 条${gone.length ? `，删掉 ${gone.length} 条` : ''}`);
+        toast(`术语表已保存（${list.length} 条），后面的层按新的来`, 'success');
+        saveProgress();
+        renderAll();
+    }
+
+    function bindGlossaryEdit() {
+        const box = $('nim-gl');
+        box.addEventListener('input', (ev) => {
+            const i = ev.target.dataset.gl;
+            if (i !== undefined && glossUi.list[i]) glossUi.list[i][ev.target.dataset.f] = ev.target.value;
+            else if (ev.target.id === 'nim-gl-search') {
+                glossUi.q = ev.target.value;
+                glossUi.page = 0;
+                renderGlossaryEdit();
+            }
+        });
+        box.addEventListener('click', (ev) => {
+            const b = ev.target.closest('button');
+            if (ev.target === box) return ($('nim-gl').hidden = true);
+            if (!b) return;
+            if (b.dataset.glDel !== undefined) {
+                glossUi.list.splice(Number(b.dataset.glDel), 1);
+                renderGlossaryEdit();
+            } else if (b.dataset.glPage) {
+                glossUi.page += Number(b.dataset.glPage);
+                renderGlossaryEdit();
+            } else if (b.dataset.gl === 'add') {
+                glossUi.list.unshift({ source: '', target: '', note: '' });
+                glossUi.q = '';
+                glossUi.page = 0;
+                $('nim-gl-search').value = '';
+                renderGlossaryEdit();
+                box.querySelector('[data-gl="0"][data-f="source"]')?.focus({ preventScroll: true });
+            } else if (b.dataset.gl === 'clear') {
+                if (confirm('清空术语表？删掉的词之后 AI 再报也不会收。')) {
+                    glossUi.list = [];
+                    renderGlossaryEdit();
+                }
+            } else if (b.dataset.gl === 'save') saveGlossaryEdit();
+            else if (b.dataset.gl === 'cancel') $('nim-gl').hidden = true;
+        });
+    }
+
+    function glossaryHtml() {
+        return `<div id="nim-gl" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="术语表">
+          <div class="nim-sheet-head"><b>术语表 <span id="nim-gl-count" class="nim-muted"></span></b><button class="nim-icon-btn" data-gl="cancel" title="关闭">✕</button></div>
+          <div class="nim-sheet-body">
+            <div class="nim-muted">术语表只发给 AI 参考，不会出现在正文里。这里改的优先于 AI 报的；删掉的词，之后 AI 再报也不会收。已经翻好的层不会变，后面的层按新的来。</div>
+            <input id="nim-gl-search" class="nim-input" placeholder="搜索原文、译名、说明">
+            <div class="nim-row"><button class="nim-btn sm" data-gl="add">添加术语</button><button class="nim-btn sm danger-ghost" data-gl="clear">清空</button></div>
+            <ul id="nim-gl-list" class="nim-gl-list"></ul>
+            <div id="nim-gl-pager" class="nim-row nim-gl-pager"></div>
+          </div>
+          <div class="nim-sheet-foot"><span class="nim-grow-sp"></span><button class="nim-btn" data-gl="cancel">取消</button><button class="nim-btn primary" data-gl="save">保存</button></div>
+        </div></div>`;
+    }
+
+    function cleanLogHtml() {
+        return `<div id="nim-cl" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="清掉的内容">
+          <div class="nim-sheet-head"><b>清掉的内容</b><button class="nim-icon-btn" data-cl="close" title="关闭">✕</button></div>
+          <div id="nim-cl-body" class="nim-sheet-body"></div>
+          <div class="nim-sheet-foot"><button class="nim-btn primary" data-cl="close">关闭</button></div>
+        </div></div>`;
+    }
+
     function presetEditHtml() {
         return `<div id="nim-pe" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="编辑预设条目">
           <div class="nim-sheet-head"><b>编辑条目</b><button class="nim-icon-btn" data-pe="cancel" title="关闭">✕</button></div>
@@ -1877,12 +2069,19 @@
             if (st && st.chapterUnit) c.push(['标题', `第X${st.chapterUnit}`]);
             if (st) c.push(['翻译', st.translate ? '整本翻译' : '不需要']);
             if (State.images.length) c.push(['插图', `${State.images.length} 张`]);
-            if (st && st.cleanedLines + st.repeatedLines + st.inlineAds) c.push(['清掉广告', `${st.cleanedLines + st.repeatedLines + st.inlineAds} 处`]);
-            if (st && st.emptyChapters.length) c.push(['空章', `${st.emptyChapters.length} 章`, 'warn']);
-            chips.innerHTML = c.map(([k, v, cls]) => `<div class="nim-stat ${cls || ''}"><div class="nim-stat-v">${esc(v)}</div><div class="nim-stat-k">${esc(k)}</div></div>`).join('');
+            if (st && st.cleanedLines + st.repeatedLines + st.inlineAds) c.push(['清掉广告 ›', `${st.cleanedLines + st.repeatedLines + st.inlineAds} 处`, 'link']);
+            if (st && st.emptyChapters.length) c.push(['空章 ›', `${st.emptyChapters.length} 章`, 'warn link']);
+            chips.innerHTML = c
+                .map(([k, v, cls]) => {
+                    const tag = (cls || '').includes('link') ? 'button' : 'div';
+                    return `<${tag} class="nim-stat ${cls || ''}" ${tag === 'button' ? 'data-cleanlog title="查看清掉的内容"' : ''}><div class="nim-stat-v">${esc(v)}</div><div class="nim-stat-k">${esc(k)}</div></${tag}>`;
+                })
+                .join('');
         }
         const tpl = State.tableTemplate;
-        setRes('nim-res-tpl', tpl, tpl ? `${tpl.tables.length} 张表${State.settings.tableMessageTemplate ? ' · 有消息模板' : ''}` : '还没导入');
+        const tplText = tpl ? `${tpl.tables.length} 张表${State.settings.tableMessageTemplate ? ' · 有消息模板' : ''}` : '还没导入';
+        setRes('nim-res-tpl', tpl, tplText);
+        if ($('nim-tpl-state2')) $('nim-tpl-state2').textContent = `表格模板：${tplText}`;
         const wbN = State.seedWorldbook ? Object.values(State.seedWorldbook).reduce((a, x) => a + Object.keys(x).length, 0) : 0;
         setRes('nim-res-wb', wbN, wbN ? `${wbN} 条` : '可选，从头建');
         const gNow = e ? (e.finalState().glossary || []).length : 0;
@@ -1963,10 +2162,10 @@
             'nim-res-gloss',
             '🔤',
             '术语表',
-            `<button id="nim-gloss-nt" class="nim-btn sm">从小说翻译读取</button><label class="nim-btn sm">导入<input type="file" id="nim-gloss-file" accept=".json,.txt" hidden></label><button id="nim-gloss-clear" class="nim-btn ghost sm">清除</button>`,
+            `<button id="nim-gloss-edit" class="nim-btn sm">查看和编辑</button><button id="nim-gloss-nt" class="nim-btn sm">从小说翻译读取</button><label class="nim-btn sm">导入<input type="file" id="nim-gloss-file" accept=".json,.txt" hidden></label><button id="nim-gloss-clear" class="nim-btn ghost sm">清除</button>`,
         )}
       </div>
-      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button></div>`)}
+      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog" class="nim-btn">查看清掉的内容</button></div>`)}
     </section>
 
     <section class="nim-panel" data-panel="settings">
@@ -1982,12 +2181,17 @@
            </div>`,
       )}
       ${card('preset', '酒馆预设', '导入后每个条目可以开关、拖动排序、编辑', presetHtml())}
-      ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate'))}
+      ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
       ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite'))}
       ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
       ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
       ${card('wb', '世界书', '提取分类（和 TXT转世界书 一样）、额外要求', categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
-      ${card('table', '记忆表格', '表格角色、消息模板、大总结', f('table'))}
+      ${card(
+          'table',
+          '记忆表格',
+          '导入表格模板、表格角色、消息模板、大总结',
+          `<div class="nim-row nim-tpl-row"><span id="nim-tpl-state2" class="nim-muted nim-grow"></span><label class="nim-btn sm">导入表格模板<input type="file" id="nim-tpl2" accept=".json" hidden></label><button id="nim-tpl-live2" class="nim-btn sm">从记忆插件读取</button></div>${f('table')}`,
+      )}
       ${card(
           'cfg',
           '配置与任务',
@@ -2060,6 +2264,8 @@
   </footer>
   ${presetEditHtml()}
   ${catEditHtml()}
+  ${cleanLogHtml()}
+  ${glossaryHtml()}
 </div></div>`;
     }
 
@@ -2067,7 +2273,7 @@
 /* 手机版酒馆会改写弹窗的尺寸，inset:0 在手机上高度会变成 0，所以写死宽高并加 !important */
 .nim-overlay{position:fixed !important;top:0 !important;left:0 !important;right:0 !important;bottom:0 !important;width:100vw !important;height:100vh !important;height:100dvh !important;max-height:none !important;display:flex !important;align-items:center;justify-content:center;background:rgba(8,8,14,.62);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:99999 !important;box-sizing:border-box;padding:24px;}
 .nim-modal{--bg:#15161c;--surface:#1c1d25;--surface2:#242530;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.14);--text:#ececf2;--muted:#9496a8;--accent:#8b7cf6;--accent2:#6aa8ff;--ok:#3ccf91;--warn:#f2b441;--bad:#f06464;
-  position:relative;display:flex;flex-direction:column;width:min(1080px,100%);height:min(900px,100%);background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:18px;box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:hidden;font-size:14px;line-height:1.5;text-align:left;}
+  position:relative;display:flex;flex-direction:column;width:min(1080px,100%);height:min(900px,100%);background:var(--bg);color:var(--text);border:1px solid var(--line2);border-radius:18px;box-shadow:0 24px 80px rgba(0,0,0,.55);overflow:hidden;overflow:clip;font-size:14px;line-height:1.5;text-align:left;}
 .nim-modal *{box-sizing:border-box;}
 .nim-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(139,124,246,.10),transparent);}
 .nim-brand{display:flex;align-items:center;gap:12px;min-width:0;}
@@ -2106,6 +2312,8 @@
 .nim-stat-v{font-size:16px;font-weight:650;}
 .nim-stat-k{font-size:11px;color:var(--muted);}
 .nim-stat.warn .nim-stat-v{color:var(--warn);}
+button.nim-stat{font:inherit;color:inherit;text-align:left;cursor:pointer;}
+button.nim-stat .nim-stat-k{color:var(--accent2);}
 .nim-res-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden;}
 .nim-res{display:flex;align-items:center;gap:12px;padding:12px 14px;flex-wrap:wrap;}
 .nim-res+.nim-res{border-top:1px solid var(--line);}
@@ -2138,8 +2346,8 @@ select.nim-input{appearance:auto;}
 .nim-bad{border-color:var(--bad) !important;}
 .nim-grow{flex:1 1 160px;width:auto;}
 /* 开关 */
-.nim-check{grid-column:1/-1;display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;user-select:none;}
-.nim-check input{position:absolute;opacity:0;pointer-events:none;}
+.nim-check{grid-column:1/-1;position:relative;display:flex;align-items:center;gap:10px;font-size:13px;cursor:pointer;user-select:none;}
+.nim-check input{position:absolute;left:0;top:0;width:1px;height:1px;margin:0;opacity:0;pointer-events:none;}
 .nim-switch{flex:none;position:relative;width:38px;height:22px;border-radius:999px;background:var(--surface2);border:1px solid var(--line2);transition:background .15s;}
 .nim-switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#cfd0dc;transition:transform .15s;}
 .nim-check input:checked+.nim-switch{background:var(--accent);border-color:transparent;}
@@ -2214,8 +2422,8 @@ select.nim-input{appearance:auto;}
 .nim-pr-handle{flex:none;width:36px;height:40px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted);cursor:grab;touch-action:none;user-select:none;}
 .nim-pr.is-dragging .nim-pr-handle{cursor:grabbing;color:var(--accent);}
 .nim-pr-pin{flex:none;width:38px;text-align:center;}
-.nim-pr-toggle{flex:none;display:inline-flex;align-items:center;cursor:pointer;}
-.nim-pr-toggle input{position:absolute;opacity:0;pointer-events:none;}
+.nim-pr-toggle{flex:none;position:relative;display:inline-flex;align-items:center;cursor:pointer;}
+.nim-pr-toggle input{position:absolute;left:0;top:0;width:1px;height:1px;margin:0;opacity:0;pointer-events:none;}
 .nim-pr-toggle input:checked+.nim-switch{background:var(--accent);border-color:transparent;}
 .nim-pr-toggle input:checked+.nim-switch::after{transform:translateX(16px);background:#fff;}
 .nim-pr-check{flex:none;width:20px;height:20px;margin:0 9px;accent-color:var(--bad);}
@@ -2231,6 +2439,20 @@ select.nim-input{appearance:auto;}
 /* 用 fixed 而不是 absolute：弹窗本身 overflow:hidden，输入框聚焦时会把它整体卷上去 */
 .nim-sheet{position:fixed;top:0;left:0;width:100vw;height:100vh;height:100dvh;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(8,8,14,.6);padding:20px;}
 .nim-sheet[hidden]{display:none;}
+.nim-gl-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.nim-gl-row{display:grid;grid-template-columns:1fr auto 1fr auto;gap:6px;align-items:center;padding:8px;border-radius:10px;background:var(--surface);border:1px solid var(--line);}
+.nim-gl-row .nim-gl-note{grid-column:1/-1;font-size:12px;}
+.nim-gl-arrow{color:var(--muted);}
+.nim-gl-pager{justify-content:center;align-items:center;}
+.nim-cl-group{border:1px solid var(--line);border-radius:12px;background:var(--surface);padding:0 12px;}
+.nim-cl-group>summary{display:flex;justify-content:space-between;gap:8px;padding:12px 0;cursor:pointer;font-weight:600;font-size:13px;list-style:none;}
+.nim-cl-group>summary::-webkit-details-marker{display:none;}
+.nim-cl-group[disabled]>summary{color:var(--muted);cursor:default;}
+.nim-cl-list{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:8px;}
+.nim-cl-list li{padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:13px;word-break:break-all;}
+.nim-cl-chap{font-size:11px;color:var(--accent2);margin-bottom:2px;}
+.nim-cl-prev{font-size:12px;color:var(--muted);}
+.nim-cl-mark{background:rgba(240,100,100,.25);color:var(--text);border-radius:3px;padding:0 2px;}
 .nim-sheet-box{width:min(620px,100%);max-height:100%;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);}
 .nim-sheet-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);}
 .nim-sheet-body{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
@@ -2328,13 +2550,25 @@ select.nim-input{appearance:auto;}
             if (file) onNovelFile(file);
         });
         onFile('nim-tpl', onTemplateFile);
+        onFile('nim-tpl2', onTemplateFile);
         onFile('nim-seed-wb', onWorldbookFile);
         onFile('nim-gloss-file', onGlossaryFile);
         onFile('nim-cfg-import', importConfig);
         onFile('nim-task-import', importTask);
         on('nim-prepare', 'click', prepareLayers);
+        on('nim-cleanlog', 'click', openCleanLog);
+        $('nim-file-stats').addEventListener('click', (ev) => {
+            if (ev.target.closest('[data-cleanlog]')) openCleanLog();
+        });
+        $('nim-cl').addEventListener('click', (ev) => {
+            if (ev.target === $('nim-cl') || ev.target.closest('[data-cl="close"]')) $('nim-cl').hidden = true;
+        });
         on('nim-tpl-live', 'click', templateFromPlugin);
+        on('nim-tpl-live2', 'click', templateFromPlugin);
         on('nim-gloss-nt', 'click', glossaryFromTranslator);
+        on('nim-gloss-edit', 'click', openGlossary);
+        on('nim-gloss-edit2', 'click', openGlossary);
+        bindGlossaryEdit();
         on('nim-gloss-clear', 'click', () => setSeedGlossary([], '已清除初始术语表'));
         on('nim-clear-wb', 'click', () => {
             State.seedWorldbook = null;
@@ -2432,6 +2666,11 @@ select.nim-input{appearance:auto;}
         const wrap = document.createElement('div');
         wrap.innerHTML = buildHtml();
         document.body.appendChild(wrap.firstElementChild);
+        // 弹窗本身不该滚动：手机上聚焦藏起来的开关时浏览器会把它整个卷上去，卷了就拉回来
+        const box = document.querySelector('#nim-modal .nim-modal');
+        box.addEventListener('scroll', () => {
+            if (box.scrollTop || box.scrollLeft) box.scrollTop = box.scrollLeft = 0;
+        });
         bind();
         fillFields();
         renderPreset();
