@@ -400,6 +400,26 @@ describe('运行引擎', () => {
         expect(engine.results[0].parsed.worldbook.角色.路长远.内容).toBe('修好了');
     });
 
+    it('每层记下输入输出 token：接口给了用量就用真实的，没给就估算', async () => {
+        const { engine } = makeEngine((layer) => (layer === 1 ? normal(layer) : { text: normal(layer), usage: { prompt_tokens: 1000 + layer, completion_tokens: 200, prompt_tokens_details: { cached_tokens: 300 } } }));
+        await engine.run();
+        expect(engine.results[0].tokens).toEqual({ input: 1000, output: 200, cached: 300, calls: 1, estimated: false });
+        expect(engine.results[1].tokens.estimated).toBe(true);
+        expect(engine.results[1].tokens.input).toBeGreaterThan(0);
+        expect(engine.stats.inputTokens).toBe(1000 + 1002 + engine.results[1].tokens.input);
+        expect(engine.stats.cachedTokens).toBe(600);
+    });
+
+    it('修格式的请求也算进这一层的用量', async () => {
+        const { engine } = makeEngine((layer, last) => {
+            if (/只修正格式/.test(last)) return { text: '<表格>{}</表格>', usage: { input_tokens: 50, output_tokens: 5 } };
+            const r = normal(layer);
+            return { text: layer === 0 ? r.replace(/<表格>[\s\S]*?<\/表格>/, '<表格>{坏</表格>') : r, usage: { input_tokens: 900, output_tokens: 100 } };
+        });
+        await engine.run();
+        expect(engine.results[0].tokens).toEqual({ input: 950, output: 105, cached: 0, calls: 2, estimated: false });
+    });
+
     it('修格式也修不好：丢掉坏的 JSON 块，正文照用', async () => {
         const { engine, calls } = makeEngine((layer, last) => {
             if (/只修正格式/.test(last)) return '还是坏的';
