@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.7';
+    const VERSION = '1.4.8';
 
     // ============================================
     // 默认配置
@@ -1129,7 +1129,14 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * 把补丁应用到一层段落上。
      * @returns {{paras: string[], applied: number, failed: Array, addedChars: number}}
      */
+    // 界面里高亮 AI 补充的内容用的标记（私用区字符，正文里不会出现；只在界面显示时用，楼层和导出不带）
+    const MARK_OPEN = '\uE000';
+    const MARK_CLOSE = '\uE001';
+    const stripMarks = (t) => String(t || '').replace(/[\uE000\uE001]/g, '');
+
+    /** opts.mark：补充的内容前后加上高亮标记 */
     function applyPatches(paras, patches, opts = {}) {
+        const wrap = (t) => (opts.mark && t ? MARK_OPEN + t + MARK_CLOSE : t);
         const maxChars = Number(opts.maxPatchChars) || DEFAULT_SETTINGS.maxPatchChars;
         const byId = new Map(paras.map((p, i) => [p.id, i]));
         const failed = [];
@@ -1154,7 +1161,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             }
             const src = paras[idx].text;
             if (pt.op === 'para') {
-                extraParas[idx].push(pt.text);
+                extraParas[idx].push(wrap(pt.text));
                 addedChars += pt.text.length;
                 applied++;
                 continue;
@@ -1184,7 +1191,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 failed.push({ patch: pt, reason: '与同段另一条补丁重叠' });
                 continue;
             }
-            edits[idx].push({ pos, len, insert: pt.text });
+            edits[idx].push({ pos, len, insert: wrap(pt.text) });
             addedChars += pt.text.length - len;
             applied++;
         }
@@ -2186,6 +2193,31 @@ ${blocks}`;
             });
         }
 
+        /**
+         * 某层正文，AI 补充的地方用 MARK_OPEN/MARK_CLOSE 包起来，给界面高亮用。
+         * 补丁层标出每条补充；整层改写的层标出原文里没有的段落；翻译层不标（返回 null）。
+         * 去掉标记后和 renderFloors 里的 body 一致。
+         */
+        function markedBody(i) {
+            const r = E.results[i];
+            const layer = E.layers[i];
+            if (!r || r.status !== 'done' || !layer) return null;
+            let paras;
+            if (r.patchStats && r.patchStats.rewritten) {
+                if (r.patchStats.translated || layer.translate) return null;
+                const norm = (t) => String(t).replace(/\s+/g, '');
+                const orig = new Set(layer.paras.map((p) => norm(p.text)));
+                paras = r.finalParas.map((t) => (orig.has(norm(t)) || !norm(t) ? t : MARK_OPEN + t + MARK_CLOSE));
+            } else {
+                paras = applyPatches(layer.paras, (r.parsed && r.parsed.patches) || [], { maxPatchChars: settings.maxPatchChars, mark: true }).paras;
+                if (stripMarks(paras.join('\n')) !== r.finalParas.join('\n')) return null;
+            }
+            let n = 0;
+            while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
+            const st = replay(n);
+            return applyAliases(paras.join('\n'), st.aliases, aliasTargetOf(settings));
+        }
+
         function finalState() {
             let n = 0;
             while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
@@ -2293,6 +2325,7 @@ ${sums}`;
             resetFrom,
             replay,
             renderFloors,
+            markedBody,
             finalState,
             exportWorldbook,
             exportTables,
@@ -2618,6 +2651,7 @@ ${sums}`;
         extractTag,
         parseLooseJson,
         replaceTag,
+        stripMarks,
         parsePatchLines,
         parseLayerResponse,
         applyPatches,

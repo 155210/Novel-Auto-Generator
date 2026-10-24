@@ -410,6 +410,24 @@ describe('运行引擎', () => {
         expect(engine.stats.cachedTokens).toBe(600);
     });
 
+    it('界面高亮：补丁层标出补充的话，去掉标记和楼层正文一致，楼层本身不带标记', async () => {
+        const { engine } = makeEngine(normal);
+        await engine.run();
+        const floor = engine.renderFloors()[0];
+        const m = engine.markedBody(0);
+        expect(m).toContain('\uE000裘月寒抬眸道。\uE001');
+        expect(C.stripMarks(m)).toBe(floor.body);
+        expect(/[\uE000\uE001]/.test(floor.mes)).toBe(false);
+    });
+
+    it('界面高亮：整层改写的层标出原文里没有的段落', async () => {
+        const { engine } = makeEngine((layer) => (layer === 0 ? reply({ rewritten: '“你来了。”\n新写的一段。', judge: { 触发: true, 规则: 'x', 说明: '', 回归原文: false } }) : normal(layer)));
+        await engine.run();
+        const m = engine.markedBody(0);
+        expect(m).toContain('\uE000新写的一段。\uE001');
+        expect(m).not.toContain('\uE000“你来了。”');
+    });
+
     it('修格式的请求也算进这一层的用量', async () => {
         const { engine } = makeEngine((layer, last) => {
             if (/只修正格式/.test(last)) return { text: '<表格>{}</表格>', usage: { input_tokens: 50, output_tokens: 5 } };
