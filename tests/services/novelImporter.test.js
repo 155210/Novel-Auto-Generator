@@ -443,6 +443,35 @@ describe('运行引擎', () => {
         expect(/[\uE000\uE001]/.test(floor.mes)).toBe(false);
     });
 
+    it('界面高亮：翻译层按 AI 标的 ⟪⟫ 高亮，正文里不带标记', async () => {
+        const pad = '雨一直下个不停。'.repeat(40);
+        const body = `第1话 雨夜\n“来了啊。”月寒说道。⟪她的手在发抖。⟫\n⟪\n新加的一整段。\n⟫\n${pad}`;
+        const engine = C.createEngine({
+            settings: { layerChars: 100000, reviewMode: 'off', retries: 0, tablesEnabled: false },
+            callModel: async () => `<bt>雨夜</bt>\n<摘要>x</摘要>\n<正文>\n${body}\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{}</表格>`,
+        });
+        engine.prepare('第1話 雨の夜\n' + '雨の音がする。'.repeat(200));
+        await engine.run();
+        const floor = engine.renderFloors()[0];
+        expect(/[⟪⟫]/.test(floor.mes)).toBe(false);
+        const m = engine.markedBody(0);
+        expect(m).toContain('\uE000她的手在发抖。\uE001');
+        expect(m).toContain('\uE000新加的一整段。\uE001');
+        expect(C.stripMarks(m)).toBe(floor.body);
+    });
+
+    it('修格式的请求不套预设', async () => {
+        const { engine, calls } = makeEngine((layer, last) => {
+            if (/只修正格式/.test(last)) return '<表格>{}</表格>';
+            const r = normal(layer);
+            return layer === 0 ? r.replace(/<表格>[\s\S]*?<\/表格>/, '<表格>{坏</表格>') : r;
+        });
+        await engine.run();
+        const fix = calls.find((c) => c.info.purpose === 'repair');
+        expect(fix.messages.length).toBe(2);
+        expect(fix.messages[0].role).toBe('system');
+    });
+
     it('界面高亮：整层改写的层标出原文里没有的段落', async () => {
         const { engine } = makeEngine((layer) => (layer === 0 ? reply({ rewritten: '“你来了。”\n新写的一段。', judge: { 触发: true, 规则: 'x', 说明: '', 回归原文: false } }) : normal(layer)));
         await engine.run();

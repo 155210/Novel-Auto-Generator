@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.14';
+    const VERSION = '1.4.15';
 
     // ============================================
     // 默认配置
@@ -641,7 +641,7 @@ ${tablesForPrompt(state, layerText, settings)}
         const how = translate
             ? `- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，<${settings.bodyTag || '正文'}> 里直接输出按改写方向改好的译文
 - 未触发时：<改写判定> 写 "触发": false，照常完整翻译`
-            : `- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，并且**不输出 <补丁>，改为输出 <改写正文>本层完整的改写后正文</改写正文>**
+            : `- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，并且**不输出 <补丁>，改为输出 <改写正文>本层完整的改写后正文</改写正文>**；<改写正文> 里和原文不同的部分（新写的、改动的）用 ⟪ 和 ⟫ 包起来，照抄原文的不包
 - 未触发时：<改写判定> 写 "触发": false，照常输出 <补丁>`;
         const base = `## 剧情改写规则（强规则）
 当本层原文出现下列情节时，触发剧情改写：
@@ -688,7 +688,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 - **章节标题也要翻译**成中文
 - 人名、地名、招式等专有名词的译名全书统一：「相关世界书条目」里已有译名的必须沿用
 - 原文中单独一行的 〔插图N〕 是插图位置，原样保留在对应位置
-- 不要添加解释、注释或原文`;
+- 不要添加解释、注释或原文
+- 按改写要求补充的话、因剧情改写而和原文意思不同的内容，用 ⟪ 和 ⟫ 包起来（只包新增或改动的部分，照原文翻的不包；程序会去掉这两个符号，只用来给用户标出改动）`;
 
     // ============================================
     // 术语表（翻译模式）
@@ -1008,6 +1009,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * AI 有时把译文写成「P29: 原文 → 译文」逐段对照，或者每段带 [P29] 段号。
      * 对照格式只留箭头后面的译文，段号去掉；正常的译文原样返回。
      */
+    /** AI 用 ⟪ ⟫ 标出的改动；正文里去掉，界面高亮时换成 MARK_OPEN/MARK_CLOSE */
+    function stripChangeMarks(t) {
+        return String(t || '').replace(/[⟪⟫]/g, '');
+    }
+
     function stripEchoedSource(text) {
         const lines = String(text || '').split('\n');
         const NUM = /^\s*\[?P\d+\]?\s*[:：]?\s*/;
@@ -1121,7 +1127,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             summary: summary.content,
             patches,
             badPatchLines: bad,
-            rewrittenText: rewritten.closed ? (opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
+            rewrittenText: rewritten.closed ? stripChangeMarks(opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
+            // 带 ⟪⟫ 改动标记的版本，只给界面高亮用
+            markedText: rewritten.closed && /[⟪⟫]/.test(rewritten.content) ? (opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
             divergence,
             aliases,
             worldbook,
@@ -2098,7 +2106,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 ${blocks}`;
             try {
                 if (E.stopRequested) throw new Error('ABORTED');
-                const messages = buildMessages(prompt);
+                // 不套用户的预设：预设里的角色扮演规则会让 AI 去写正文而不是修格式
+                const messages = [
+                    { role: 'system', content: '你是 JSON 格式修复工具。只修格式，不改内容，只输出修好的几段，不写任何别的话。' },
+                    { role: 'user', content: prompt },
+                ];
                 const fixed = await callAndLog(r, messages, { layer: i, attempt: 0, prompt, purpose: 'repair' }, true);
                 let out = raw;
                 for (const t of tags) {
@@ -2284,7 +2296,16 @@ ${blocks}`;
             const layer = E.layers[i];
             if (!r || r.status !== 'done' || !layer) return null;
             let paras;
-            if (r.patchStats && r.patchStats.rewritten) {
+            const mt = r.parsed && r.parsed.markedText;
+            if (r.patchStats && r.patchStats.rewritten && mt) {
+                // 独占一行的标记并到相邻行，免得分段时多出只有标记的空段
+                const conv = mt.replace(/(^|\n)[ \t]*⟪[ \t]*\n/g, '$1⟪').replace(/\n[ \t]*⟫[ \t]*(?=\n|$)/g, '⟫').replace(/⟪/g, MARK_OPEN).replace(/⟫/g, MARK_CLOSE);
+                const marked = ensureImageMarkers(layer.paras, splitParagraphs(conv));
+                if (stripMarks(marked.join('\n')) === r.finalParas.join('\n')) paras = marked;
+            }
+            if (paras) {
+                /* 用 AI 标的 */
+            } else if (r.patchStats && r.patchStats.rewritten) {
                 if (r.patchStats.translated || layer.translate) return null;
                 const norm = (t) => String(t).replace(/\s+/g, '');
                 const orig = new Set(layer.paras.map((p) => norm(p.text)));
