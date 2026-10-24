@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.35';
+    const VERSION = '1.4.36';
 
     // ============================================
     // 默认配置
@@ -185,6 +185,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         // 标签与标题
         titleTag: 'bt',
         floorTags: '',
+        floorTagsBefore: '', // 额外放在标题和正文之间的标签，逗号分隔
         wordReplace: '', // 词语替换：每行「原词 → 新词」，导出和导入酒馆时替换 // 额外放进楼层的标签：从 AI 原始回复里取，放在正文后面，逗号分隔
         bodyTag: '正文',
         titleMode: 'ai', // ai：AI 起标题；original：用原文章节标题
@@ -1924,6 +1925,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         let heading = floor.heading || floor.title;
         if (mark) heading = /[：:]/.test(heading) ? heading.replace(/[：:]/, (c) => c + mark) : mark + heading;
         parts.push(`<${s.titleTag}>\n${heading}\n</${s.titleTag}>`);
+        for (const x of floor.before || []) parts.push(x);
         parts.push(`<${s.bodyTag}>\n${floor.body}\n</${s.bodyTag}>`);
         // 夹在正文里的别的标签挪到正文后面、tableEdit 前面
         for (const x of floor.extras || []) parts.push(x);
@@ -2618,12 +2620,14 @@ ${blocks}`;
                 if (settings.titleMode === 'original' && !(E.layers[i].chapters || []).length && lastHeading) heading = lastHeading.replace(/（续）$/, '') + '（续）';
                 lastHeading = heading;
                 const parts = floorParts(i, r.finalParas);
+                const layout = floorTagLayout(r, parts.extras);
                 const floor = {
                     layer: i,
                     title: conv(r.parsed.title),
                     heading,
                     body: conv(parts.paras.join('\n')),
-                    extras: parts.extras.concat(floorTagBlocks(r, parts.extras)).map(conv),
+                    before: layout.before.map(conv),
+                    extras: layout.after.map(conv),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
                     divergence: r.inDivergence,
@@ -2682,15 +2686,27 @@ ${blocks}`;
         }
 
         /** 设置里要额外放进楼层的标签：从这层 AI 的原始回复里取（已经从正文里挪出来的不重复放） */
-        function floorTagBlocks(r, have) {
+        function floorTagBlocks(r, have, list) {
             const out = [];
-            for (const tag of splitTagList(settings.floorTags)) {
+            for (const tag of splitTagList(list)) {
                 if (tag === settings.titleTag || tag === settings.bodyTag) continue;
                 if (have.some((x) => x.startsWith(`<${tag}>`))) continue;
                 const x = extractTag(r.raw, tag);
                 if (x.closed && x.content) out.push(`<${tag}>\n${x.content}\n</${tag}>`);
             }
             return out;
+        }
+
+        /** 楼层里正文前、正文后各放哪些标签块：「放正文前面」里写了的标签（包括从正文里挪出来的）放前面 */
+        function floorTagLayout(r, extras) {
+            const beforeNames = splitTagList(settings.floorTagsBefore);
+            const isBefore = (x) => beforeNames.some((t) => x.startsWith(`<${t}>`));
+            const before = extras.filter(isBefore);
+            const after = extras.filter((x) => !isBefore(x));
+            return {
+                before: before.concat(floorTagBlocks(r, extras, settings.floorTagsBefore)),
+                after: after.concat(floorTagBlocks(r, extras, settings.floorTags)),
+            };
         }
 
         /** 楼层正文拆成：正文段落（别的标签块拿掉）+ 拿出来的标签块 */
