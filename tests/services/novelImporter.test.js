@@ -527,6 +527,38 @@ describe('运行引擎', () => {
         expect(engine.renderFloors()[0].mes).toContain('裘月寒抬眸道');
     });
 
+    it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
+        let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';
+        const { engine, calls } = makeEngine((layer, last) => {
+            if (/只修正格式/.test(last)) return '还是坏的';
+            if (/只按要求输出这一层的/.test(last)) return jsonReply;
+            const r = normal(layer);
+            return layer === 0 ? r.replace(/<表格>[\s\S]*?<\/表格>/, '<表格>{坏</表格>') : r;
+        });
+        await engine.run();
+        expect(engine.results[0].warnings[0]).toContain('表格');
+        const bodies = engine.renderFloors().map((f) => f.body);
+        const later = engine.results[2];
+        const nr = await engine.regenJson(0, '事件要写全');
+        const req = calls[calls.length - 1];
+        expect(req.info.purpose).toBe('json');
+        expect(req.messages[0].role).toBe('system');
+        expect(req.messages[1].content).toContain('事件要写全');
+        expect(req.messages[1].content).toContain('{坏');
+        expect(nr.warnings).toEqual([]);
+        expect(engine.renderFloors().map((f) => f.body)).toEqual(bodies);
+        expect(engine.renderFloors()[0].tableEdit).toContain('补上的事件');
+        expect(engine.results[2]).toBe(later);
+        expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toEqual(['补上的事件', '事件2', '事件3']);
+        expect(engine.results[0].calls.map((c) => c.purpose)).toEqual(['layer', 'repair', 'json']);
+        // 回复里一段都没有：报错，原结果不变，但请求记下来
+        jsonReply = '我看不到 JSON';
+        await expect(engine.regenJson(0, '')).rejects.toThrow('回复里没有');
+        expect(engine.results[0]).toBe(nr);
+        expect(engine.results[0].calls.length).toBe(4);
+        expect(engine.results[0].calls[3].problem).toContain('回复里没有');
+    });
+
     it('下一层带上一层正文结尾和指定的标签', async () => {
         const { engine, calls } = makeEngine((layer) => normal(layer) + (layer === 0 ? '\n<Plotline>雨夜相遇，埋下伏笔</Plotline>' : ''), { prevTailChars: 30, carryTags: '<Plotline>，不存在的' });
         await engine.run();
