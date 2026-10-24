@@ -800,6 +800,33 @@ describe('翻译模式', () => {
         expect(floors[0].mes.split('#第1话：雨夜').length).toBe(2);
     });
 
+    it('正文里夹的别的标签挪到正文后面，协议标签丢掉，上一层结尾不带它们', async () => {
+        expect(C.splitBodyBlocks('第一段\n<Calculated_data>\n次数: 1\n</Calculated_data>\n<b>粗体</b>不动\n<表格>{}</表格>\n<tableEdit>\ninsertRow(0, {})\n</tableEdit>\n最后一段', '正文')).toEqual({
+            body: '第一段\n\n<b>粗体</b>不动\n\n\n最后一段'.replace(/\n{3,}/g, '\n\n'),
+            extras: ['<Calculated_data>\n次数: 1\n</Calculated_data>'],
+        });
+        const pad = '雨一直下个不停。'.repeat(40);
+        const engine = C.createEngine({
+            settings: { layerChars: 500, reviewMode: 'off', retries: 0, prevTailChars: 50 },
+            callModel: async (messages, info) =>
+                `<bt>雨夜</bt>\n<摘要>x</摘要>\n<正文>\n${pad}\n<状态栏>\n心情：好\n</状态栏>\n结尾这一句。\n<Calculated_data>次数: ${info.layer + 1}</Calculated_data>\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "e${info.layer}"}}]}</表格>`,
+        });
+        engine.prepare(('第1話 雨の夜\n' + '雨の音がする。'.repeat(120) + '\n').repeat(2));
+        await engine.run();
+        const f = engine.renderFloors()[0];
+        expect(f.body).not.toContain('<');
+        expect(f.body.endsWith('结尾这一句。')).toBe(true);
+        const mes = f.mes;
+        expect(mes.indexOf('<状态栏>') > mes.indexOf('</正文>')).toBe(true);
+        expect(mes.indexOf('<Calculated_data>') > mes.indexOf('</正文>')).toBe(true);
+        if (f.tableEdit) expect(mes.indexOf('<tableEdit>') > mes.indexOf('</Calculated_data>')).toBe(true);
+        const p1 = engine.results[1].prompt || '';
+        const tail = p1.slice(p1.indexOf('<上一层结尾>'), p1.indexOf('</上一层结尾>'));
+        expect(tail).toContain('结尾这一句。');
+        expect(tail).not.toContain('Calculated_data');
+        expect(tail).not.toContain('状态栏');
+    });
+
     it('正文里的章节标题行改成 <bt>#第X话：标题</bt>', () => {
         expect(C.formatBodyHeadings(['第2话　启程', '“走吧。”', '第三话 夜行', '第3话说的是……这句不是标题因为太长了太长了太长了太长了太长了太长了太长了太长了'], {}, '话')).toEqual([
             '<bt>\n#第2话：启程\n</bt>',
