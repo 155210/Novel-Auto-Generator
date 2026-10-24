@@ -22,7 +22,7 @@
     // ============================================
 
     const CN_NUM = '0-9０-９一二三四五六七八九十百千万零两';
-    const DEFAULT_CHAPTER_REGEX = `^(?:第[${CN_NUM}]+[章话話回节節卷篇幕][^\\n]{0,40}|[0-9]{1,5}[.．、 ][^\\n]{1,40})$`;
+    const DEFAULT_CHAPTER_REGEX = `^(?:第[${CN_NUM}]+[章话話回节節卷篇幕][^\\n]{0,40}|[0-9]{1,5}[.．、 ][^\\n]{1,40}|(?:Chapter|CHAPTER|Ch\\.)\\s*[0-9]+[^\\n]{0,60}|제\\s*[0-9]+\\s*[화장][^\\n]{0,40}|(?:序章|楔子|尾声|尾聲|终章|終章|番外|プロローグ|エピローグ|Prologue|Epilogue|PROLOGUE|EPILOGUE)[^\\n]{0,40})$`;
 
     const DEFAULT_AD_PATTERNS = [
         '^=+$',
@@ -104,9 +104,17 @@
         personaName: '',
         useUserMacro: false,
 
-        // 标签
+        // 标签与标题
         titleTag: 'bt',
         bodyTag: '正文',
+        titleMode: 'ai', // ai：AI 起标题；original：用原文章节标题
+        titleFormat: '#第{n}{unit}：{title}',
+        chapterUnit: 'auto', // auto：按原文判断；章；话
+
+        // 翻译：auto 时原文大部分不是中文就整层翻译成简体中文
+        translateMode: 'auto',
+        glossaryEnabled: true, // 翻译时用术语表统一人名地名（只发给 AI，不进正文）
+        glossaryMax: 300, // 每层最多带多少条（只带本层原文里出现的）
         writeTableEdit: true,
 
         // 世界书
@@ -143,6 +151,112 @@
     }
 
     /** 粗估 token：中日韩字符按 1.1，其余按 4 个字符 1 个 */
+    const CN_DIGIT = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    const CN_UNIT = { 十: 10, 百: 100, 千: 1000, 万: 10000 };
+
+    /** 「十二」「一百零三」「１２」「12」转成数字，转不了返回 NaN */
+    function cnToInt(str) {
+        const t = String(str || '').replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+        if (/^\d+$/.test(t)) return Number(t);
+        let total = 0;
+        let section = 0;
+        let num = 0;
+        for (const ch of t) {
+            if (ch in CN_DIGIT) num = CN_DIGIT[ch];
+            else if (ch in CN_UNIT) {
+                const u = CN_UNIT[ch];
+                if (u === 10000) {
+                    total += (section + num) * u;
+                    section = 0;
+                } else section += (num || 1) * u;
+                num = 0;
+            } else return NaN;
+        }
+        return total + section + num;
+    }
+
+    /** 拆章节标题：{num, unit, title}。认不出来返回 null */
+    function parseChapterTitle(line) {
+        const t = String(line || '').trim();
+        let m = new RegExp(`^第\\s*([${CN_NUM}]+)\\s*([章话話回节節])\\s*[：:、.．\\-—\\s]*(.*)$`).exec(t);
+        if (m) return { num: cnToInt(m[1]), unit: /[话話]/.test(m[2]) ? '话' : '章', title: m[3].trim() };
+        m = /^([0-9]{1,5})\s*[.．、 ]\s*(.*)$/.exec(t);
+        if (m) return { num: Number(m[1]), unit: '', title: m[2].trim() };
+        m = /^(?:Chapter|CHAPTER|Ch\.)\s*([0-9]+)\s*[:：.\-—\s]*(.*)$/.exec(t);
+        if (m) return { num: Number(m[1]), unit: '', title: m[2].trim() };
+        m = /^제\s*([0-9]+)\s*([화장])\s*[:：.\-—\s]*(.*)$/.exec(t);
+        if (m) return { num: Number(m[1]), unit: m[2] === '화' ? '话' : '章', title: m[3].trim() };
+        return null;
+    }
+
+    /** 全书按「话」还是按「章」：数章节标题里哪个多 */
+    function detectChapterUnit(lines) {
+        let hua = 0;
+        let zhang = 0;
+        for (const l of lines || []) {
+            const p = parseChapterTitle(l);
+            if (p && p.unit === '话') hua++;
+            else if (p && p.unit === '章') zhang++;
+        }
+        return hua > zhang ? '话' : '章';
+    }
+
+    /**
+     * 楼层标题行，默认「#第X章：标题」。
+     * AI 标题：X 是层号；原文标题：X 和标题取本层第一个章节标题（翻译时标题用 AI 给的译名）。
+     */
+    function formatHeading(layer, aiTitle, settings, bookUnit) {
+        const s = { ...DEFAULT_SETTINGS, ...settings };
+        const fmt = s.titleFormat || '#第{n}{unit}：{title}';
+        let n = layer.index + 1;
+        let title = String(aiTitle || '').trim();
+        let unit = s.chapterUnit === '章' || s.chapterUnit === '话' ? s.chapterUnit : bookUnit || '章';
+        if (s.titleMode === 'original' && layer.chapters && layer.chapters.length) {
+            const first = layer.chapters[0];
+            const p = parseChapterTitle(first);
+            if (!p) return fmt.replace(/^(#*).*$/s, `$1${layer.translate && title ? title : first}`);
+            n = p.num;
+            if (s.chapterUnit === 'auto' && p.unit) unit = p.unit;
+            if (!layer.translate || !title) title = p.title;
+        }
+        // AI 有时把「第X章」也写进标题，去掉免得重复
+        title = title.replace(new RegExp(`^第\\s*[${CN_NUM}]+\\s*[章话話回节節]\\s*[：:、.．\\-—\\s]*`), '').trim();
+        let out = fmt.replace(/\{n\}/g, String(n)).replace(/\{unit\}/g, unit).replace(/\{title\}/g, title);
+        if (!title) out = out.replace(/[：:]\s*$/, '');
+        return out;
+    }
+
+    /** 判断正文是不是外文：有一定量假名，或汉字只占字母类字符的一小半 */
+    function detectForeign(text) {
+        const s = String(text || '').slice(0, 200000);
+        const han = (s.match(/[\u4e00-\u9fff]/g) || []).length;
+        const kana = (s.match(/[\u3040-\u30ff]/g) || []).length;
+        const other = (s.match(/[A-Za-z\u0400-\u04ff\uac00-\ud7af\u00c0-\u024f]/g) || []).length;
+        const letters = han + kana + other;
+        if (letters < 50) return false;
+        if (kana / letters > 0.05) return true;
+        return han / letters < 0.5;
+    }
+
+    // EPUB 插图在正文里的占位行，导入酒馆时换成插图
+    const IMAGE_MARKER_RE = /〔插图(\d+)〕/g;
+
+    /** 整层重写（翻译 / 剧情改写）后，AI 漏掉的插图占位行按原来的相对位置补回去 */
+    function ensureImageMarkers(srcParas, outParas) {
+        const want = [];
+        srcParas.forEach((p, i) => {
+            for (const m of String(p.text).matchAll(IMAGE_MARKER_RE)) want.push({ marker: m[0], ratio: srcParas.length > 1 ? i / (srcParas.length - 1) : 0 });
+        });
+        if (!want.length) return outParas;
+        const out = outParas.slice();
+        const have = new Set(out.join('\n').match(IMAGE_MARKER_RE) || []);
+        for (const w of want) {
+            if (have.has(w.marker)) continue;
+            out.splice(Math.min(out.length, Math.round(w.ratio * out.length)), 0, w.marker);
+        }
+        return out;
+    }
+
     function estimateTokens(text) {
         if (!text) return 0;
         const s = String(text);
@@ -352,7 +466,8 @@ P段号 |  | ++新段落          在该段之后另起一段
 - 锚点必须从该段原文中**原样复制**一小段（5 到 15 个字），并且在该段里只出现一次
 - 单条补丁的补充内容不超过 {MAX_PATCH} 字
 - 只写需要改动的地方，没有列出的段落一律保持原文
-- 不要输出整段原文，不要重复原文`;
+- 不要输出整段原文，不要重复原文
+- 原文里单独一行的 〔插图N〕 是插图位置，不要改动或删除`;
 
     function buildWorldbookSection(settings) {
         const cats = (settings.worldbookCategories || []).filter((c) => c.enabled !== false);
@@ -401,15 +516,19 @@ ${tablesForPrompt(state, layerText, settings)}
 格式：{"表名": [{"操作": "更新或插入", "主键": "第一列的值", "数据": {"列名": "值"}}, {"操作": "插入", "数据": {"列名": "值"}}, {"操作": "删除", "主键": "第一列的值"}]}`;
     }
 
-    function buildDivergenceSection(settings, state) {
+    function buildDivergenceSection(settings, state, translate = false) {
         if (!settings.divergenceEnabled) return '';
         const div = state.divergence || {};
+        const how = translate
+            ? `- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，<${settings.bodyTag || '正文'}> 里直接输出按改写方向改好的译文
+- 未触发时：<改写判定> 写 "触发": false，照常完整翻译`
+            : `- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，并且**不输出 <补丁>，改为输出 <改写正文>本层完整的改写后正文</改写正文>**
+- 未触发时：<改写判定> 写 "触发": false，照常输出 <补丁>`;
         const base = `## 剧情改写规则（强规则）
 当本层原文出现下列情节时，触发剧情改写：
 ${settings.divergenceRules || DEFAULT_DIVERGENCE_RULES}
 改写方向：${settings.divergenceDirection || DEFAULT_DIVERGENCE_DIRECTION}
-- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，并且**不输出 <补丁>，改为输出 <改写正文>本层完整的改写后正文</改写正文>**
-- 未触发时：<改写判定> 写 "触发": false，照常输出 <补丁>`;
+${how}`;
         if (!div.active) return base;
         const notes = (div.notes || []).slice(-8).map((n) => `- 第 ${n.layer + 1} 层：${n.note}`).join('\n');
         return `${base}
@@ -418,8 +537,8 @@ ${settings.divergenceRules || DEFAULT_DIVERGENCE_RULES}
 之前的改动记录：
 ${notes || '- （无）'}
 - 本层必须和上面的改动保持一致：原文中与改动冲突的内容要一起改
-- 本层输出 <改写正文>完整正文</改写正文>，不输出 <补丁>
-- 如果本层原文已经和改动不冲突、可以直接接回原文，在 <改写判定> 里写 "回归原文": true（本层仍输出改写正文）
+${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输出 <改写正文>完整正文</改写正文>，不输出 <补丁>'}
+- 如果本层原文已经和改动不冲突、可以直接接回原文，在 <改写判定> 里写 "回归原文": true（本层仍输出${translate ? '完整译文' : '改写正文'}）
 - <改写判定> 的 "说明" 写本层又改了什么，供后续层参考`;
     }
 
@@ -433,22 +552,99 @@ ${notes || '- （无）'}
 - 只写专指主角的称呼；像「师兄」「少爷」这种也可能指别人的，不要写进 <称呼>`;
     }
 
+    const TRANSLATE_RULES = `## 翻译要求
+- **完整翻译**：不得省略、概括或跳过原文的任何内容，逐句翻译成简体中文
+- **保持格式**：原文的分段、换行、对话格式全部保留，一个原文段落对应一个译文段落（不要输出 [P段号]）
+- **自然流畅**：符合中文小说的表达习惯，不要生硬直译
+- **章节标题也要翻译**成中文
+- 人名、地名、招式等专有名词的译名全书统一：「相关世界书条目」里已有译名的必须沿用
+- 原文中单独一行的 〔插图N〕 是插图位置，原样保留在对应位置
+- 不要添加解释、注释或原文`;
+
+    // ============================================
+    // 术语表（翻译模式）
+    // ============================================
+
+    /** 统一成 [{source, target, note}]，去掉空的和重复原文（先出现的为准） */
+    function normalizeGlossary(list) {
+        const out = [];
+        const seen = new Set();
+        for (const it of Array.isArray(list) ? list : []) {
+            if (!it) continue;
+            const source = String(it.source || it['原文'] || '').trim();
+            const target = String(it.target || it['译名'] || '').trim();
+            if (!source || !target || seen.has(source)) continue;
+            seen.add(source);
+            out.push({ source, target, note: String(it.note || it['说明'] || '').trim() });
+        }
+        return out;
+    }
+
+    /** 已有的原文不覆盖，免得后面的层把前面定好的译名改掉 */
+    function mergeGlossary(list, items) {
+        const base = list || [];
+        const known = new Set(base.map((it) => it.source));
+        const added = normalizeGlossary(items).filter((it) => !known.has(it.source));
+        return added.length ? base.concat(added) : base;
+    }
+
+    /** 「原文 → 译名（说明）」一行一条，和小说翻译模块同一格式 */
+    function parseGlossaryLines(text) {
+        const out = [];
+        for (const line of String(text || '').split('\n')) {
+            const t = line.trim();
+            if (!t || t === '无') continue;
+            const m = t.match(/^[-*·]?\s*(.+?)\s*(?:→|->|=>)\s*(.+?)\s*(?:（(.*)）|\((.*)\))?\s*$/);
+            if (m) out.push({ source: m[1].trim(), target: m[2].trim(), note: (m[3] || m[4] || '').trim() });
+        }
+        return out;
+    }
+
+    /** 只带本层原文里出现过的术语，表长到上千条也不会撑爆提示词 */
+    function selectGlossary(list, layerText, max) {
+        const hits = (list || []).filter((it) => layerText.includes(it.source));
+        return hits.slice(0, Math.max(1, Number(max) || 300));
+    }
+
+    function buildGlossarySection(s, state, layerText) {
+        const hits = selectGlossary(state.glossary, layerText, s.glossaryMax);
+        const table = hits.length
+            ? `## 专有名词对照表（必须严格遵守，不得改译）\n${hits.map((it) => `- ${it.source} → ${it.target}${it.note ? `（${it.note}）` : ''}`).join('\n')}\n\n`
+            : '';
+        return `${table}## 新术语
+本层出现了上表没有的人名、地名、组织名、招式、特殊称谓时，定一个中文译名，写进 <新术语>，一行一条：原文 → 译名（可选说明）。没有就写「无」。`;
+    }
+
+    function titleInstruction(s, layer) {
+        if (s.titleMode === 'original' && layer.translate && layer.chapters && layer.chapters.length) {
+            return `<bt>本层第一个章节标题「${layer.chapters[0]}」的中文译名，只写标题文字，不要写章节号</bt>`;
+        }
+        return '<bt>本层标题，10 字以内，概括本层主要剧情</bt>';
+    }
+
     function buildLayerPrompt(layer, settings, state, extra = {}) {
         const s = { ...DEFAULT_SETTINGS, ...settings };
         const layerText = layer.paras.map((p) => p.text).join('\n');
+        const tr = !!layer.translate;
         const parts = [];
-        parts.push(`你是小说改编助手。任务：把下面这一层小说正文导入角色扮演聊天。按用户的改写要求只输出补丁，同时提取世界书和记忆表格。`);
-        parts.push(
-            `## 用户的改写要求\n${(s.rewritePrompt || '').trim()}\n- 本层补充内容合计约为原文字数的 ${s.expansionRatio}%（原文约 ${layer.chars} 字，补充约 ${Math.round((layer.chars * s.expansionRatio) / 100)} 字）`,
-        );
+        const ratioText = `本层补充内容合计约为原文字数的 ${s.expansionRatio}%（原文约 ${layer.chars} 字，补充约 ${Math.round((layer.chars * s.expansionRatio) / 100)} 字）`;
+        if (tr) {
+            parts.push(`你是专业的小说翻译兼改编助手。任务：把下面这一层外文小说完整翻译成简体中文，导入角色扮演聊天，同时提取世界书和记忆表格（世界书、表格一律用中文写）。`);
+            parts.push(TRANSLATE_RULES);
+            parts.push(`## 用户的改写要求（翻译时一并做到）\n${(s.rewritePrompt || '').trim()}\n- ${ratioText}`);
+        } else {
+            parts.push(`你是小说改编助手。任务：把下面这一层小说正文导入角色扮演聊天。按用户的改写要求只输出补丁，同时提取世界书和记忆表格。`);
+            parts.push(`## 用户的改写要求\n${(s.rewritePrompt || '').trim()}\n- ${ratioText}`);
+        }
         if ((s.extraRules || '').trim()) parts.push(`## 其他规则\n${s.extraRules.trim()}`);
-        parts.push(PATCH_RULES.replace('{MAX_PATCH}', String(s.maxPatchChars)));
-        const div = buildDivergenceSection(s, state);
+        if (!tr) parts.push(PATCH_RULES.replace('{MAX_PATCH}', String(s.maxPatchChars)));
+        const div = buildDivergenceSection(s, state, tr);
         if (div) parts.push(div);
         const alias = buildAliasSection(s, state);
         if (alias) parts.push(alias);
+        if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, state, layerText));
         if (s.worldbookEnabled) {
-            parts.push(buildWorldbookSection(s));
+            parts.push(buildWorldbookSection(s) + (tr ? '\n- 条目名和内容用中文译名；"关键词" 里同时写中文译名和原文写法（方便后面的层按原文找到这个条目）' : ''));
             const rel = selectRelevantEntries(state.worldbook || {}, layerText, s.worldbookContextChars);
             if (rel.length) {
                 parts.push(
@@ -467,7 +663,10 @@ ${notes || '- （无）'}
         }
         const prevSummary = (state.summaries || []).slice(-2).map((x) => `- ${x.title}：${x.summary}`).join('\n');
         if (prevSummary) parts.push(`## 前情提要\n${prevSummary}`);
-        parts.push(OUTPUT_FORMAT + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : ''));
+        let format = OUTPUT_FORMAT.replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
+        if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
+        if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
+        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : ''));
         if (extra.feedback) {
             parts.push(`## 用户对上一次结果的修改意见（优先遵守）\n${extra.feedback}`);
             if (extra.previousRaw) parts.push(`## 你上一次的输出\n${extra.previousRaw}`);
@@ -550,22 +749,28 @@ ${notes || '- （无）'}
         return { patches, bad };
     }
 
-    function parseLayerResponse(raw) {
+    function parseLayerResponse(raw, opts = {}) {
         const errors = [];
         const title = extractTag(raw, 'bt');
         const summary = extractTag(raw, '摘要');
         const patch = extractTag(raw, '补丁');
-        const rewritten = extractTag(raw, '改写正文');
+        const bodyTag = opts.bodyTag || '正文';
+        const rewritten = extractTag(raw, opts.translate ? bodyTag : '改写正文');
         const judge = extractTag(raw, '改写判定');
         const alias = extractTag(raw, '称呼');
         const wb = extractTag(raw, '世界书');
         const tb = extractTag(raw, '表格');
         const big = extractTag(raw, '大总结');
+        const terms = extractTag(raw, '新术语');
 
         if (!title.closed) errors.push('缺少 <bt> 标题');
         if (!summary.closed) errors.push('缺少 <摘要>');
-        if (rewritten.found && !rewritten.closed) errors.push('<改写正文> 被截断');
-        if (!rewritten.found && !patch.closed) errors.push('缺少 <补丁>（或被截断）');
+        if (opts.translate) {
+            if (!rewritten.closed || !rewritten.content) errors.push(`缺少完整的 <${bodyTag}> 译文（或被截断）`);
+        } else {
+            if (rewritten.found && !rewritten.closed) errors.push('<改写正文> 被截断');
+            if (!rewritten.found && !patch.closed) errors.push('缺少 <补丁>（或被截断）');
+        }
 
         let divergence = { triggered: false, rule: '', note: '', resume: false };
         if (judge.closed && judge.content) {
@@ -581,7 +786,7 @@ ${notes || '- （无）'}
                 errors.push('<改写判定> 不是合法 JSON');
             }
         }
-        if (divergence.triggered && !rewritten.closed) errors.push('触发了剧情改写但没有完整的 <改写正文>');
+        if (!opts.translate && divergence.triggered && !rewritten.closed) errors.push('触发了剧情改写但没有完整的 <改写正文>');
 
         let worldbook = {};
         if (wb.found) {
@@ -623,6 +828,7 @@ ${notes || '- （无）'}
             worldbook,
             tableOps,
             bigSummary: big.closed ? big.content : '',
+            terms: terms.closed ? parseGlossaryLines(terms.content) : [],
         };
     }
 
@@ -1212,7 +1418,10 @@ ${notes || '- （无）'}
         const s = { ...DEFAULT_SETTINGS, ...settings };
         const parts = [];
         const mark = floor.divergenceStart ? '【改写起点】' : floor.divergence ? '【改写中】' : '';
-        parts.push(`<${s.titleTag}>${mark}${floor.title}</${s.titleTag}>`);
+        // 标记放在「：」后面，导出插件按「第X话：」切章时不受影响
+        let heading = floor.heading || floor.title;
+        if (mark) heading = /[：:]/.test(heading) ? heading.replace(/[：:]/, (c) => c + mark) : mark + heading;
+        parts.push(`<${s.titleTag}>\n${heading}\n</${s.titleTag}>`);
         parts.push(`<${s.bodyTag}>\n${floor.body}\n</${s.bodyTag}>`);
         if (s.writeTableEdit && floor.tableEdit) parts.push(floor.tableEdit);
         return parts.join('\n');
@@ -1337,6 +1546,7 @@ ${notes || '- （无）'}
                 tables: settings.tablesEnabled && cfg.tableTemplate ? createTableState(cfg.tableTemplate) : null,
                 divergence: { active: false, startLayer: -1, notes: [] },
                 summaries: [],
+                glossary: normalizeGlossary(cfg.seedGlossary),
             };
         }
 
@@ -1347,8 +1557,8 @@ ${notes || '- （无）'}
 
         function replay(upTo) {
             const sig = JSON.stringify(settings) + '|' + E.layers.length;
-            if (replayCache.sig !== sig || replayCache.tpl !== cfg.tableTemplate || replayCache.seed !== cfg.seedWorldbook) {
-                Object.assign(replayCache, { sig, tpl: cfg.tableTemplate, seed: cfg.seedWorldbook, states: [], refs: [] });
+            if (replayCache.sig !== sig || replayCache.tpl !== cfg.tableTemplate || replayCache.seed !== cfg.seedWorldbook || replayCache.gloss !== cfg.seedGlossary) {
+                Object.assign(replayCache, { sig, tpl: cfg.tableTemplate, seed: cfg.seedWorldbook, gloss: cfg.seedGlossary, states: [], refs: [] });
             }
             let k = 0;
             const max = Math.min(upTo, replayCache.states.length - 1);
@@ -1390,6 +1600,7 @@ ${notes || '- （无）'}
                 tables: st.tables,
                 divergence: clone(st.divergence),
                 summaries: st.summaries.concat([{ layer: i, title: p.title, summary: p.summary }]),
+                glossary: layer.translate && settings.glossaryEnabled ? mergeGlossary(st.glossary, p.terms) : st.glossary,
             };
             next.aliases = mergeAliases(st.aliases, p.aliases, {
                 protagonistName: settings.protagonistName,
@@ -1445,8 +1656,13 @@ ${notes || '- （无）'}
             E.stats.emptyChapters = cleaned.emptyChapters;
             const paras = splitParagraphs(cleaned.text);
             E.layers = splitLayers(paras, settings);
+            const translate = settings.translateMode === 'on' || (settings.translateMode === 'auto' && detectForeign(cleaned.text));
+            E.layers.forEach((l) => (l.translate = translate));
+            E.stats.translate = translate;
+            E.stats.chapterUnit = detectChapterUnit(E.layers.flatMap((l) => l.chapters || []));
+            E.stats.images = (cleaned.text.match(IMAGE_MARKER_RE) || []).length;
             E.results = E.layers.map(() => null);
-            emit('prepared', { layers: E.layers.length, removed: cleaned.removed, repeated: cleaned.repeated, inlineAds: cleaned.inlineRemoved, emptyChapters: cleaned.emptyChapters });
+            emit('prepared', { layers: E.layers.length, removed: cleaned.removed, repeated: cleaned.repeated, inlineAds: cleaned.inlineRemoved, emptyChapters: cleaned.emptyChapters, translate, images: E.stats.images });
             return E.layers;
         }
 
@@ -1486,7 +1702,8 @@ ${notes || '- （无）'}
                     emit('layer-retry', { index: i, attempt, error: String(e.message || e) });
                     continue;
                 }
-                const parsed = parseLayerResponse(raw);
+                const layerNow = E.layers[i];
+                const parsed = parseLayerResponse(raw, { translate: !!layerNow.translate, bodyTag: settings.bodyTag });
                 E.stats.inputTokens += estimateTokens(req.messages.map((m) => m.content).join('\n'));
                 E.stats.outputTokens += estimateTokens(raw);
                 if (!parsed.ok) {
@@ -1497,10 +1714,10 @@ ${notes || '- （无）'}
                 r.raw = raw;
                 r.parsed = parsed;
                 const layer = E.layers[i];
-                const useRewrite = !!parsed.rewrittenText && (st.divergence.active || parsed.divergence.triggered);
+                const useRewrite = !!parsed.rewrittenText && (layer.translate || st.divergence.active || parsed.divergence.triggered);
                 if (useRewrite) {
-                    r.finalParas = splitParagraphs(parsed.rewrittenText);
-                    r.patchStats = { applied: 0, failed: [], addedChars: parsed.rewrittenText.length - layer.chars, rewritten: true };
+                    r.finalParas = ensureImageMarkers(layer.paras, splitParagraphs(parsed.rewrittenText));
+                    r.patchStats = { applied: 0, failed: [], addedChars: parsed.rewrittenText.length - layer.chars, rewritten: true, translated: !!layer.translate };
                 } else {
                     const ap = applyPatches(layer.paras, parsed.patches, { maxPatchChars: settings.maxPatchChars });
                     r.finalParas = ap.paras;
@@ -1599,6 +1816,7 @@ ${notes || '- （无）'}
                 const floor = {
                     layer: i,
                     title: conv(r.parsed.title),
+                    heading: conv(formatHeading(E.layers[i], r.parsed.title, settings, E.stats.chapterUnit)),
                     body: conv(r.finalParas.join('\n')),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
@@ -1814,6 +2032,17 @@ ${sums}`;
         DEFAULT_WORLDBOOK_CATEGORIES,
         DEFAULT_TABLE_ROLES,
         OUTPUT_FORMAT,
+        cnToInt,
+        parseChapterTitle,
+        detectChapterUnit,
+        formatHeading,
+        detectForeign,
+        IMAGE_MARKER_RE,
+        ensureImageMarkers,
+        normalizeGlossary,
+        mergeGlossary,
+        parseGlossaryLines,
+        selectGlossary,
         aliasTargetOf,
         cleanCell,
         estimateTokens,
