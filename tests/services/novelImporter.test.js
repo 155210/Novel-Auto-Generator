@@ -515,6 +515,7 @@ describe('运行引擎', () => {
         expect(p1).toContain('<Plotline>\n雨夜相遇，埋下伏笔\n</Plotline>');
         expect(p1).not.toContain('<不存在的>');
         expect(C.splitTagList('<Plotline>，摘要、 a')).toEqual(['Plotline', '摘要', 'a']);
+        expect(C.splitTagList('Calculated data, <Calculated_data>')).toEqual(['Calculated data', 'Calculated_data']);
     });
 
     it('逐层跑完：补丁、称呼、表格、世界书都进楼层', async () => {

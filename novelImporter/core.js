@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.16';
+    const VERSION = '1.4.17';
 
     // ============================================
     // 默认配置
@@ -793,12 +793,12 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return (nl >= 0 && nl < cut.length / 2 ? cut.slice(nl + 1) : cut).trim();
     }
 
-    /** 「Plotline, <摘要>，tableThink」→ ['Plotline','摘要','tableThink'] */
+    /** 「Plotline, <摘要>，Calculated data」→ ['Plotline','摘要','Calculated data']（标签名里可以有空格） */
     function splitTagList(v) {
         return uniq(
             String(v || '')
-                .split(/[,，、\s]+/)
-                .map((x) => x.replace(/^<\/?|>$/g, '').trim())
+                .split(/[,，、;；\n]+/)
+                .map((x) => x.trim().replace(/^<\/?|>$/g, '').trim())
                 .filter(Boolean),
         );
     }
