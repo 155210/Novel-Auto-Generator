@@ -474,6 +474,20 @@ describe('运行引擎', () => {
         expect(engine.renderFloors()[0].mes).toContain('裘月寒抬眸道');
     });
 
+    it('下一层带上一层正文结尾和指定的标签', async () => {
+        const { engine, calls } = makeEngine((layer) => normal(layer) + (layer === 0 ? '\n<Plotline>雨夜相遇，埋下伏笔</Plotline>' : ''), { prevTailChars: 30, carryTags: '<Plotline>，不存在的' });
+        await engine.run();
+        const p0 = calls[0].messages.map((m) => m.content).join('\n');
+        const p1 = calls[1].messages.map((m) => m.content).join('\n');
+        expect(p0).not.toContain('<上一层结尾>');
+        const tail = engine.results[0].finalParas.join('\n').slice(-30);
+        expect(p1).toContain('<上一层结尾>');
+        expect(p1).toContain(tail.slice(-10));
+        expect(p1).toContain('<Plotline>\n雨夜相遇，埋下伏笔\n</Plotline>');
+        expect(p1).not.toContain('<不存在的>');
+        expect(C.splitTagList('<Plotline>，摘要、 a')).toEqual(['Plotline', '摘要', 'a']);
+    });
+
     it('逐层跑完：补丁、称呼、表格、世界书都进楼层', async () => {
         const { engine } = makeEngine(normal);
         expect(engine.layers.length).toBe(3);

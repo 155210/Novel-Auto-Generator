@@ -235,6 +235,8 @@
             { key: 'maxPatchChars', label: '单条补丁最多字数', type: 'number' },
             { key: 'rewritePrompt', label: '改写要求', type: 'textarea', rows: 5 },
             { key: 'extraRules', label: '其他规则（随便写，会原样放进提示词）', type: 'textarea', rows: 3 },
+            { key: 'prevTailChars', label: '带上一层正文结尾的字数', type: 'number', hint: '让本层开头和上一层接得上；0 不带。取的是上一层处理完的正文（补丁、翻译、改写后的）' },
+            { key: 'carryTags', label: '上一层回复里一起发的标签', type: 'text', hint: '逗号分隔，比如 Plotline, 摘要。上一层回复里这些标签的内容会原样带给本层' },
             { key: 'divergenceEnabled', label: '启用剧情改写强规则', type: 'check' },
             { key: 'divergenceRules', label: '触发剧情改写的情节（每行一条，可以随意加）', type: 'textarea', rows: 4 },
             { key: 'divergenceDirection', label: '改写方向', type: 'textarea', rows: 3 },

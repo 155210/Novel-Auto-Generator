@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.13';
+    const VERSION = '1.4.14';
 
     // ============================================
     // 默认配置
@@ -171,6 +171,9 @@
         plotSummaryEntries: true,
         // 每层 <摘要> 的写法；摘要导出为「剧情」条目，也用作前情提要和角色卡简介
         summaryGuide: '本层剧情摘要，100 到 200 字，写清楚谁做了什么',
+        // 承接上一层：带上一层正文最后多少字（0 不带），以及上一层回复里哪些标签原样一起发（逗号分隔）
+        prevTailChars: 300,
+        carryTags: '',
         plotPosition: 0,
         plotDepth: 4,
         plotOrder: 50,
@@ -780,6 +783,25 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return '<bt>本层标题，10 字以内，概括本层主要剧情</bt>';
     }
 
+    /** 取最后 n 字左右，从一段的开头切，不把句子切半 */
+    function tailText(text, n) {
+        const t = String(text || '').trim();
+        if (t.length <= n) return t;
+        const cut = t.slice(-n);
+        const nl = cut.indexOf('\n');
+        return (nl >= 0 && nl < cut.length / 2 ? cut.slice(nl + 1) : cut).trim();
+    }
+
+    /** 「Plotline, <摘要>，tableThink」→ ['Plotline','摘要','tableThink'] */
+    function splitTagList(v) {
+        return uniq(
+            String(v || '')
+                .split(/[,，、\s]+/)
+                .map((x) => x.replace(/^<\/?|>$/g, '').trim())
+                .filter(Boolean),
+        );
+    }
+
     function buildLayerPrompt(layer, settings, state, extra = {}) {
         const s = { ...DEFAULT_SETTINGS, ...settings };
         const layerText = layer.paras.map((p) => p.text).join('\n');
@@ -822,6 +844,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         }
         const prevSummary = (state.summaries || []).slice(-2).map((x) => `- ${x.title}：${x.summary}`).join('\n');
         if (prevSummary) parts.push(`## 前情提要\n${prevSummary}`);
+        if (extra.prevTail) parts.push(`## 上一层正文的结尾（只用来承接，让本层开头衔接自然；不要重复输出这段）\n<上一层结尾>\n${extra.prevTail}\n</上一层结尾>`);
+        for (const t of extra.carryTags || []) parts.push(`## 上一层的 <${t.tag}>（供参考，本层照常输出自己的内容）\n<${t.tag}>\n${t.content}\n</${t.tag}>`);
         let format = OUTPUT_FORMAT.replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
         const guide = String(s.summaryGuide || '').trim();
         if (guide) format = format.replace('<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>', () => `<摘要>${guide}</摘要>`);
@@ -1988,8 +2012,20 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             const layerText = layer.paras.map((p) => p.text).join('\n');
             const rel = settings.worldbookEnabled ? selectRelevantEntries(st.worldbook, layerText, settings.worldbookContextChars) : [];
             const askBig = needsBigSummary(st);
+            const prev = i > 0 ? E.results[i - 1] : null;
+            const prevDone = prev && prev.status === 'done';
+            const tailN = Math.max(0, Number(settings.prevTailChars) || 0);
+            const prevTail = prevDone && tailN && prev.finalParas ? tailText(prev.finalParas.join('\n'), tailN) : '';
+            const carryTags = prevDone
+                ? splitTagList(settings.carryTags)
+                      .map((tag) => ({ tag, content: extractTag(prev.raw, tag) }))
+                      .filter((x) => x.content.closed && x.content.content)
+                      .map((x) => ({ tag: x.tag, content: x.content.content }))
+                : [];
             const prompt = buildLayerPrompt(layer, settings, st, {
                 outputRules: typeof cfg.outputRules === 'string' ? cfg.outputRules : '',
+                prevTail,
+                carryTags,
                 ...extra,
                 needBigSummary: askBig,
                 eventRows: askBig ? eventRowsOf(st) : [],
@@ -2676,6 +2712,8 @@ ${sums}`;
         parseGlossaryLines,
         selectGlossary,
         buildOutputRules,
+        tailText,
+        splitTagList,
         outputRuleItems,
         stripEchoedSource,
         protagonistOf,
