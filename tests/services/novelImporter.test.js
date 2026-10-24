@@ -518,6 +518,33 @@ describe('运行引擎', () => {
         expect(C.splitTagList('Calculated data, <Calculated_data>')).toEqual(['Calculated data', 'Calculated_data']);
     });
 
+    it('每层存下发出去的提示词，改了可以用它重做这层', async () => {
+        const { engine, calls } = makeEngine(normal);
+        await engine.run();
+        const r1 = engine.results[1];
+        expect(r1.prompt).toContain('## 本层正文（第 2 层）');
+        expect(r1.request.map((m) => m.content).join()).toContain(r1.prompt);
+        const edited = r1.prompt.replace('## 本层正文', '## 特别要求\n多写雨\n\n## 本层正文');
+        const n = calls.length;
+        const res = await engine.redoWithPrompt(1, edited);
+        expect(res.status).toBe('done');
+        expect(calls[n].messages[calls[n].messages.length - 1].content).toContain('## 特别要求\n多写雨');
+        expect(engine.results[1].customPrompt).toBe(true);
+        expect(engine.results[2]).toBe(null);
+    });
+
+    it('任何一层都能带修改要求重做，不用等审阅', async () => {
+        const { engine, calls } = makeEngine(normal);
+        await engine.run();
+        const n = calls.length;
+        const res = await engine.redoWithFeedback(0, '对话多补神态');
+        expect(res.status).toBe('done');
+        const p = calls[n].messages.map((m) => m.content).join('\n');
+        expect(p).toContain('对话多补神态');
+        expect(p).toContain('你上一次的输出');
+        expect(engine.results[1]).toBe(null);
+    });
+
     it('逐层跑完：补丁、称呼、表格、世界书都进楼层', async () => {
         const { engine } = makeEngine(normal);
         expect(engine.layers.length).toBe(3);

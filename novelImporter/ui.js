@@ -2153,6 +2153,22 @@
         );
     }
 
+    /** 这一层发出去的提示词：可以改本模块拼的那部分，然后用它重做这层 */
+    function promptHtml(r) {
+        if (!r.request && !r.prompt) return '';
+        const full = (r.request || []).map((m) => `【${m.role}】\n${m.content}`).join('\n\n');
+        return `<details class="nim-fold"><summary>本层发出去的提示词${r.customPrompt ? '（用的是你改过的）' : ''}</summary>
+          ${full ? `<details class="nim-fold"><summary>完整消息（套上预设后的，${(r.request || []).length} 条）</summary><pre class="nim-pre">${esc(full)}</pre></details>` : ''}
+          ${
+              r.prompt
+                  ? `<div class="nim-muted">下面是本模块拼的部分（任务、规则、世界书、表格、原文），发送时会照常套上预设。改完点按钮，用改过的重做这一层，之后的层作废。预设里的条目在设置「酒馆预设」里改。</div>
+          <textarea id="nim-prompt-edit" class="nim-input nim-textarea" rows="12">${esc(r.prompt)}</textarea>
+          <div class="nim-row"><button id="nim-prompt-redo" class="nim-btn sm">用改过的提示词重做这层</button></div>`
+                  : ''
+          }
+        </details>`;
+    }
+
     /** 这一层每次请求的原始输出（首次、重试、修格式），按顺序列出来 */
     function callsHtml(r) {
         const calls = r.calls || [];
@@ -2236,6 +2252,11 @@
         } else if (r && r.status === 'failed') {
             body += `<div class="nim-alert danger">失败：${esc(r.error)}</div>`;
         }
+        if (!reviewing && r && (r.status === 'done' || r.status === 'failed'))
+            body += `<div class="nim-sub">这层的修改要求</div>
+              <textarea id="nim-layer-fb" class="nim-input nim-textarea" rows="3" placeholder="例如：NTR 那段改得更彻底；对话多补几句神态；译名统一用「花恋」"></textarea>
+              <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">按要求重做这层</button><span class="nim-muted">会带上这层上次的输出，之后的层作废</span></div>`;
+        if (r) body += promptHtml(r);
         if (r) body += callsHtml(r);
         body += `<details class="nim-fold"><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
         const reviewHtml = reviewing
@@ -2247,6 +2268,34 @@
             : '';
         el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
         bindHlNav();
+        const fbBtn = $('nim-layer-fb-go');
+        if (fbBtn)
+            fbBtn.onclick = async () => {
+                if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
+                const fb = $('nim-layer-fb').value.trim();
+                if (!fb) return toast('请先写修改要求', 'warning');
+                if (i < e.results.length - 1 && e.results[i + 1] && !confirm(`第 ${i + 2} 层及之后的结果会清空，确定吗？`)) return;
+                collectFields();
+                State.stopped = false;
+                log(`按要求重做第 ${i + 1} 层：${fb}`);
+                await e.redoWithFeedback(i, fb);
+                saveProgress();
+                renderAll();
+            };
+        const redoBtn = $('nim-prompt-redo');
+        if (redoBtn)
+            redoBtn.onclick = async () => {
+                if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
+                const p = $('nim-prompt-edit').value;
+                if (!p.trim()) return toast('提示词是空的', 'warning');
+                if (!confirm(`用改过的提示词重做第 ${i + 1} 层？第 ${i + 1} 层及之后的结果会清空`)) return;
+                collectFields();
+                State.stopped = false;
+                log(`用改过的提示词重做第 ${i + 1} 层`);
+                await e.redoWithPrompt(i, p);
+                saveProgress();
+                renderAll();
+            };
         const hlBtn = $('nim-hl-toggle');
         if (hlBtn)
             hlBtn.onclick = () => {

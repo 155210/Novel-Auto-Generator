@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.17';
+    const VERSION = '1.4.18';
 
     // ============================================
     // 默认配置
@@ -2030,7 +2030,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                       .filter((x) => x.content.closed && x.content.content)
                       .map((x) => ({ tag: x.tag, content: x.content.content }))
                 : [];
-            const prompt = buildLayerPrompt(layer, settings, st, {
+            // 用户在界面里改过这一层的提示词就直接用改过的（预设部分照常套）
+            const prompt = typeof extra.customPrompt === 'string' && extra.customPrompt.trim() ? extra.customPrompt : buildLayerPrompt(layer, settings, st, {
                 outputRules: typeof cfg.outputRules === 'string' ? cfg.outputRules : '',
                 prevTail,
                 carryTags,
@@ -2128,7 +2129,16 @@ ${blocks}`;
         async function processLayer(i, extra = {}) {
             const st = replay(i);
             const req = buildRequest(i, st, extra);
-            const r = { status: 'running', attempts: 0, providedNames: req.providedNames, askedBigSummary: req.askedBigSummary };
+            const r = {
+                status: 'running',
+                attempts: 0,
+                providedNames: req.providedNames,
+                askedBigSummary: req.askedBigSummary,
+                // 发出去的提示词：prompt 是本模块拼的任务部分（可以改了重做），request 是套上预设后的完整消息
+                prompt: req.prompt,
+                request: req.messages.map((m) => ({ role: m.role, content: m.content })),
+                customPrompt: typeof extra.customPrompt === 'string' && extra.customPrompt.trim() ? true : undefined,
+            };
             E.results[i] = r;
             emit('layer-start', { index: i });
             let lastErr = null;
@@ -2243,6 +2253,29 @@ ${blocks}`;
             const prev = E.results[i];
             for (let k = i; k < E.results.length; k++) E.results[k] = null;
             const res = await processLayer(i, { feedback, previousRaw: prev && prev.raw });
+            E.reviewing = res.status === 'done' ? i : null;
+            emit('review', { index: i, result: res });
+            return res;
+        }
+
+        /** 带修改要求重做第 i 层（不用等审阅；之后的层作废） */
+        async function redoWithFeedback(i, feedback) {
+            if (!E.layers[i]) return null;
+            const prev = E.results[i];
+            for (let k = i; k < E.results.length; k++) E.results[k] = null;
+            E.reviewing = null;
+            const res = await processLayer(i, { feedback, previousRaw: prev && prev.raw });
+            E.reviewing = res.status === 'done' ? i : null;
+            emit('review', { index: i, result: res });
+            return res;
+        }
+
+        /** 用改过的提示词重做第 i 层（之后的层作废） */
+        async function redoWithPrompt(i, prompt) {
+            if (!E.layers[i]) return null;
+            for (let k = i; k < E.results.length; k++) E.results[k] = null;
+            E.reviewing = null;
+            const res = await processLayer(i, { customPrompt: String(prompt || '') });
             E.reviewing = res.status === 'done' ? i : null;
             emit('review', { index: i, result: res });
             return res;
@@ -2424,6 +2457,8 @@ ${sums}`;
             run,
             accept,
             reject,
+            redoWithPrompt,
+            redoWithFeedback,
             resetFrom,
             replay,
             renderFloors,
