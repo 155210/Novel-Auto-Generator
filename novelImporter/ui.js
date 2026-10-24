@@ -1082,8 +1082,9 @@
     }
 
     const STYLE = `
-.nim-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99999;overflow-y:auto;}
-.nim-modal{max-width:1000px;margin:16px auto;background:var(--SmartThemeBlurTintColor,#1e1e1e);color:var(--SmartThemeBodyColor,#eee);border:1px solid var(--SmartThemeBorderColor,#444);border-radius:10px;}
+/* 手机版酒馆会改写弹窗的尺寸，inset:0 在手机上高度会变成 0，和其他模块一样写死宽高并加 !important */
+.nim-overlay{position:fixed !important;top:0 !important;left:0 !important;right:0 !important;bottom:0 !important;width:100vw !important;height:100vh !important;height:100dvh !important;max-height:none !important;display:block !important;background:rgba(0,0,0,.75);z-index:99999 !important;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;box-sizing:border-box;}
+.nim-modal{max-width:1000px;margin:16px auto;box-sizing:border-box;background:var(--SmartThemeBlurTintColor,#1e1e1e);color:var(--SmartThemeBodyColor,#eee);border:1px solid var(--SmartThemeBorderColor,#444);border-radius:10px;}
 .nim-header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#1c1c1c;border-bottom:1px solid #444;border-radius:10px 10px 0 0;}
 .nim-close{background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;}
 .nim-body{padding:12px;}
