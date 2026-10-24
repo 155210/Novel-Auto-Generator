@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.1.0';
+    const VERSION = '1.2.0';
 
     // ============================================
     // 默认配置
@@ -45,18 +45,55 @@
 
     const DEFAULT_DIVERGENCE_DIRECTION = `把相关情节改成没有发生：保持其他角色的性格和动机不变，后续剧情顺着这个改动自然发展，直到能重新接回原文为止。`;
 
+    // 世界书分类：字段和「TXT转世界书」的自定义提取分类一样，可以直接互相导入；constant 是本模块加的「常驻（蓝灯）」
+    const wbCat = (name, enabled, isBuiltin, entryExample, keywordsExample, contentGuide) => ({
+        name,
+        enabled,
+        isBuiltin,
+        entryExample,
+        keywordsExample,
+        contentGuide,
+        defaultPosition: 0,
+        defaultDepth: 4,
+        defaultOrder: 100,
+        autoIncrementOrder: false,
+        constant: false,
+    });
     const DEFAULT_WORLDBOOK_CATEGORIES = [
-        {
-            name: '角色',
-            enabled: true,
-            constant: false,
-            guide: '**名称**、**性别**、**年龄**（原文写明才填）、**身份**、**外貌**、**性格**、**能力/境界**、**与主角关系**、**重要经历**、**话语示例**',
-        },
-        { name: '地点', enabled: true, constant: false, guide: '**名称**、**位置**、**特征**、**发生过的重要事件**' },
-        { name: '组织', enabled: true, constant: false, guide: '**名称**、**性质**、**主要成员**、**目标**、**势力范围**' },
-        { name: '道具', enabled: false, constant: false, guide: '**名称**、**类型**、**功能**、**持有者**、**来历**' },
-        { name: '设定', enabled: true, constant: false, guide: '世界规则、修炼体系、境界划分、特殊名词的解释' },
+        wbCat('角色', true, true, '角色真实姓名', ['真实姓名', '称呼1', '称呼2', '绰号'], '基于原文的角色描述，包含但不限于**名称**:（必须要）、**性别**:、**年龄**:（原文写明才填）、**身份**:、**外貌**:、**性格**:、**能力/境界**:、**与主角关系**:、**重要经历**:、**话语示例**:等（实际嵌套或者排列方式按合理的逻辑）'),
+        wbCat('地点', true, true, '地点真实名称', ['地点名', '别称', '俗称'], '基于原文的地点描述，包含但不限于**名称**:（必须要）、**位置**:、**特征**:、**重要事件**:等（实际嵌套或者排列方式按合理的逻辑）'),
+        wbCat('组织', true, true, '组织真实名称', ['组织名', '简称', '代号'], '基于原文的组织描述，包含但不限于**名称**:（必须要）、**性质**:、**成员**:、**目标**:等（实际嵌套或者排列方式按合理的逻辑）'),
+        wbCat('设定', true, false, '设定名称', ['设定名', '别称'], '世界规则、修炼体系、境界划分、特殊名词的解释，包含但不限于**名称**:、**说明**:、**相关角色或势力**:等'),
+        wbCat('道具', false, false, '道具名称', ['道具名', '别名'], '基于原文的道具描述，包含但不限于**名称**:、**类型**:、**功能**:、**来源**:、**持有者**:等'),
+        wbCat('玩法', false, false, '玩法名称', ['玩法名', '规则名'], '基于原文的玩法/规则描述，包含但不限于**名称**:、**规则说明**:、**参与条件**:、**奖惩机制**:等'),
+        wbCat('章节剧情', false, false, '第X章', ['章节名', '章节号'], '该章节的剧情概要，包含但不限于**章节标题**:、**主要事件**:、**出场角色**:、**关键转折**:、**伏笔线索**:等'),
+        wbCat('角色内心', false, false, '角色名-内心世界', ['角色名', '内心', '心理'], '角色的内心想法和心理活动，包含但不限于**原文内容**:、**内心独白**:、**情感变化**:、**动机分析**:、**心理矛盾**:等'),
     ];
+
+    /** 统一成 TXT转世界书的分类格式；旧版本模块的 {name, enabled, constant, guide} 也认 */
+    function normalizeCategory(c) {
+        const name = String((c && c.name) || '').trim();
+        const kw = Array.isArray(c.keywordsExample) ? c.keywordsExample : String(c.keywordsExample || '').split(/[,，]/);
+        const num = (v, d) => (Number.isFinite(Number(v)) && v !== '' && v !== null ? Number(v) : d);
+        return {
+            name,
+            enabled: c.enabled !== false,
+            isBuiltin: !!c.isBuiltin,
+            entryExample: String(c.entryExample || `${name}名称`),
+            keywordsExample: kw.map((k) => String(k).trim()).filter(Boolean).length ? kw.map((k) => String(k).trim()).filter(Boolean) : [`${name}名`],
+            contentGuide: String(c.contentGuide ?? c.guide ?? `基于原文的${name}描述`),
+            defaultPosition: num(c.defaultPosition, 0),
+            defaultDepth: num(c.defaultDepth, 4),
+            defaultOrder: num(c.defaultOrder, 100),
+            autoIncrementOrder: !!c.autoIncrementOrder,
+            constant: !!c.constant,
+        };
+    }
+
+    function normalizeCategories(list) {
+        const seen = new Set();
+        return (Array.isArray(list) ? list : []).map(normalizeCategory).filter((c) => c.name && !seen.has(c.name) && seen.add(c.name));
+    }
 
     // 主角和女主的角色条目按人设格式写，导入后可直接当用户人设 / 角色人设用
     const PERSONA_GUIDE = `- 角色条目多给一个 "定位" 字段：主角 / 女主 / 配角。女主指和主角有感情线或明显暧昧的女性角色
@@ -122,7 +159,7 @@
 
         // 世界书
         worldbookEnabled: true,
-        worldbookCategories: DEFAULT_WORLDBOOK_CATEGORIES.map((c) => ({ ...c })),
+        worldbookCategories: DEFAULT_WORLDBOOK_CATEGORIES.map((c) => ({ ...c, keywordsExample: c.keywordsExample.slice() })),
         worldbookPrompt: '',
         worldbookContextChars: 6000,
         plotSummaryEntries: true,
@@ -473,9 +510,9 @@ P段号 |  | ++新段落          在该段之后另起一段
 - 原文里单独一行的 〔插图N〕 是插图位置，不要改动或删除`;
 
     function buildWorldbookSection(settings) {
-        const cats = (settings.worldbookCategories || []).filter((c) => c.enabled !== false);
+        const cats = normalizeCategories(settings.worldbookCategories).filter((c) => c.enabled);
         if (!cats.length) return '';
-        const guide = cats.map((c) => `- ${c.name}：${c.guide || ''}`).join('\n');
+        const guide = cats.map((c) => `- ${c.name}（条目名如「${c.entryExample}」，关键词如 ${JSON.stringify(c.keywordsExample)}）：${c.contentGuide}`).join('\n');
         const custom = (settings.worldbookPrompt || '').trim();
         return `## 世界书任务
 从本层正文提取或更新世界书条目，只允许这些分类：${cats.map((c) => c.name).join('、')}
@@ -1144,22 +1181,29 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * 条目注释沿用「TXT转世界书」的「分类 - 名称」，两边导出的条目可以混用。
      */
     function worldbookToST(wb, opts = {}) {
-        const cats = opts.categories || DEFAULT_WORLDBOOK_CATEGORIES;
-        const constantOf = (c) => !!(cats.find((x) => x.name === c) || {}).constant;
+        const cats = normalizeCategories(opts.categories || DEFAULT_WORLDBOOK_CATEGORIES);
+        const catOf = (c) => cats.find((x) => x.name === c) || normalizeCategory({ name: c });
         const conv = (s) => (opts.aliases ? applyAliases(s, opts.aliases, opts.target) : s);
         const entries = {};
         let uid = 0;
         for (const [category, items] of Object.entries(wb || {})) {
+            // 位置、深度、顺序按分类设置走，和 TXT转世界书导出一致：position 4 是按深度插入
+            const cat = catOf(category);
+            let k = 0;
             for (const [name, item] of Object.entries(items || {})) {
                 const shown = conv(name);
                 entries[uid] = makeWorldEntry(uid, {
                     key: uniq((item.关键词 || []).map(conv)),
                     comment: `${category} - ${shown}`,
                     content: conv(item.内容 || ''),
-                    constant: constantOf(category),
+                    constant: cat.constant,
                     group: `${category}_${shown}`,
+                    position: cat.defaultPosition,
+                    depth: cat.defaultDepth,
+                    order: cat.autoIncrementOrder ? cat.defaultOrder + k : cat.defaultOrder,
                 });
                 uid++;
+                k++;
             }
         }
         for (const p of opts.plotEntries || []) {
@@ -1541,7 +1585,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * @param {object} cfg
      *   settings        配置
      *   callModel       async (messages, {layer, attempt}) => string
-     *   messageChain    消息链（可选）
+     *   messageChain    消息链（可选，旧格式）
+     *   preset          酒馆预设条目（可选，优先于 messageChain）
+     *   substitute      展开预设条目里 {{char}}/{{user}} 等宏的函数（可选）
      *   tableTemplate   parseTableTemplate 的结果（可选）
      *   seedWorldbook   已有世界书（内部格式，可选）
      *   onEvent         (type, payload) => void
@@ -1581,6 +1627,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 summaries: [],
                 glossary: normalizeGlossary(cfg.seedGlossary),
             };
+        }
+
+        /** 有预设条目时按条目拼，否则用旧的消息链 */
+        function buildMessages(prompt) {
+            return cfg.preset ? assemblePresetMessages(cfg.preset, prompt, cfg.substitute) : applyMessageChain(prompt, cfg.messageChain);
         }
 
         /** 用已完成的层从头重放出状态。确定性的，不调 AI。 */
@@ -1641,7 +1692,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 target: aliasTargetOf(settings),
             });
             if (settings.worldbookEnabled) {
-                const cats = settings.worldbookCategories.filter((c) => c.enabled !== false).map((c) => c.name);
+                const cats = normalizeCategories(settings.worldbookCategories).filter((c) => c.enabled).map((c) => c.name);
                 next.worldbook = mergeWorldbook(st.worldbook, p.worldbook, {
                     providedNames: new Set(r.providedNames || []),
                     categories: cats,
@@ -1711,7 +1762,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             });
             return {
                 prompt,
-                messages: applyMessageChain(prompt, cfg.messageChain),
+                messages: buildMessages(prompt),
                 providedNames: rel.map((x) => `${x.category}/${x.name}`),
                 askedBigSummary: askBig,
             };
@@ -1932,7 +1983,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 
 ## 分层摘要
 ${sums}`;
-            return { prompt, messages: applyMessageChain(prompt, cfg.messageChain) };
+            return { prompt, messages: buildMessages(prompt) };
         }
 
         async function generateCardInfo() {
@@ -2041,6 +2092,210 @@ ${sums}`;
         };
     }
 
+    // ============================================
+    // 酒馆预设（条目可开关、排序、编辑；和柏宝绘的重型提示词同一套规则）
+    // ============================================
+
+    // 每层提示词的占位条目，相当于酒馆预设里「聊天记录」的位置
+    const PRESET_SLOT_ID = 'nim-layer-prompt';
+
+    function presetSlotEntry() {
+        return { id: PRESET_SLOT_ID, name: '本层提示词（小说正文和任务）', role: 'user', content: '', enabled: true, position: 'relative', depth: 0, order: 100 };
+    }
+
+    function presetDefaults() {
+        return { name: '', entries: [presetSlotEntry()], extras: [], squash: false };
+    }
+
+    const normRole = (v) => (v === 'user' || v === 'assistant' ? v : 'system');
+    const finiteInt = (v, fb, min = 0) => {
+        const n = typeof v === 'number' ? v : Number(v);
+        return Number.isFinite(n) ? Math.max(min, Math.floor(n)) : fb;
+    };
+
+    function normalizePresetEntry(id, e) {
+        return {
+            id,
+            name: typeof e.name === 'string' ? e.name : id,
+            role: normRole(e.role),
+            content: typeof e.content === 'string' ? e.content : '',
+            enabled: typeof e.enabled === 'boolean' ? e.enabled : true,
+            position: e.position === 'depth' ? 'depth' : 'relative',
+            depth: finiteInt(e.depth, 4),
+            order: finiteInt(e.order, 100, Number.MIN_SAFE_INTEGER),
+        };
+    }
+
+    /** 设置兜底：占位条目缺了补到末尾、重复的只留一个；没在顺序里的条目一律关闭 */
+    function normalizePreset(raw) {
+        const r = raw && typeof raw === 'object' ? raw : {};
+        const seen = new Set();
+        const take = (list, inOrder) => {
+            const out = [];
+            for (const e of Array.isArray(list) ? list : []) {
+                if (!e || typeof e !== 'object') continue;
+                const id = typeof e.id === 'string' && e.id ? e.id : '';
+                if (!id || seen.has(id) || (!inOrder && id === PRESET_SLOT_ID)) continue;
+                seen.add(id);
+                if (id === PRESET_SLOT_ID) out.push(presetSlotEntry());
+                else out.push(inOrder ? normalizePresetEntry(id, e) : { ...normalizePresetEntry(id, e), enabled: false });
+            }
+            return out;
+        };
+        const entries = take(r.entries, true);
+        if (!seen.has(PRESET_SLOT_ID)) entries.push(presetSlotEntry());
+        return { name: typeof r.name === 'string' ? r.name : '', entries, extras: take(r.extras, false), squash: r.squash === true };
+    }
+
+    /** 旧版的消息链（{role, content, enabled}，{PROMPT} 处放提示词）转成条目 */
+    function presetFromMessageChain(chain) {
+        const entries = [];
+        let slot = false;
+        (Array.isArray(chain) ? chain : []).forEach((m, i) => {
+            const content = String((m && m.content) || '');
+            if (!slot && content.includes('{PROMPT}')) {
+                const [before, after] = content.split('{PROMPT}');
+                if (before.trim()) entries.push(normalizePresetEntry(`nim-chain-${i}a`, { name: `消息 ${i + 1}（前半）`, role: m.role, content: before.trim(), enabled: m.enabled !== false }));
+                entries.push(presetSlotEntry());
+                if ((after || '').trim()) entries.push(normalizePresetEntry(`nim-chain-${i}b`, { name: `消息 ${i + 1}（后半）`, role: m.role, content: after.trim(), enabled: m.enabled !== false }));
+                slot = true;
+            } else if (content.trim()) {
+                entries.push(normalizePresetEntry(`nim-chain-${i}`, { name: `消息 ${i + 1}`, role: m.role, content, enabled: m.enabled !== false }));
+            }
+        });
+        return normalizePreset({ entries });
+    }
+
+    function pickPromptOrder(raw) {
+        if (!Array.isArray(raw) || !raw.length) return null;
+        if (raw.every((x) => x && typeof x === 'object' && 'identifier' in x)) return raw;
+        const lists = raw.filter((x) => x && typeof x === 'object' && Array.isArray(x.order));
+        const g = lists.find((x) => Number(x.character_id) === 100001);
+        if (g) return g.order;
+        const big = lists.slice().sort((a, b) => b.order.length - a.order.length)[0];
+        return big ? big.order : null;
+    }
+
+    /**
+     * 解析酒馆聊天补全预设（整份预设，或提示词管理器单独导出的 {data:{prompts, prompt_order}}）。
+     * 列表顺序和开关与酒馆里一致（按 prompt_order）；条目库里有、顺序里没放的收进 extras（不发送）；
+     * 角色卡、世界书等标记条目不导入；「聊天记录」换成本层提示词；没写「正常」触发的条目导入为关闭。
+     */
+    function parseSTPreset(json) {
+        const root = json && typeof json === 'object' ? json : null;
+        const data = root && root.data && typeof root.data === 'object' ? root.data : root;
+        const prompts = data && data.prompts;
+        if (!Array.isArray(prompts) || !prompts.length) throw new Error('没有找到预设条目（prompts），请导入酒馆的聊天补全预设 JSON');
+        const byId = new Map();
+        for (const p of prompts) if (p && typeof p.identifier === 'string' && p.identifier && !byId.has(p.identifier)) byId.set(p.identifier, p);
+        const order = pickPromptOrder(data.prompt_order);
+        const seq = [];
+        const placed = new Set();
+        for (const it of order || []) {
+            const id = it && typeof it.identifier === 'string' ? it.identifier : '';
+            if (!id || placed.has(id) || !byId.has(id)) continue;
+            placed.add(id);
+            seq.push({ id, enabled: typeof it.enabled === 'boolean' ? it.enabled : true });
+        }
+        const orphans = [];
+        for (const id of byId.keys()) {
+            if (placed.has(id)) continue;
+            if (order) orphans.push(id);
+            else seq.push({ id, enabled: null });
+        }
+        const toEntry = (id, p, enabled) => {
+            const triggers = Array.isArray(p.injection_trigger) ? p.injection_trigger : [];
+            const triggerOk = !triggers.length || triggers.includes('normal');
+            const self = typeof p.enabled === 'boolean' ? p.enabled : true;
+            return {
+                id,
+                name: typeof p.name === 'string' && p.name.trim() ? p.name : id,
+                role: normRole(p.role),
+                content: typeof p.content === 'string' ? p.content : '',
+                enabled: (enabled ?? self) && triggerOk,
+                position: Number(p.injection_position) === 1 ? 'depth' : 'relative',
+                depth: finiteInt(p.injection_depth, 4),
+                order: finiteInt(p.injection_order, 100, Number.MIN_SAFE_INTEGER),
+            };
+        };
+        const entries = [];
+        let slotPlaced = false;
+        let droppedMarkers = 0;
+        for (const { id, enabled } of seq) {
+            const p = byId.get(id);
+            if (id === 'chatHistory') {
+                if (!slotPlaced) entries.push(presetSlotEntry());
+                slotPlaced = true;
+                continue;
+            }
+            if (p.marker === true || ST_MARKERS.includes(id)) {
+                droppedMarkers++;
+                continue;
+            }
+            entries.push(toEntry(id, p, enabled));
+        }
+        if (!slotPlaced) entries.push(presetSlotEntry());
+        const extras = orphans.filter((id) => id !== 'chatHistory' && byId.get(id).marker !== true && !ST_MARKERS.includes(id)).map((id) => toEntry(id, byId.get(id), false));
+        const imported = entries.filter((e) => e.id !== PRESET_SLOT_ID);
+        const num = (v) => (typeof v === 'number' && !isNaN(v) ? v : null);
+        return {
+            entries,
+            extras,
+            squash: data.squash_system_messages === true || root.squash_system_messages === true,
+            promptCount: imported.length,
+            enabledCount: imported.filter((e) => e.enabled).length,
+            droppedMarkers,
+            hadChatHistory: slotPlaced,
+            params: { temperature: num(root.temperature), maxTokens: num(root.openai_max_tokens) ?? num(root.max_tokens) },
+        };
+    }
+
+    /**
+     * 按条目拼消息：相对条目按列表顺序，占位条目换成本层提示词；
+     * 深度条目按酒馆规则插在本层提示词前后（深度 0 在最后，同深度按顺序从小到大，同顺序同身份合并）；
+     * 关闭的、空的条目跳过；squash 时相邻的 system 合并。
+     */
+    function assemblePresetMessages(preset, prompt, substitute) {
+        const sub = typeof substitute === 'function' ? substitute : (t) => t;
+        const p = normalizePreset(preset);
+        const live = p.entries
+            .filter((e) => e.id === PRESET_SLOT_ID || e.enabled)
+            .map((e) => (e.id === PRESET_SLOT_ID ? e : { ...e, content: sub(e.content) }))
+            .filter((e) => e.id === PRESET_SLOT_ID || e.content.trim());
+        const depthEntries = live.filter((e) => e.id !== PRESET_SLOT_ID && e.position === 'depth');
+        // 和酒馆一样在倒序的「聊天」里按深度插入再翻回来；这里聊天只有本层提示词这一条
+        const rev = [{ role: 'user', content: prompt }];
+        let ins = 0;
+        for (const depth of [...new Set(depthEntries.map((e) => e.depth))].sort((a, b) => a - b)) {
+            const atDepth = depthEntries.filter((e) => e.depth === depth);
+            for (const order of [...new Set(atDepth.map((e) => e.order))].sort((a, b) => b - a)) {
+                const group = atDepth.filter((e) => e.order === order);
+                const msgs = [];
+                for (const role of ['system', 'user', 'assistant']) {
+                    const content = group.filter((e) => e.role === role).map((e) => e.content).join('\n');
+                    if (content) msgs.push({ role, content });
+                }
+                if (!msgs.length) continue;
+                rev.splice(Math.min(depth + ins, rev.length), 0, ...msgs);
+                ins += msgs.length;
+            }
+        }
+        const chatBlock = rev.reverse();
+        const ordered = [];
+        for (const e of live) {
+            if (e.id === PRESET_SLOT_ID) ordered.push(...chatBlock);
+            else if (e.position === 'relative') ordered.push({ role: e.role, content: e.content });
+        }
+        if (!p.squash) return ordered;
+        const out = [];
+        for (const m of ordered) {
+            const prev = out[out.length - 1];
+            if (prev && prev.role === 'system' && m.role === 'system') prev.content += `\n\n${m.content}`;
+            else out.push({ ...m });
+        }
+        return out;
+    }
+
     /** 读取「TXT转世界书」导出的世界书（酒馆格式或内部格式）作为初始世界书 */
     function importWorldbook(json) {
         if (!json || typeof json !== 'object') return {};
@@ -2068,6 +2323,8 @@ ${sums}`;
         DEFAULT_DIVERGENCE_RULES,
         DEFAULT_DIVERGENCE_DIRECTION,
         DEFAULT_WORLDBOOK_CATEGORIES,
+        normalizeCategory,
+        normalizeCategories,
         DEFAULT_TABLE_ROLES,
         OUTPUT_FORMAT,
         cnToInt,
@@ -2091,6 +2348,12 @@ ${sums}`;
         splitLayers,
         buildLayerPrompt,
         applyMessageChain,
+        PRESET_SLOT_ID,
+        presetDefaults,
+        normalizePreset,
+        presetFromMessageChain,
+        parseSTPreset,
+        assemblePresetMessages,
         extractTag,
         parseLooseJson,
         parsePatchLines,
