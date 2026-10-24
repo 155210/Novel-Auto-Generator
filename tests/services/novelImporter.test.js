@@ -667,6 +667,31 @@ describe('酒馆预设条目', () => {
     });
 });
 
+describe('没填主角原名', () => {
+    it('AI 在第一层认出主角，后面的层和渲染都用它', async () => {
+        const prompts = [];
+        const engine = C.createEngine({
+            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false, retries: 0 },
+            callModel: async (messages, info) => {
+                prompts.push(messages.map((m) => m.content).join('\n'));
+                return reply({ title: '雨夜' }) + (info.layer === 0 ? '\n<主角>路长远</主角>' : '\n<主角>夏怜雪</主角>');
+            },
+        });
+        engine.prepare('第一章 开始\n' + '路长远推门进来。'.repeat(80) + '\n第二章 继续\n' + '路长远看着夏怜雪。'.repeat(80));
+        expect(engine.layers.length).toBe(2);
+        await engine.run();
+        expect(prompts[0]).toContain('还不知道主角是谁');
+        expect(prompts[0]).toContain('<主角>');
+        expect(prompts[1]).toContain('主角是「路长远」');
+        expect(prompts[1]).not.toContain('还不知道主角是谁');
+        expect(engine.finalState().protagonist).toBe('路长远');
+        const floors = engine.renderFloors();
+        expect(floors[1].mes).toContain('{{user}}看着夏怜雪');
+        // 用户填了原名就以用户的为准
+        expect(C.protagonistOf({ protagonistName: '甲' }, { protagonist: '乙' })).toBe('甲');
+    });
+});
+
 describe('每层摘要和剧情条目', () => {
     it('摘要写法可以改，剧情条目的位置、深度、顺序按设置导出', async () => {
         let prompt;

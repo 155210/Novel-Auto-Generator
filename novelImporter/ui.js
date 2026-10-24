@@ -253,7 +253,7 @@
             { key: 'stWorldEnabled', label: '把酒馆里开着的世界书当作输出要求发给 AI', type: 'check', hint: '全局、当前角色、当前聊天、人设绑定的世界书；关掉的条目不发' },
         ],
         alias: [
-            { key: 'protagonistName', label: '主角原名', type: 'text', hint: '例如 路长远' },
+            { key: 'protagonistName', label: '主角原名', type: 'text', hint: '例如 路长远；不知道就留空，AI 会从前面的层认出主角' },
             { key: 'protagonistAliases', label: '主角的其他称呼（每行一个，AI 也会自己补充）', type: 'lines' },
             { key: 'aliasBlacklist', label: '不要替换的称呼（每行一个）', type: 'lines' },
             {
@@ -617,6 +617,13 @@
         else if (type === 'layer-done') {
             const r = p.result;
             const f = r.patchStats.failed.length;
+            if (!State.settings.protagonistName && r.parsed.protagonist) {
+                const hero = State.engine && State.engine.finalState().protagonist;
+                if (hero && hero !== State.heroLogged) {
+                    State.heroLogged = hero;
+                    log(`AI 认出主角是「${hero}」，正文里会换成设置的称呼；认错了就在设置「主角与标签」里填上正确的主角原名`);
+                }
+            }
             log(
                 `第 ${p.index + 1} 层完成：${r.parsed.title}${r.divergenceStart ? '（改写起点）' : r.inDivergence ? '（改写中）' : ''}` +
                     (r.patchStats.rewritten ? '，整层改写' : `，补丁 ${r.patchStats.applied} 条${f ? `，${f} 条没对上` : ''}`) +
@@ -661,7 +668,7 @@
         if (State.settings.tablesEnabled && !State.tableTemplate) {
             if (!confirm('还没导入记忆表格模板，这次不填表格，继续吗？')) return;
         }
-        if (!State.settings.protagonistName && !confirm('没有填主角原名，正文里不会替换主角称呼，继续吗？')) return;
+        if (!State.settings.protagonistName) log('没填主角原名：让 AI 从前面的层认出主角，认出来后正文里的主角会换成设置的称呼');
         if (State.settings.stWorldEnabled && !(await loadOutputRulesForRun())) return;
         if (State.engine.reviewing !== null) State.engine.accept();
         State.stopped = false;
