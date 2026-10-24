@@ -135,9 +135,29 @@
         return p && (typeof p.ext_getAllTables === 'function' || typeof p.ext_exportAllTablesAsJson === 'function') ? p : null;
     }
 
+    /**
+     * 插件读设置的顺序：先 power_user.muyoo_dataTable（新版存这里），再 extension_settings.muyoo_dataTable（老版本），
+     * 都没有才用插件默认值。改设置也写到 power_user 那份，插件才认。
+     */
     function memorySettings() {
-        const s = ctx().extensionSettings || {};
-        return s.muyoo_dataTable || null;
+        const c = ctx();
+        const pu = c.powerUserSettings && c.powerUserSettings.muyoo_dataTable;
+        const ext = (c.extensionSettings || {}).muyoo_dataTable;
+        if (!pu && !ext) return null;
+        return { ...(ext || {}), ...(pu || {}) };
+    }
+
+    function setMemorySetting(key, value) {
+        const c = ctx();
+        const pu = c.powerUserSettings;
+        if (pu) {
+            if (!pu.muyoo_dataTable) pu.muyoo_dataTable = {};
+            // 原来没设过的改回去时直接删掉，插件才会接着用默认值
+            if (value === undefined) delete pu.muyoo_dataTable[key];
+            else pu.muyoo_dataTable[key] = value;
+        }
+        const ext = (c.extensionSettings || {}).muyoo_dataTable;
+        if (ext && key in ext && value !== undefined) ext[key] = value;
     }
 
     /** 插件当前启用的表（名字和列），用来确认模板对得上 */
@@ -196,7 +216,10 @@
     /** 插件设置里的「消息模板」（给 AI 说明怎么用表格、怎么改表格的那段，带 {{tableData}}） */
     function readMessageTemplate() {
         const s = memorySettings();
-        return (s && typeof s.message_template === 'string' && s.message_template) || '';
+        if (s && typeof s.message_template === 'string' && s.message_template.trim()) return s.message_template;
+        // 没改过模板时插件用的是默认值，没存进设置；插件设置面板里的输入框里有
+        const el = typeof document !== 'undefined' && document.querySelector('#dataTable_message_template');
+        return (el && el.value) || '';
     }
 
     /**
@@ -325,7 +348,7 @@
             for (const [k, v] of [['step_by_step', false], ['isAiWriteTable', true]]) {
                 if (ms[k] !== v) {
                     restore[k] = ms[k];
-                    ms[k] = v;
+                    setMemorySetting(k, v);
                 }
             }
         }
@@ -349,7 +372,7 @@
             await c.saveChat();
         } finally {
             if (saved) Object.assign(root.console, saved);
-            Object.assign(ms || {}, restore);
+            for (const [k, v] of Object.entries(restore)) setMemorySetting(k, v);
             if (Object.keys(restore).length && typeof c.saveSettingsDebounced === 'function') c.saveSettingsDebounced();
         }
         const live = readPluginTables();

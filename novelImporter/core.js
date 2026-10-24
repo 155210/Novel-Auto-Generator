@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.0';
+    const VERSION = '1.4.1';
 
     // ============================================
     // 默认配置
@@ -120,6 +120,8 @@
         // 全书出现这么多次以上的长段落当作盗版站塞的垃圾段删掉，0 为不删
         repeatParaLimit: 3,
         repeatParaMinChars: 12,
+        // 用户在「清掉的内容」里点了保留的段落，分层时不删
+        cleanKeep: [],
 
         // 改写
         expansionRatio: 10,
@@ -337,6 +339,9 @@
             .join('\n');
     }
 
+    /** 这些开头的行是对话，正文里同一句台词重复很正常，不当垃圾段 */
+    const REPEAT_EXEMPT = /^[「『“"‘]/;
+
     const SENTENCE_END = /[。！？!?…」』”"）)~～—]$/;
 
     /**
@@ -354,6 +359,10 @@
         const LOG_MAX = 3000;
         const log = { ads: [], inline: [], repeated: [] };
         const push = (list, item) => list.length < LOG_MAX && list.push(item);
+        // 用户点了「保留」的段落：不当广告、不当垃圾段
+        const keepKey = (l) => String(l || '').replace(/[\s\u3000]/g, '');
+        const keep = new Set((opts.keepLines || []).map(keepKey).filter(Boolean));
+        const isKept = (l) => keep.size > 0 && keep.has(keepKey(l));
         let chap = '';
         const track = (l) => {
             if (protect && l && isChapterTitle(l, protect)) chap = l;
@@ -375,17 +384,18 @@
         const limit = Number(opts.repeatLimit) || 0;
         if (limit > 0) {
             const minChars = Math.max(4, Number(opts.repeatMinChars) || 12);
-            const key = (l) => l.replace(/[\s\u3000]/g, '');
+            const key = keepKey;
+            // 对话（「」“”开头）、分隔线这类没有文字的行在正文里本来就会重复，不算垃圾段
+            const candidate = (l) => {
+                const k = key(l);
+                return k.length >= minChars && !(protect && protect.test(l)) && !isKept(l) && !REPEAT_EXEMPT.test(k) && /[\p{L}\p{N}]/u.test(k);
+            };
             const count = new Map();
             for (const l of lines) {
-                const k = key(l);
-                if (k.length >= minChars && !(protect && protect.test(l))) count.set(k, (count.get(k) || 0) + 1);
+                if (candidate(l)) count.set(key(l), (count.get(key(l)) || 0) + 1);
             }
             // 按章统计：一章里大半都是垃圾段时，剩下的零星几行也一并删掉
-            const isJunk = (l) => {
-                const k = key(l);
-                return k.length >= minChars && (count.get(k) || 0) >= limit && !(protect && protect.test(l));
-            };
+            const isJunk = (l) => candidate(l) && (count.get(key(l)) || 0) >= limit;
             const kept = [];
             let chapter = [];
             let title = '';
@@ -395,7 +405,7 @@
                 const junk = chapter.reduce((n, l) => n + (isJunk(l) ? l.length : 0), 0);
                 const dropAll = total > 0 && junk / total >= 0.6;
                 for (const l of chapter) {
-                    if (l && (dropAll || isJunk(l))) {
+                    if (l && !isKept(l) && (dropAll || isJunk(l))) {
                         repeated++;
                         // 同一段只记一次，记下出现的次数和第一次所在的章
                         const k = key(l);
@@ -425,14 +435,14 @@
         chap = '';
         for (const line of lines) {
             track(line);
-            if (line && regs.some((r) => r.test(line))) {
+            if (line && !isKept(line) && regs.some((r) => r.test(line))) {
                 removed++;
                 let prev = '';
                 if (removePrev) {
                     // 回退到上一条非空行
                     let k = out.length - 1;
                     while (k >= 0 && !out[k]) k--;
-                    if (k >= 0 && out[k].length <= 40 && !SENTENCE_END.test(out[k]) && !regs.some((r) => r.test(out[k])) && !(protect && protect.test(out[k]))) {
+                    if (k >= 0 && out[k].length <= 40 && !isKept(out[k]) && !SENTENCE_END.test(out[k]) && !regs.some((r) => r.test(out[k])) && !(protect && protect.test(out[k]))) {
                         prev = out[k];
                         out.splice(k, 1);
                         removed++;
@@ -1804,6 +1814,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 inlinePatterns: settings.inlineAdPatterns,
                 repeatLimit: settings.repeatParaLimit,
                 repeatMinChars: settings.repeatParaMinChars,
+                keepLines: settings.cleanKeep,
             });
             E.stats.cleanedLines = cleaned.removed;
             E.stats.repeatedLines = cleaned.repeated;
