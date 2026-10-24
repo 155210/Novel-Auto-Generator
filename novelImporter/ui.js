@@ -2142,6 +2142,31 @@
         return esc(mes.slice(0, at)) + hl + esc(mes.slice(at + floor.body.length));
     }
 
+    /** 高亮之间跳转：在楼层内容框里滚到上一处/下一处，当前那处加深 */
+    function bindHlNav() {
+        const nav = $('nim-hl-nav');
+        const pre = $('nim-floor-pre');
+        if (!nav || !pre) return;
+        const marks = [...pre.querySelectorAll('mark.nim-hl')];
+        if (!marks.length) return;
+        nav.hidden = false;
+        let cur = -1;
+        const pos = $('nim-hl-pos');
+        pos.textContent = `共 ${marks.length} 处`;
+        nav.onclick = (ev) => {
+            const b = ev.target.closest('[data-hl-go]');
+            if (!b) return;
+            if (cur >= 0) marks[cur].classList.remove('cur');
+            cur = (cur + Number(b.dataset.hlGo) + marks.length) % marks.length;
+            const m = marks[cur];
+            m.classList.add('cur');
+            const pr = pre.getBoundingClientRect();
+            pre.scrollTop += m.getBoundingClientRect().top - pr.top - pr.height / 3;
+            pre.scrollIntoView({ block: 'nearest' });
+            pos.textContent = `${cur + 1} / ${marks.length}`;
+        };
+    }
+
     function renderDetail() {
         const el = $('nim-detail');
         const e = State.engine;
@@ -2159,7 +2184,7 @@
             const d = r.parsed.divergence;
             if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
-            body += `<div class="nim-sub">楼层内容${State.hlOff ? '' : '<span class="nim-muted">（<mark class="nim-hl">高亮</mark>是 AI 补充的，只在这里显示，导出不带）</span>'}<button id="nim-hl-toggle" class="nim-btn ghost sm" style="margin-left:8px">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div><pre class="nim-pre">${floorHtml(e, i, floor)}</pre>`;
+            body += `<div class="nim-sub">楼层内容${State.hlOff ? '' : '<span class="nim-muted">（<mark class="nim-hl">高亮</mark>是 AI 补充的，只在这里显示，导出不带）</span>'}<button id="nim-hl-toggle" class="nim-btn ghost sm" style="margin-left:8px">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div>${State.hlOff ? '' : '<div class="nim-row nim-hl-nav" id="nim-hl-nav" hidden><button class="nim-btn sm" data-hl-go="-1">↑ 上一处</button><span id="nim-hl-pos" class="nim-muted"></span><button class="nim-btn sm" data-hl-go="1">下一处 ↓</button></div>'}<pre class="nim-pre" id="nim-floor-pre">${floorHtml(e, i, floor)}</pre>`;
             if (r.patchStats.failed.length)
                 body += `<div class="nim-sub">没对上的补丁</div><pre class="nim-pre">${esc(r.patchStats.failed.map((f) => `P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`).join('\n'))}</pre>`;
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
@@ -2178,6 +2203,7 @@
                </div>`
             : '';
         el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
+        bindHlNav();
         const hlBtn = $('nim-hl-toggle');
         if (hlBtn)
             hlBtn.onclick = () => {
@@ -2569,6 +2595,9 @@ select.nim-input{appearance:auto;}
 .nim-stwb-book{border-bottom:1px solid var(--line);padding:4px 0;}
 .nim-stwb-entry{padding-left:12px;}
 .nim-hl{background:rgba(242,180,65,.35);color:inherit;border-radius:3px;padding:0 1px;}
+.nim-hl.cur{background:rgba(242,140,40,.75);outline:2px solid rgba(242,140,40,.9);}
+.nim-hl-nav{align-items:center;justify-content:space-between;margin:4px 0;}
+.nim-hl-nav[hidden]{display:none;}
 .nim-log{max-height:200px;}
 .nim-fold{margin-top:10px;}
 .nim-fold>summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted);padding:4px 0;}
