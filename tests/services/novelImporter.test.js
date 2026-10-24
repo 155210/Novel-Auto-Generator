@@ -467,6 +467,19 @@ describe('运行引擎', () => {
         expect(/[\uE000\uE001]/.test(floor.mes)).toBe(false);
     });
 
+    it('导入酒馆可选标出补充的字：楼层 mes 带标记，body 不带', async () => {
+        const { engine } = makeEngine(normal);
+        await engine.run();
+        const plain = engine.renderFloors()[0];
+        expect(plain.mes).not.toContain('<mark>');
+        const f = engine.renderFloors({ highlight: 'mark' })[0];
+        expect(f.mes).toContain('<mark>裘月寒抬眸道。</mark>');
+        expect(f.body).toBe(plain.body);
+        expect(engine.renderFloors({ highlight: 'color' })[0].mes).toContain('<span style="color:#e67e22">裘月寒抬眸道。</span>');
+        // 跨行的标记每行单独闭合
+        expect(C.marksToHtml('a\uE000b\nc\uE001d', 'mark')).toBe('a<mark>b</mark>\n<mark>c</mark>d');
+    });
+
     it('界面高亮：翻译层按 AI 标的 ⟪⟫ 高亮，正文里不带标记', async () => {
         const pad = '雨一直下个不停。'.repeat(40);
         const body = `第1话 雨夜\n“来了啊。”月寒说道。⟪她的手在发抖。⟫\n⟪\n新加的一整段。\n⟫\n${pad}`;

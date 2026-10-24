@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.26';
+    const VERSION = '1.4.27';
 
     // ============================================
     // 默认配置
@@ -156,6 +156,7 @@
 
         // 翻译：auto 时原文大部分不是中文就整层翻译成简体中文
         translateMode: 'auto',
+        importHighlight: 'off', // 导入酒馆时标出 AI 补充/改写的字（聊天记录导出成 EPUB 时带上）：off；mark：黄底；color：彩色字
         imageMode: 'bbi', // bbi：柏宝绘格式（聊天记录导出能打进 EPUB）；img：直接 <img>；off：不导入插图
         tableMessageTemplate: '', // 记忆插件设置里的「消息模板」，从插件读取或手填
         useMessageTemplate: true,
@@ -279,6 +280,29 @@
         let out = fmt.replace(/\{n\}/g, String(n)).replace(/\{unit\}/g, unit).replace(/\{title\}/g, title);
         if (!title) out = out.replace(/[：:]\s*$/, '');
         return out;
+    }
+
+    /** 高亮标记换成 HTML（每行单独闭合，免得跨段的标签被酒馆拆坏） */
+    function marksToHtml(text, mode) {
+        const [open, close] = mode === 'color' ? ['<span style="color:#e67e22">', '</span>'] : ['<mark>', '</mark>'];
+        let on = false;
+        return String(text || '')
+            .split('\n')
+            .map((line) => {
+                let out = on ? open : '';
+                for (const ch of line) {
+                    if (ch === MARK_OPEN) {
+                        if (!on) out += open;
+                        on = true;
+                    } else if (ch === MARK_CLOSE) {
+                        if (on) out += close;
+                        on = false;
+                    } else out += ch;
+                }
+                if (on) out += close;
+                return out.replace(new RegExp(escapeRegExp(open) + escapeRegExp(close), 'g'), '');
+            })
+            .join('\n');
     }
 
     // 正文里常见的排版标签，不算「别的标签」
@@ -2474,7 +2498,8 @@ ${blocks}`;
         }
 
         /** 渲染所有已完成的层为楼层（称呼按最终称呼表统一替换） */
-        function renderFloors() {
+        /** opts.highlight：mark / color 时楼层正文（mes）里标出 AI 补充的字，floor.body 仍是干净的 */
+        function renderFloors(opts = {}) {
             const done = [];
             for (let i = 0; i < E.layers.length; i++) {
                 const r = E.results[i];
@@ -2503,6 +2528,10 @@ ${blocks}`;
                     divergence: r.inDivergence,
                 };
                 floor.mes = buildFloorText(floor, settings);
+                if (opts.highlight === 'mark' || opts.highlight === 'color') {
+                    const m = markedBody(i);
+                    if (m && stripMarks(m) === floor.body && /\uE000/.test(m)) floor.mes = buildFloorText({ ...floor, body: marksToHtml(m, opts.highlight) }, settings);
+                }
                 return floor;
             });
         }
@@ -2964,6 +2993,7 @@ ${sums}`;
         formatHeading,
         formatBodyHeadings,
         splitBodyBlocks,
+        marksToHtml,
         detectForeign,
         IMAGE_MARKER_RE,
         ensureImageMarkers,

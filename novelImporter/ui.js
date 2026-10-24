@@ -220,6 +220,17 @@
                 ],
             },
             {
+                key: 'importHighlight',
+                label: '导入酒馆时标出 AI 补充的字',
+                type: 'select',
+                hint: '标了的话聊天记录导出 EPUB 时也带高亮；只影响导入酒馆和导出的聊天记录，TXT 不带',
+                options: [
+                    ['off', '不标'],
+                    ['mark', '黄色底'],
+                    ['color', '橙色字'],
+                ],
+            },
+            {
                 key: 'imageMode',
                 label: 'EPUB 插图',
                 type: 'select',
@@ -735,7 +746,7 @@
     function buildOutputs() {
         const e = State.engine;
         if (!e) throw new Error('还没有处理结果');
-        const floors = e.renderFloors();
+        const floors = e.renderFloors({ highlight: State.settings.importHighlight });
         if (!floors.length) throw new Error('还没有处理完的层');
         const cardName = State.meta.cardName || baseName();
         const worldName = State.meta.worldName || cardName;
