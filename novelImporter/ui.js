@@ -182,7 +182,8 @@
             { key: 'adRemovePrevLine', label: '同时删掉广告行上面那行短标题（如「书名」+「请收藏：」）', type: 'check' },
             { key: 'inlineAdPatterns', label: '行内水印规则（每行一条正则，只删命中的那段，如「bg90○ cc」）', type: 'lines' },
             { key: 'repeatParaLimit', label: '全书重复几次以上的段落当垃圾段删掉', type: 'number', hint: '盗版源常把整章换成同一段垃圾文字；0 为不删，默认 3' },
-            { key: 'repeatParaMinChars', label: '参与重复检测的最短段落字数', type: 'number', hint: '默认 12，太短的句子不算' },
+            { key: 'repeatParaMinChars', label: '参与重复检测的最短段落字数', type: 'number', hint: '默认 12，太短的句子不算；对话和分隔线不算' },
+            { key: 'cleanKeep', label: '保留的段落（在「清掉的内容」里点保留会加到这里，每行一段，删掉一行就撤销）', type: 'lines' },
         ],
         translate: [
             {
@@ -1673,14 +1674,22 @@
         if (!lg) return toast(e && e.layers.length ? '这份任务是旧版本分的层，点「按当前设置重新分层」后才能看清掉的内容' : '先选择小说并分层，才有清掉的内容', 'warning');
         const empty = (e.stats.emptyChapters || []).map((t) => ({ text: t }));
         const chap = (c) => (c ? `<div class="nim-cl-chap">${esc(c)}</div>` : '');
+        // 「保留」按钮：段落文字放在数组里按下标取，免得引号之类的进属性出问题
+        clUi.items = [];
+        const keepBtn = (text) => {
+            clUi.items.push(text);
+            const on = isCleanKept(text);
+            return `<button class="nim-btn sm ${on ? 'is-on' : ''}" data-keep="${clUi.items.length - 1}">${on ? '已保留' : '保留'}</button>`;
+        };
         const group = (title, list, row, note) =>
             `<details class="nim-cl-group" ${list.length ? '' : 'disabled'}><summary>${title}<span class="nim-muted">${list.length ? '' : '无'}</span></summary>${note ? `<div class="nim-muted">${note}</div>` : ''}<ul class="nim-cl-list">${list.map(row).join('')}</ul>${list.length >= 3000 ? '<div class="nim-muted">太多了，只列出前 3000 条</div>' : ''}</details>`;
         $('nim-cl-body').innerHTML =
-            `<div class="nim-muted">分层时清掉的内容都在这里，按类别展开看。发现删错了，到设置「分层与清洗」里改对应的规则，再点「按当前设置重新分层」。</div>` +
+            `<div class="nim-muted">分层时清掉的内容都在这里，按类别展开看。删错的点「保留」，然后点下面的「重新分层」就不会再删；保留的段落在设置「分层与清洗」里能看到和撤销。</div>` +
             group(
                 `广告行（${lg.ads.length} 行${lg.ads.some((a) => a.prev) ? `，连带上一行 ${lg.ads.filter((a) => a.prev).length} 行` : ''}）`,
                 lg.ads,
-                (a) => `<li>${chap(a.chapter)}${a.prev ? `<div class="nim-cl-prev">连带删掉：${esc(a.prev)}</div>` : ''}<div>${esc(a.text)}</div></li>`,
+                (a) =>
+                    `<li>${chap(a.chapter)}${a.prev ? `<div class="nim-cl-line"><div class="nim-cl-prev">连带删掉：${esc(a.prev)}</div>${keepBtn(a.prev)}</div>` : ''}<div class="nim-cl-line"><div>${esc(a.text)}</div>${keepBtn(a.text)}</div></li>`,
                 '「连带删掉」是广告上面那行没有句末标点的短行，可以在设置里关掉「同时删掉广告行上面那行短标题」。',
             ) +
             group(
@@ -1697,13 +1706,38 @@
             group(
                 `重复垃圾段（${lg.repeated.length} 种，共 ${e.stats.repeatedLines} 段）`,
                 lg.repeated,
-                (a) => `<li>${chap(a.chapter)}<div>${esc(a.text)}</div><div class="nim-cl-prev">${a.reason === 'chapter' ? '这一章大半是垃圾段，剩下的零星几行一起删' : '全书重复出现'}，删了 ${a.count} 处</div></li>`,
-                '同一段只列一次，章节是第一次出现的位置。',
+                (a) =>
+                    `<li>${chap(a.chapter)}<div class="nim-cl-line"><div><div>${esc(a.text)}</div><div class="nim-cl-prev">${a.reason === 'chapter' ? '这一章大半是垃圾段，剩下的零星几行一起删' : '全书重复出现'}，删了 ${a.count} 处</div></div>${keepBtn(a.text)}</div></li>`,
+                '同一段只列一次，章节是第一次出现的位置。不该删的点「保留」，再点下面的「重新分层」。',
             ) +
             group(`没有正文的章（${empty.length} 章）`, empty, (a) => `<li><div>${esc(a.text)}</div></li>`, '这些章去掉垃圾内容后没有正文，原文可能被盗版站替换了，建议换个源。');
+        renderCleanFoot();
         $('nim-cl').hidden = false;
     }
 
+    const clUi = { items: [], changed: false };
+
+    function cleanKeepKey(t) {
+        return String(t || '').replace(/[\s\u3000]/g, '');
+    }
+
+    function isCleanKept(t) {
+        const k = cleanKeepKey(t);
+        return (State.settings.cleanKeep || []).some((x) => cleanKeepKey(x) === k);
+    }
+
+    function toggleCleanKeep(text) {
+        const k = cleanKeepKey(text);
+        const list = State.settings.cleanKeep || [];
+        State.settings.cleanKeep = isCleanKept(text) ? list.filter((x) => cleanKeepKey(x) !== k) : list.concat([text]);
+        clUi.changed = true;
+        saveSettings();
+        fillFields();
+    }
+
+    function renderCleanFoot() {
+        $('nim-cl-relayer').hidden = !clUi.changed;
+    }
     // ============================================
     // 术语表：看、搜、改、删、加（和小说翻译模块的术语表一样，分页显示）
     // ============================================
@@ -1827,7 +1861,7 @@
         return `<div id="nim-cl" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="清掉的内容">
           <div class="nim-sheet-head"><b>清掉的内容</b><button class="nim-icon-btn" data-cl="close" title="关闭">✕</button></div>
           <div id="nim-cl-body" class="nim-sheet-body"></div>
-          <div class="nim-sheet-foot"><button class="nim-btn primary" data-cl="close">关闭</button></div>
+          <div class="nim-sheet-foot"><button class="nim-btn" data-cl="close">关闭</button><button id="nim-cl-relayer" class="nim-btn primary" data-cl="relayer" hidden>重新分层，让保留生效</button></div>
         </div></div>`;
     }
 
@@ -2451,6 +2485,11 @@ select.nim-input{appearance:auto;}
 .nim-cl-list{list-style:none;margin:0 0 12px;padding:0;display:flex;flex-direction:column;gap:8px;}
 .nim-cl-list li{padding:8px 10px;border-radius:8px;background:var(--surface2);font-size:13px;word-break:break-all;}
 .nim-cl-chap{font-size:11px;color:var(--accent2);margin-bottom:2px;}
+.nim-cl-line{display:flex;align-items:flex-start;gap:8px;justify-content:space-between;}
+.nim-cl-line>div{flex:1;min-width:0;}
+.nim-cl-line+.nim-cl-line{margin-top:6px;}
+.nim-cl-line .nim-btn{flex:none;}
+.nim-cl-line .nim-btn.is-on{background:var(--ok);border-color:transparent;color:#0b1a12;}
 .nim-cl-prev{font-size:12px;color:var(--muted);}
 .nim-cl-mark{background:rgba(240,100,100,.25);color:var(--text);border-radius:3px;padding:0 2px;}
 .nim-sheet-box{width:min(620px,100%);max-height:100%;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);}
@@ -2560,8 +2599,25 @@ select.nim-input{appearance:auto;}
         $('nim-file-stats').addEventListener('click', (ev) => {
             if (ev.target.closest('[data-cleanlog]')) openCleanLog();
         });
-        $('nim-cl').addEventListener('click', (ev) => {
-            if (ev.target === $('nim-cl') || ev.target.closest('[data-cl="close"]')) $('nim-cl').hidden = true;
+        $('nim-cl').addEventListener('click', async (ev) => {
+            const keep = ev.target.closest('[data-keep]');
+            if (keep) {
+                const text = clUi.items[Number(keep.dataset.keep)];
+                toggleCleanKeep(text);
+                // 同一段可能在几个地方出现（例如连带删掉的那行），按钮一起更新
+                $('nim-cl-body')
+                    .querySelectorAll('[data-keep]')
+                    .forEach((b) => {
+                        const on = isCleanKept(clUi.items[Number(b.dataset.keep)]);
+                        b.classList.toggle('is-on', on);
+                        b.textContent = on ? '已保留' : '保留';
+                    });
+                renderCleanFoot();
+            } else if (ev.target.closest('[data-cl="relayer"]')) {
+                $('nim-cl').hidden = true;
+                clUi.changed = false;
+                await prepareLayers();
+            } else if (ev.target === $('nim-cl') || ev.target.closest('[data-cl="close"]')) $('nim-cl').hidden = true;
         });
         on('nim-tpl-live', 'click', templateFromPlugin);
         on('nim-tpl-live2', 'click', templateFromPlugin);

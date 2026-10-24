@@ -85,6 +85,25 @@ describe('清洗与分层', () => {
         expect(r.log.repeated.find((x) => x.text === '偶尔混进来的一行别的话也一起删').reason).toBe('chapter');
     });
 
+    it('对话和分隔线不算垃圾段，点了保留的段落不删', () => {
+        const sep = '='.repeat(40);
+        const ad = '引き続き協力募集中ですので、続きが読みたいと思われた方は、ブクマ登録をお願いします。';
+        const note = '（それ以外のサイトでは2週間後の配信になります）';
+        const moan = '「おっ♡　おっ♡　おっ♡　おっ♡　おっ♡」';
+        const raw = [1, 2, 3, 4].map((i) => [`第${i}話 タイトル`, `本文その${i}、とても長い文章がここに続いています。`, sep, moan, ad, note].join('\n')).join('\n');
+        const opts = { repeatLimit: 3, repeatMinChars: 12 };
+        const r = C.cleanText(raw, [], false, C.DEFAULT_CHAPTER_REGEX, opts);
+        expect(r.log.repeated.map((x) => x.text)).toEqual([ad, note]);
+        expect(r.text).toContain(sep);
+        expect(r.text).toContain(moan);
+        const r2 = C.cleanText(raw, [], false, C.DEFAULT_CHAPTER_REGEX, { ...opts, keepLines: [note] });
+        expect(r2.log.repeated.map((x) => x.text)).toEqual([ad]);
+        expect(r2.text.split(note).length).toBe(5);
+        // 广告规则命中的行点了保留也不删，上一行也不连带
+        const r3 = C.cleanText('正文。\n短标题\n请收藏：', C.DEFAULT_AD_PATTERNS, true, null, { keepLines: ['请收藏：'] });
+        expect(r3.text.split('\n')).toEqual(['正文。', '短标题', '请收藏：']);
+    });
+
     it('广告行记下所在章节和连带删掉的上一行', () => {
         const r = C.cleanText('第一章 开始\n正文一。\n修仙界只有妖女了是吗\n请收藏：\nwww.example.com\n正文二。', C.DEFAULT_AD_PATTERNS, true, C.DEFAULT_CHAPTER_REGEX);
         expect(r.log.ads[0]).toEqual({ chapter: '第一章 开始', text: '请收藏：', prev: '修仙界只有妖女了是吗' });
