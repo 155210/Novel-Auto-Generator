@@ -199,6 +199,50 @@
         return (s && typeof s.message_template === 'string' && s.message_template) || '';
     }
 
+    /**
+     * 酒馆现在开着的世界书：全局选中的、当前角色绑定的（含附加的）、聊天绑定的、人设绑定的。
+     * 返回 [{name, source}]，同名只留一个。
+     */
+    async function listActiveWorldbooks() {
+        const c = ctx();
+        const out = [];
+        const add = (name, source) => {
+            const n = typeof name === 'string' ? name.trim() : '';
+            if (n && !out.some((x) => x.name === n)) out.push({ name: n, source });
+        };
+        let wi = null;
+        try {
+            wi = await import('/scripts/world-info.js');
+        } catch (e) {
+            /* 拿不到模块就只看上下文 */
+        }
+        const globalList = (wi && wi.selected_world_info) || c.selected_world_info || root.selected_world_info || [];
+        for (const n of Array.isArray(globalList) ? globalList : []) add(n, '全局');
+        const ch = c.characterId !== undefined && c.characters ? c.characters[c.characterId] : null;
+        if (ch) {
+            add(ch.data && ch.data.extensions && ch.data.extensions.world, '角色');
+            const file = String(ch.avatar || '').replace(/\.[^.]+$/, '');
+            const extra = wi && wi.world_info && Array.isArray(wi.world_info.charLore) ? wi.world_info.charLore.find((x) => x.name === file) : null;
+            for (const n of (extra && extra.extraBooks) || []) add(n, '角色');
+        }
+        const meta = c.chatMetadata || c.chat_metadata || {};
+        add(meta.world_info, '聊天');
+        add(c.powerUserSettings && c.powerUserSettings.persona_description_lorebook, '人设');
+        return out;
+    }
+
+    /** 读一本世界书的条目（世界书文件里的 entries 对象） */
+    async function loadWorldbookEntries(name) {
+        const c = ctx();
+        let data = null;
+        if (typeof c.loadWorldInfo === 'function') data = await c.loadWorldInfo(name);
+        else {
+            const resp = await fetch('/api/worldinfo/get', { method: 'POST', headers: c.getRequestHeaders(), body: JSON.stringify({ name }) });
+            if (resp.ok) data = await resp.json();
+        }
+        return (data && data.entries) || {};
+    }
+
     /** 上传一张图到 user/images/<角色名>/，返回酒馆里的路径 */
     async function uploadImage(chName, filename, base64, format) {
         const c = ctx();
@@ -388,6 +432,8 @@
     root.NovelImporterST = {
         ctx,
         saveWorldbook,
+        listActiveWorldbooks,
+        loadWorldbookEntries,
         createCharacter,
         updateCharacter,
         saveChat,

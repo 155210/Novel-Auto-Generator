@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.2.0';
+    const VERSION = '1.3.0';
 
     // ============================================
     // 默认配置
@@ -126,6 +126,9 @@
         rewritePrompt: DEFAULT_REWRITE_PROMPT,
         maxPatchChars: 120,
         extraRules: '',
+        // 酒馆里开着的世界书当作输出要求发给 AI；stWorldExclude 是取消勾选的书名
+        stWorldEnabled: false,
+        stWorldExclude: [],
 
         // 剧情改写（送女/NTR 等）
         divergenceEnabled: true,
@@ -676,6 +679,28 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return hits.slice(0, Math.max(1, Number(max) || 300));
     }
 
+    /**
+     * 酒馆里已开的世界书当作输出要求：books = [{name, entries}]，entries 是世界书文件里的 entries（对象或数组）。
+     * 关掉的、没内容的条目不要；按条目的顺序值排。
+     */
+    function buildOutputRules(books) {
+        const out = [];
+        for (const b of Array.isArray(books) ? books : []) {
+            if (!b) continue;
+            const list = Array.isArray(b.entries) ? b.entries : Object.values(b.entries || {});
+            const items = list
+                .filter((e) => e && !e.disable && typeof e.content === 'string' && e.content.trim())
+                .map((e, i) => ({ e, i, order: Number.isFinite(Number(e.order)) ? Number(e.order) : 100 }))
+                .sort((a, b2) => a.order - b2.order || a.i - b2.i)
+                .map(({ e }) => {
+                    const title = String(e.comment || '').trim() || (Array.isArray(e.key) ? e.key.join('、') : '');
+                    return (title ? `【${title}】\n` : '') + e.content.trim();
+                });
+            if (items.length) out.push(`### 《${b.name}》\n${items.join('\n\n')}`);
+        }
+        return out.join('\n\n');
+    }
+
     function buildGlossarySection(s, state, layerText) {
         const hits = selectGlossary(state.glossary, layerText, s.glossaryMax);
         const table = hits.length
@@ -707,6 +732,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             parts.push(`## 用户的改写要求\n${(s.rewritePrompt || '').trim()}\n- ${ratioText}`);
         }
         if ((s.extraRules || '').trim()) parts.push(`## 其他规则\n${s.extraRules.trim()}`);
+        if ((extra.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守）\n${extra.outputRules.trim()}`);
         if (!tr) parts.push(PATCH_RULES.replace('{MAX_PATCH}', String(s.maxPatchChars)));
         const div = buildDivergenceSection(s, state, tr);
         if (div) parts.push(div);
@@ -1756,6 +1782,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             const rel = settings.worldbookEnabled ? selectRelevantEntries(st.worldbook, layerText, settings.worldbookContextChars) : [];
             const askBig = needsBigSummary(st);
             const prompt = buildLayerPrompt(layer, settings, st, {
+                outputRules: typeof cfg.outputRules === 'string' ? cfg.outputRules : '',
                 ...extra,
                 needBigSummary: askBig,
                 eventRows: askBig ? eventRowsOf(st) : [],
@@ -2104,7 +2131,7 @@ ${sums}`;
     }
 
     function presetDefaults() {
-        return { name: '', entries: [presetSlotEntry()], extras: [], squash: false };
+        return { name: '', entries: [presetSlotEntry()], squash: false };
     }
 
     const normRole = (v) => (v === 'user' || v === 'assistant' ? v : 'system');
@@ -2126,25 +2153,20 @@ ${sums}`;
         };
     }
 
-    /** 设置兜底：占位条目缺了补到末尾、重复的只留一个；没在顺序里的条目一律关闭 */
+    /** 设置兜底：占位条目缺了补到末尾、重复的只留一个（旧版存的 extras 不再保留） */
     function normalizePreset(raw) {
         const r = raw && typeof raw === 'object' ? raw : {};
         const seen = new Set();
-        const take = (list, inOrder) => {
-            const out = [];
-            for (const e of Array.isArray(list) ? list : []) {
-                if (!e || typeof e !== 'object') continue;
-                const id = typeof e.id === 'string' && e.id ? e.id : '';
-                if (!id || seen.has(id) || (!inOrder && id === PRESET_SLOT_ID)) continue;
-                seen.add(id);
-                if (id === PRESET_SLOT_ID) out.push(presetSlotEntry());
-                else out.push(inOrder ? normalizePresetEntry(id, e) : { ...normalizePresetEntry(id, e), enabled: false });
-            }
-            return out;
-        };
-        const entries = take(r.entries, true);
+        const entries = [];
+        for (const e of Array.isArray(r.entries) ? r.entries : []) {
+            if (!e || typeof e !== 'object') continue;
+            const id = typeof e.id === 'string' && e.id ? e.id : '';
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            entries.push(id === PRESET_SLOT_ID ? presetSlotEntry() : normalizePresetEntry(id, e));
+        }
         if (!seen.has(PRESET_SLOT_ID)) entries.push(presetSlotEntry());
-        return { name: typeof r.name === 'string' ? r.name : '', entries, extras: take(r.extras, false), squash: r.squash === true };
+        return { name: typeof r.name === 'string' ? r.name : '', entries, squash: r.squash === true };
     }
 
     /** 旧版的消息链（{role, content, enabled}，{PROMPT} 处放提示词）转成条目 */
@@ -2166,20 +2188,20 @@ ${sums}`;
         return normalizePreset({ entries });
     }
 
+    /** 和 TXT转世界书 一样取酒馆列表：全局的 100001，没有就取最后一份（酒馆最后存的那份）；提示词管理器导出的是平铺的一份 */
     function pickPromptOrder(raw) {
         if (!Array.isArray(raw) || !raw.length) return null;
         if (raw.every((x) => x && typeof x === 'object' && 'identifier' in x)) return raw;
         const lists = raw.filter((x) => x && typeof x === 'object' && Array.isArray(x.order));
-        const g = lists.find((x) => Number(x.character_id) === 100001);
-        if (g) return g.order;
-        const big = lists.slice().sort((a, b) => b.order.length - a.order.length)[0];
-        return big ? big.order : null;
+        const g = lists.find((x) => Number(x.character_id) === 100001) || lists[lists.length - 1];
+        return g ? g.order : null;
     }
 
     /**
      * 解析酒馆聊天补全预设（整份预设，或提示词管理器单独导出的 {data:{prompts, prompt_order}}）。
-     * 列表顺序和开关与酒馆里一致（按 prompt_order）；条目库里有、顺序里没放的收进 extras（不发送）；
-     * 角色卡、世界书等标记条目不导入；「聊天记录」换成本层提示词；没写「正常」触发的条目导入为关闭。
+     * 和 TXT转世界书 一样只按酒馆的条目列表（prompt_order）走，顺序和开关跟酒馆里看到的一致；
+     * 条目库里有、列表里没放的条目酒馆里看不到也不发送，这里同样不导入（没有 prompt_order 时按 prompts 原顺序）；
+     * 角色卡、世界书等标记条目不导入；「聊天记录」换成本层提示词。
      */
     function parseSTPreset(json) {
         const root = json && typeof json === 'object' ? json : null;
@@ -2197,22 +2219,15 @@ ${sums}`;
             placed.add(id);
             seq.push({ id, enabled: typeof it.enabled === 'boolean' ? it.enabled : true });
         }
-        const orphans = [];
-        for (const id of byId.keys()) {
-            if (placed.has(id)) continue;
-            if (order) orphans.push(id);
-            else seq.push({ id, enabled: null });
-        }
+        if (!order) for (const id of byId.keys()) if (!placed.has(id)) seq.push({ id, enabled: null });
         const toEntry = (id, p, enabled) => {
-            const triggers = Array.isArray(p.injection_trigger) ? p.injection_trigger : [];
-            const triggerOk = !triggers.length || triggers.includes('normal');
             const self = typeof p.enabled === 'boolean' ? p.enabled : true;
             return {
                 id,
                 name: typeof p.name === 'string' && p.name.trim() ? p.name : id,
                 role: normRole(p.role),
                 content: typeof p.content === 'string' ? p.content : '',
-                enabled: (enabled ?? self) && triggerOk,
+                enabled: enabled ?? self,
                 position: Number(p.injection_position) === 1 ? 'depth' : 'relative',
                 depth: finiteInt(p.injection_depth, 4),
                 order: finiteInt(p.injection_order, 100, Number.MIN_SAFE_INTEGER),
@@ -2235,12 +2250,11 @@ ${sums}`;
             entries.push(toEntry(id, p, enabled));
         }
         if (!slotPlaced) entries.push(presetSlotEntry());
-        const extras = orphans.filter((id) => id !== 'chatHistory' && byId.get(id).marker !== true && !ST_MARKERS.includes(id)).map((id) => toEntry(id, byId.get(id), false));
         const imported = entries.filter((e) => e.id !== PRESET_SLOT_ID);
         const num = (v) => (typeof v === 'number' && !isNaN(v) ? v : null);
         return {
             entries,
-            extras,
+            skipped: order ? byId.size - placed.size : 0,
             squash: data.squash_system_messages === true || root.squash_system_messages === true,
             promptCount: imported.length,
             enabledCount: imported.filter((e) => e.enabled).length,
@@ -2339,6 +2353,7 @@ ${sums}`;
         mergeGlossary,
         parseGlossaryLines,
         selectGlossary,
+        buildOutputRules,
         aliasTargetOf,
         cleanCell,
         estimateTokens,
