@@ -769,7 +769,10 @@
         } catch (e) {
             return toast(e.message, 'warning');
         }
-        if (!State.meta.description && State.settings.apiEndpoint) await genCardInfo();
+        if (!State.meta.description && State.settings.apiEndpoint) {
+            toast('简介是空的，先让 AI 生成简介，再导入', 'info');
+            await genCardInfo();
+        }
         State.importing = true;
         State.stopped = false;
         try {
@@ -2008,7 +2011,7 @@
             const top = el.scrollTop;
             el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
             el.scrollTop = follow ? el.scrollHeight : top;
-            setStatus(`第 ${info.layer + 1} 层输出中 · ${State.stream.length} 字`);
+            setStatus(`${info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : `第 ${info.layer + 1} 层输出`}中 · ${State.stream.length} 字`);
         });
     }
 
