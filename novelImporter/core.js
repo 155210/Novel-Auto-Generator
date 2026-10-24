@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.8';
+    const VERSION = '1.4.9';
 
     // ============================================
     // 默认配置
@@ -131,6 +131,7 @@
         // 酒馆里开着的世界书当作输出要求发给 AI；stWorldExclude 是取消勾选的书名
         stWorldEnabled: false,
         stWorldExclude: [],
+        stWorldEntryExclude: [], // 单独关掉的条目：「书名::uid」
 
         // 剧情改写（送女/NTR 等）
         divergenceEnabled: true,
@@ -735,19 +736,29 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * 酒馆里已开的世界书当作输出要求：books = [{name, entries}]，entries 是世界书文件里的 entries（对象或数组）。
      * 关掉的、没内容的条目不要；按条目的顺序值排。
      */
-    function buildOutputRules(books) {
+    /** 一本世界书里能当输出要求的条目（没关、有内容），按顺序排好；key 是条目的 uid */
+    function outputRuleItems(entries) {
+        const list = Array.isArray(entries) ? entries.map((e, i) => [String(i), e]) : Object.entries(entries || {});
+        return list
+            .filter(([, e]) => e && !e.disable && typeof e.content === 'string' && e.content.trim())
+            .map(([k, e], i) => ({ e, i, key: String(e.uid ?? k), order: Number.isFinite(Number(e.order)) ? Number(e.order) : 100 }))
+            .sort((a, b2) => a.order - b2.order || a.i - b2.i)
+            .map(({ e, key }) => ({
+                key,
+                title: String(e.comment || '').trim() || (Array.isArray(e.key) ? e.key.join('、') : ''),
+                content: e.content.trim(),
+            }));
+    }
+
+    /** opts.skip：不发的条目，Set 里放「书名::uid」 */
+    function buildOutputRules(books, opts = {}) {
+        const skip = opts.skip instanceof Set ? opts.skip : new Set(opts.skip || []);
         const out = [];
         for (const b of Array.isArray(books) ? books : []) {
             if (!b) continue;
-            const list = Array.isArray(b.entries) ? b.entries : Object.values(b.entries || {});
-            const items = list
-                .filter((e) => e && !e.disable && typeof e.content === 'string' && e.content.trim())
-                .map((e, i) => ({ e, i, order: Number.isFinite(Number(e.order)) ? Number(e.order) : 100 }))
-                .sort((a, b2) => a.order - b2.order || a.i - b2.i)
-                .map(({ e }) => {
-                    const title = String(e.comment || '').trim() || (Array.isArray(e.key) ? e.key.join('、') : '');
-                    return (title ? `【${title}】\n` : '') + e.content.trim();
-                });
+            const items = outputRuleItems(b.entries)
+                .filter((it) => !skip.has(`${b.name}::${it.key}`))
+                .map((it) => (it.title ? `【${it.title}】\n` : '') + it.content);
             if (items.length) out.push(`### 《${b.name}》\n${items.join('\n\n')}`);
         }
         return out.join('\n\n');
@@ -2631,6 +2642,7 @@ ${sums}`;
         parseGlossaryLines,
         selectGlossary,
         buildOutputRules,
+        outputRuleItems,
         stripEchoedSource,
         protagonistOf,
         aliasTargetOf,
