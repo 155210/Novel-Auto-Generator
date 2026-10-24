@@ -1790,16 +1790,25 @@
             const on = isCleanKept(text);
             return `<button class="nim-btn sm ${on ? 'is-on' : ''}" data-keep="${clUi.items.length - 1}">${on ? '已保留' : '保留'}</button>`;
         };
+        // 一模一样的广告行合成一条，记次数
+        const adMap = new Map();
+        for (const a of lg.ads) {
+            let g = adMap.get(a.text);
+            if (!g) adMap.set(a.text, (g = { text: a.text, chapter: a.chapter, count: 0, prevMap: new Map() }));
+            g.count++;
+            if (a.prev) g.prevMap.set(a.prev, (g.prevMap.get(a.prev) || 0) + 1);
+        }
+        const ads = [...adMap.values()].map((g) => ({ ...g, prevs: [...g.prevMap.entries()] }));
         const group = (title, list, row, note) =>
             `<details class="nim-cl-group" ${list.length ? '' : 'disabled'}><summary>${title}<span class="nim-muted">${list.length ? '' : '无'}</span></summary>${note ? `<div class="nim-muted">${note}</div>` : ''}<ul class="nim-cl-list">${list.map(row).join('')}</ul>${list.length >= 3000 ? '<div class="nim-muted">太多了，只列出前 3000 条</div>' : ''}</details>`;
         $('nim-cl-body').innerHTML =
             `<div class="nim-muted">分层时清掉的内容都在这里，按类别展开看。删错的点「保留」，然后点下面的「重新分层」就不会再删；保留的段落在设置「分层与清洗」里能看到和撤销。</div>` +
             group(
-                `广告行（${lg.ads.length} 行${lg.ads.some((a) => a.prev) ? `，连带上一行 ${lg.ads.filter((a) => a.prev).length} 行` : ''}）`,
-                lg.ads,
+                `广告行（${lg.ads.length} 行，${ads.length} 种${lg.ads.some((a) => a.prev) ? `，连带上一行 ${lg.ads.filter((a) => a.prev).length} 行` : ''}）`,
+                ads,
                 (a) =>
-                    `<li>${chap(a.chapter)}${a.prev ? `<div class="nim-cl-line"><div class="nim-cl-prev">连带删掉：${esc(a.prev)}</div>${keepBtn(a.prev)}</div>` : ''}<div class="nim-cl-line"><div>${esc(a.text)}</div>${keepBtn(a.text)}</div></li>`,
-                '「连带删掉」是广告上面那行没有句末标点的短行，可以在设置里关掉「同时删掉广告行上面那行短标题」。',
+                    `<li>${chap(a.chapter)}${a.prevs.map(([t, n]) => `<div class="nim-cl-line"><div class="nim-cl-prev">连带删掉：${esc(t)}${n > 1 ? `（${n} 处）` : ''}</div>${keepBtn(t)}</div>`).join('')}<div class="nim-cl-line"><div><div>${esc(a.text)}</div>${a.count > 1 ? `<div class="nim-cl-prev">一模一样的删了 ${a.count} 处，章节是第一次出现的位置</div>` : ''}</div>${keepBtn(a.text)}</div></li>`,
+                '一模一样的行合成一条，点一次「保留」全部生效。「连带删掉」是广告上面那行没有句末标点的短行，可以在设置里关掉「同时删掉广告行上面那行短标题」。',
             ) +
             group(
                 `行内水印（${lg.inline.length} 处）`,
