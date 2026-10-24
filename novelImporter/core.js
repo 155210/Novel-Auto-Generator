@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.34';
+    const VERSION = '1.4.35';
 
     // ============================================
     // 默认配置
@@ -982,15 +982,14 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
         if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
         if (!protagonistOf(s, state)) format += '\n<主角>主角的名字，看不出就留空</主角>';
-        if (extra.feedback) {
-            parts.push(`## 用户对上一次结果的修改意见（优先遵守）\n${extra.feedback}`);
-            if (extra.previousRaw) parts.push(`## 你上一次的输出\n${extra.previousRaw}`);
-        }
+        if (extra.feedback && extra.previousRaw) parts.push(`## 你上一次的输出（用户不满意，要按最后的修改要求重做）\n<上一次输出>\n${extra.previousRaw}\n</上一次输出>`);
         // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
         parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
         // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
         parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + String(s.jsonReminder ?? JSON_REMINDER).trim());
+        // 修改要求放在最后：前面有上一次的输出和整层原文，放中间 AI 很容易看漏
+        if (extra.feedback) parts.push(`## 这次重做的修改要求（最优先，必须做到；其他照上面的要求和格式）\n${extra.feedback}`);
         return parts.join('\n\n');
     }
 
@@ -2430,11 +2429,32 @@ ${blocks}`;
 
         /** 审阅不通过：带上修改意见重做这一层（之后的层作废） */
         async function reject(feedback) {
+            return runSingle(() => rejectInner(feedback));
+        }
+
+        async function rejectInner(feedback) {
             const i = E.reviewing;
             if (i === null) return null;
             const prev = E.results[i];
+            return redoLayer(i, { feedback, previousRaw: prev && prev.raw });
+        }
+
+        /**
+         * 重做第 i 层（之后的层作废）。中途点了停止就把原来的结果放回去，什么都不丢。
+         */
+        async function redoLayer(i, extra) {
+            const saved = E.results.slice(i);
             for (let k = i; k < E.results.length; k++) E.results[k] = null;
-            const res = await processLayer(i, { feedback, previousRaw: prev && prev.raw });
+            E.reviewing = null;
+            let res;
+            try {
+                res = await processLayer(i, extra);
+            } catch (e) {
+                if (e.message !== 'ABORTED') throw e;
+                saved.forEach((r, k) => (E.results[i + k] = r));
+                emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
+                return null;
+            }
             E.reviewing = res.status === 'done' ? i : null;
             emit('review', { index: i, result: res });
             return res;
@@ -2541,26 +2561,36 @@ ${blocks}`;
         }
 
         /** 带修改要求重做第 i 层（不用等审阅；之后的层作废） */
+        /** 单层重做期间标成运行中：界面的停止按钮能点，停止后这次请求中断 */
+        async function runSingle(fn) {
+            if (E.running) throw new Error('正在处理中');
+            E.running = true;
+            E.stopRequested = false;
+            try {
+                return await fn();
+            } finally {
+                E.running = false;
+            }
+        }
+
         async function redoWithFeedback(i, feedback) {
+            return runSingle(() => redoWithFeedbackInner(i, feedback));
+        }
+
+        async function redoWithFeedbackInner(i, feedback) {
             if (!E.layers[i]) return null;
             const prev = E.results[i];
-            for (let k = i; k < E.results.length; k++) E.results[k] = null;
-            E.reviewing = null;
-            const res = await processLayer(i, { feedback, previousRaw: prev && prev.raw });
-            E.reviewing = res.status === 'done' ? i : null;
-            emit('review', { index: i, result: res });
-            return res;
+            return redoLayer(i, { feedback, previousRaw: prev && prev.raw });
         }
 
         /** 用改过的提示词重做第 i 层（之后的层作废） */
         async function redoWithPrompt(i, prompt) {
+            return runSingle(() => redoWithPromptInner(i, prompt));
+        }
+
+        async function redoWithPromptInner(i, prompt) {
             if (!E.layers[i]) return null;
-            for (let k = i; k < E.results.length; k++) E.results[k] = null;
-            E.reviewing = null;
-            const res = await processLayer(i, { customPrompt: String(prompt || '') });
-            E.reviewing = res.status === 'done' ? i : null;
-            emit('review', { index: i, result: res });
-            return res;
+            return redoLayer(i, { customPrompt: String(prompt || '') });
         }
 
         /** 从第 i 层起全部重跑 */
