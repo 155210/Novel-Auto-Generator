@@ -297,7 +297,7 @@
                 label: '词语替换（导出和导入酒馆时替换）',
                 type: 'textarea',
                 rows: 4,
-                hint: '每行一条：原词 → 新词（也可以写 ->）；新词留空就是删掉；原词写成 /正则/ 按正则替换。楼层、世界书、表格、人设都会换。点「立即应用到已生成的层」会直接改掉已经存下来的内容',
+                hint: '每行一条：原词 → 新词（也可以写 ->）；新词留空就是删掉；原词写成 /正则/ 按正则替换。楼层、世界书、表格、人设都会换。点「立即应用到已生成的层」会先列出要换掉的每一处，确认后直接改掉已经存下来的内容',
                 button: { id: 'nim-wr-apply', label: '立即应用到已生成的层' },
             },
             {
@@ -1996,6 +1996,44 @@
         </div></div>`;
     }
 
+    const wrUi = { text: '', total: 0, summary: '' };
+
+    /** 词语替换写进已生成的层之前，先列出每条规则换了几处、在哪一层哪一块，带前后文 */
+    function openReplacePreview(text) {
+        const { rules, hits } = State.engine.previewReplaceInResults(text);
+        if (!hits.length) return toast('已生成的层里没有要替换的词', 'info');
+        wrUi.text = text;
+        wrUi.total = hits.length;
+        wrUi.summary = rules
+            .filter((r) => r.count)
+            .map((r) => `${r.text}（${r.count} 处）`)
+            .join('；');
+        const MAX = 500;
+        const row = (h) =>
+            `<li><div class="nim-cl-chap">第 ${h.layer + 1} 层 · ${esc(h.where)}</div><div>${esc(h.pre)}<del class="nim-cl-mark">${esc(h.from)}</del><ins class="nim-wr-to">${esc(h.to) || '（删掉）'}</ins>${esc(h.post)}</div></li>`;
+        const groups = rules
+            .map((r, ri) => {
+                const list = hits.filter((h) => h.rule === ri);
+                const where = {};
+                for (const h of list) where[h.where] = (where[h.where] || 0) + 1;
+                const layers = new Set(list.map((h) => h.layer)).size;
+                const info = list.length ? `${list.length} 处，${layers} 层（${Object.entries(where).map(([k, n]) => `${k} ${n}`).join('、')}）` : '没有匹配';
+                return `<details class="nim-cl-group" ${list.length ? '' : 'disabled'}><summary>${esc(r.text)}<span class="nim-muted">${info}</span></summary><ul class="nim-cl-list">${list.slice(0, MAX).map(row).join('')}</ul>${list.length > MAX ? `<div class="nim-muted">太多了，只列出前 ${MAX} 处</div>` : ''}</details>`;
+            })
+            .join('');
+        $('nim-wr-body').innerHTML =
+            `<div class="nim-muted">共 ${hits.length} 处。红色删除线是原来的字，绿色是换成的字。核对没问题再点「确认替换」，改完不能撤销，只能重跑那一层。</div>` + groups;
+        $('nim-wr').hidden = false;
+    }
+
+    function replacePreviewHtml() {
+        return `<div id="nim-wr" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="词语替换预览">
+          <div class="nim-sheet-head"><b>词语替换会换掉这些</b><button class="nim-icon-btn" data-wr="close" title="关闭">✕</button></div>
+          <div id="nim-wr-body" class="nim-sheet-body"></div>
+          <div class="nim-sheet-foot"><span class="nim-grow-sp"></span><button class="nim-btn" data-wr="close">取消</button><button class="nim-btn primary" data-wr="apply">确认替换</button></div>
+        </div></div>`;
+    }
+
     function cleanLogHtml() {
         return `<div id="nim-cl" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="清掉的内容">
           <div class="nim-sheet-head"><b>清掉的内容</b><button class="nim-icon-btn" data-cl="close" title="关闭">✕</button></div>
@@ -2650,6 +2688,7 @@
   ${presetEditHtml()}
   ${catEditHtml()}
   ${cleanLogHtml()}
+  ${replacePreviewHtml()}
   ${glossaryHtml()}
 </div></div>`;
     }
@@ -2853,6 +2892,7 @@ select.nim-input{appearance:auto;}
 .nim-cl-line .nim-btn.is-on{background:var(--ok);border-color:transparent;color:#0b1a12;}
 .nim-cl-prev{font-size:12px;color:var(--muted);}
 .nim-cl-mark{background:rgba(240,100,100,.25);color:var(--text);border-radius:3px;padding:0 2px;}
+.nim-wr-to{background:rgba(80,200,120,.25);color:var(--text);border-radius:3px;padding:0 2px;margin-left:2px;text-decoration:none;}
 .nim-sheet-box{width:min(620px,100%);max-height:100%;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);}
 .nim-sheet-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);}
 .nim-sheet-body{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
@@ -3031,13 +3071,19 @@ select.nim-input{appearance:auto;}
             collectFields();
             const text = State.settings.wordReplace || '';
             if (!C.parseWordReplace(text).length) return toast('还没填替换规则', 'warning');
-            if (!confirm('把替换规则直接写进已生成的层（正文、世界书、表格都会改）？改完不能撤销，只能重跑那一层。')) return;
-            const n = e.applyReplaceToResults(text);
-            if (!n) return toast('已生成的层里没有要替换的词', 'info');
-            saveProgress();
-            renderAll();
-            toast(`已替换 ${n} 层`, 'success');
-            log(`词语替换已写入 ${n} 层`);
+            openReplacePreview(text);
+        });
+        $('nim-wr').addEventListener('click', (ev) => {
+            if (ev.target.closest('[data-wr="apply"]')) {
+                const e = State.engine;
+                $('nim-wr').hidden = true;
+                if (!e || e.running) return toast('正在处理中，先暂停再替换', 'warning');
+                const n = e.applyReplaceToResults(wrUi.text);
+                saveProgress();
+                renderAll();
+                toast(`已替换 ${wrUi.total} 处，涉及 ${n} 层`, 'success');
+                log(`词语替换已写入 ${n} 层：${wrUi.summary}`);
+            } else if (ev.target === $('nim-wr') || ev.target.closest('[data-wr="close"]')) $('nim-wr').hidden = true;
         });
         on('nim-preview', 'click', async () => {
             if (!State.engine) return toast('请先选择小说', 'warning');

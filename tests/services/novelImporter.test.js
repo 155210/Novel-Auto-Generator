@@ -591,6 +591,19 @@ describe('运行引擎', () => {
         const { engine, calls } = makeEngine(normal);
         await engine.run();
         const before = calls.length;
+        const pv = engine.previewReplaceInResults('裘月寒 → 裘寒月\n没有的词 → x\n坏行');
+        expect(pv.rules.map((r) => r.text)).toEqual(['裘月寒 → 裘寒月', '没有的词 → x']);
+        expect(pv.rules[0].count).toBeGreaterThan(0);
+        expect(pv.rules[1].count).toBe(0);
+        const h = pv.hits.find((x) => x.where === '正文');
+        expect([h.layer, h.from, h.to]).toEqual([0, '裘月寒', '裘寒月']);
+        expect(h.post.startsWith('抬眸道')).toBe(true);
+        expect(engine.results[0].finalParas.join('')).toContain('裘月寒');
+        expect(C.findWordReplaceHits('甲乙甲', C.parseWordReplace('甲 → 丙\n丙乙 → 丁'), 1)).toEqual([
+            { rule: 0, from: '甲', to: '丙', pre: '', post: '乙…' },
+            { rule: 0, from: '甲', to: '丙', pre: '…乙', post: '' },
+            { rule: 1, from: '丙乙', to: '丁', pre: '', post: '丙' },
+        ]);
         expect(engine.applyReplaceToResults('')).toBe(0);
         expect(engine.applyReplaceToResults('裘月寒 → 裘寒月')).toBeGreaterThan(0);
         const r = engine.results[0];
