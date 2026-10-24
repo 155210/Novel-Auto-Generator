@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.32';
+    const VERSION = '1.4.33';
 
     // ============================================
     // 默认配置
@@ -184,7 +184,8 @@ P段号 |  | ++新段落          在该段之后另起一段
 
         // 标签与标题
         titleTag: 'bt',
-        floorTags: '', // 额外放进楼层的标签：从 AI 原始回复里取，放在正文后面，逗号分隔
+        floorTags: '',
+        wordReplace: '', // 词语替换：每行「原词 → 新词」，导出和导入酒馆时替换 // 额外放进楼层的标签：从 AI 原始回复里取，放在正文后面，逗号分隔
         bodyTag: '正文',
         titleMode: 'ai', // ai：AI 起标题；original：用原文章节标题
         titleFormat: '#第{n}{unit}：{title}',
@@ -1529,13 +1530,38 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /**
+     * 词语替换规则：每行「原词 → 新词」（也可以写 ->），新词留空就是删掉；原词写成 /正则/flags 按正则替换。
+     */
+    function parseWordReplace(text) {
+        const rules = [];
+        for (const line of String(text || '').split('\n')) {
+            const m = /^(.*?)\s*(?:→|->)\s*(.*)$/.exec(line.trim());
+            if (!m || !m[1]) continue;
+            const from = m[1].trim();
+            const re = /^\/(.+)\/([a-z]*)$/.exec(from);
+            try {
+                rules.push({ re: re ? new RegExp(re[1], re[2].includes('g') ? re[2] : re[2] + 'g') : new RegExp(escapeRegExp(from), 'g'), to: m[2] });
+            } catch (e) {
+                /* 正则写错的跳过 */
+            }
+        }
+        return rules;
+    }
+
+    function applyWordReplace(text, rules) {
+        let t = String(text ?? '');
+        for (const r of rules || []) t = t.replace(r.re, r.to);
+        return t;
+    }
+
+    /**
      * 转成酒馆世界书文件格式（{entries: {uid: entry}}），称呼替换在这里做。
      * 条目注释沿用「TXT转世界书」的「分类 - 名称」，两边导出的条目可以混用。
      */
     function worldbookToST(wb, opts = {}) {
         const cats = normalizeCategories(opts.categories || DEFAULT_WORLDBOOK_CATEGORIES);
         const catOf = (c) => cats.find((x) => x.name === c) || normalizeCategory({ name: c });
-        const conv = (s) => (opts.aliases ? applyAliases(s, opts.aliases, opts.target) : s);
+        const conv = (s) => applyWordReplace(opts.aliases ? applyAliases(s, opts.aliases, opts.target) : s, opts.replace);
         const entries = {};
         let uid = 0;
         for (const [category, items] of Object.entries(wb || {})) {
@@ -2527,8 +2553,7 @@ ${blocks}`;
                 done.push(i);
             }
             const st = replay(done.length);
-            const target = aliasTargetOf(settings);
-            const conv = (s) => applyAliases(s, st.aliases, target);
+            const conv = (s) => outText(s, st);
             let lastHeading = '';
             return done.map((i) => {
                 const r = E.results[i];
@@ -2587,7 +2612,12 @@ ${blocks}`;
             let n = 0;
             while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
             const st = replay(n);
-            return applyAliases(bodyParas(i, paras).join('\n'), st.aliases, aliasTargetOf(settings));
+            return outText(bodyParas(i, paras).join('\n'), st);
+        }
+
+        /** 导出前的最后一步：主角称呼替换 + 用户的词语替换 */
+        function outText(s, st) {
+            return applyWordReplace(applyAliases(s, st.aliases, aliasTargetOf(settings)), parseWordReplace(settings.wordReplace));
         }
 
         /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
@@ -2636,6 +2666,7 @@ ${blocks}`;
                 categories: settings.worldbookCategories,
                 aliases: st.aliases,
                 target,
+                replace: parseWordReplace(settings.wordReplace),
                 plotEntries: plot,
                 plot: { position: settings.plotPosition, depth: settings.plotDepth, order: settings.plotOrder },
             });
@@ -2644,10 +2675,9 @@ ${blocks}`;
         function exportTables() {
             const st = finalState();
             if (!st.tables) return [];
-            const target = aliasTargetOf(settings);
             return st.tables.template.tables.map((tb, i) => ({
                 name: tb.name,
-                data: [tb.columns, ...st.tables.rows[i].map((r) => r.map((c) => applyAliases(c, st.aliases, target)))],
+                data: [tb.columns, ...st.tables.rows[i].map((r) => r.map((c) => outText(c, st)))],
             }));
         }
 
@@ -2660,7 +2690,7 @@ ${blocks}`;
             let hit = Object.entries(chars).find(([, e]) => e.定位 === '主角');
             if (!hit && name) hit = Object.entries(chars).find(([n, e]) => n === name || (e.关键词 || []).includes(name));
             if (!hit) return { name: target, description: '' };
-            return { name: target, description: applyAliases(hit[1].内容, st.aliases, target) };
+            return { name: target, description: outText(hit[1].内容, st) };
         }
 
         /** 女主列表（人设已写在世界书角色条目里） */
@@ -3026,6 +3056,8 @@ ${sums}`;
         formatHeading,
         formatBodyHeadings,
         splitBodyBlocks,
+        parseWordReplace,
+        applyWordReplace,
         marksToHtml,
         detectForeign,
         IMAGE_MARKER_RE,
