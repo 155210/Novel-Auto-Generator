@@ -520,6 +520,104 @@ describe('翻译模式', () => {
     });
 });
 
+describe('酒馆预设条目', () => {
+    const PRESET = {
+        squash_system_messages: true,
+        temperature: 0.9,
+        prompts: [
+            { identifier: 'main', name: '主提示', role: 'system', content: '你是作家 {{char}}' },
+            { identifier: 'nsfw', name: '尺度', role: 'system', content: '可以写成人内容' },
+            { identifier: 'charDescription', marker: true },
+            { identifier: 'chatHistory', marker: true },
+            { identifier: 'jb', name: '破限', role: 'user', content: '继续' },
+            { identifier: 'deep', name: '深度提醒', role: 'system', content: '记住规则', injection_position: 1, injection_depth: 0 },
+            { identifier: 'quiet', name: '后台用', role: 'system', content: '只在后台', injection_trigger: ['quiet'] },
+            { identifier: 'orphan', name: '没放进顺序', role: 'system', content: '孤儿' },
+        ],
+        prompt_order: [
+            { character_id: 100000, order: [{ identifier: 'main', enabled: true }] },
+            {
+                character_id: 100001,
+                order: [
+                    { identifier: 'main', enabled: true },
+                    { identifier: 'nsfw', enabled: false },
+                    { identifier: 'charDescription', enabled: true },
+                    { identifier: 'chatHistory', enabled: true },
+                    { identifier: 'jb', enabled: true },
+                    { identifier: 'deep', enabled: true },
+                    { identifier: 'quiet', enabled: true },
+                ],
+            },
+        ],
+    };
+
+    it('按酒馆的顺序和开关导入，聊天记录换成本层提示词，没放进顺序的单独收着', () => {
+        const r = C.parseSTPreset(PRESET);
+        expect(r.entries.map((e) => e.id)).toEqual(['main', 'nsfw', C.PRESET_SLOT_ID, 'jb', 'deep', 'quiet']);
+        expect(r.entries.map((e) => e.enabled)).toEqual([true, false, true, true, true, false]);
+        expect(r.extras.map((e) => [e.id, e.enabled])).toEqual([['orphan', false]]);
+        expect(r.droppedMarkers).toBe(1);
+        expect(r.squash).toBe(true);
+        expect(r.params.temperature).toBe(0.9);
+    });
+
+    it('拼消息：关掉的不发，相对按顺序，深度 0 放在本层提示词后面，宏交给酒馆展开，相邻 system 合并', () => {
+        const r = C.parseSTPreset(PRESET);
+        const msgs = C.assemblePresetMessages({ entries: r.entries, squash: r.squash }, 'P', (t) => t.replace('{{char}}', '小说'));
+        expect(msgs).toEqual([
+            { role: 'system', content: '你是作家 小说' },
+            { role: 'user', content: 'P' },
+            { role: 'system', content: '记住规则' },
+            { role: 'user', content: '继续' },
+        ]);
+        // 换个顺序、打开尺度条目
+        const entries = r.entries.slice();
+        entries[1] = { ...entries[1], enabled: true };
+        entries.push(entries.shift());
+        const m2 = C.assemblePresetMessages({ entries, squash: false }, 'P');
+        expect(m2.map((m) => m.content)).toEqual(['可以写成人内容', 'P', '记住规则', '继续', '你是作家 {{char}}']);
+    });
+
+    it('旧的消息链转成条目，引擎按条目发', async () => {
+        const preset = C.presetFromMessageChain([{ role: 'system', content: '系统', enabled: true }, { role: 'user', content: '前缀\n{PROMPT}', enabled: true }]);
+        expect(C.assemblePresetMessages(preset, 'P')).toEqual([
+            { role: 'system', content: '系统' },
+            { role: 'user', content: '前缀' },
+            { role: 'user', content: 'P' },
+        ]);
+        let seen;
+        const engine = C.createEngine({
+            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false },
+            preset,
+            callModel: async (messages) => {
+                seen = messages;
+                return reply({});
+            },
+        });
+        engine.prepare('第一章 开始\n' + '正文。'.repeat(50));
+        await engine.run();
+        expect(seen[0]).toEqual({ role: 'system', content: '系统' });
+        expect(seen[2].content).toContain('## 本层正文');
+    });
+});
+
+describe('世界书分类', () => {
+    it('旧格式和 TXT转世界书 的分类都能认，导出按分类的位置、深度、顺序', () => {
+        const cats = C.normalizeCategories([
+            { name: '角色', enabled: true, constant: false, guide: '旧的写法' },
+            { name: '地点', enabled: true, isBuiltin: true, entryExample: '地点名', keywordsExample: ['地名'], contentGuide: '写地点', defaultPosition: 4, defaultDepth: 2, defaultOrder: 200, autoIncrementOrder: true },
+            { name: '地点', enabled: false },
+        ]);
+        expect(cats.length).toBe(2);
+        expect(cats[0].contentGuide).toBe('旧的写法');
+        const st = C.worldbookToST({ 地点: { 古庙: { 关键词: ['古庙'], 内容: 'a' }, 山门: { 关键词: ['山门'], 内容: 'b' } } }, { categories: cats });
+        const es = Object.values(st.entries);
+        expect(es.map((e) => [e.position, e.depth, e.order])).toEqual([[4, 2, 200], [4, 2, 201]]);
+        const prompt = C.buildLayerPrompt({ index: 0, paras: [{ id: 1, text: 'x' }], chars: 1, chapters: [] }, { worldbookCategories: cats, tablesEnabled: false }, { worldbook: {}, aliases: [], divergence: {} });
+        expect(prompt).toContain('地点（条目名如「地点名」，关键词如 ["地名"]）：写地点');
+    });
+});
+
 describe('预设', () => {
     it('读取酒馆预设，聊天记录位置放提示词', () => {
         const r = C.parseTavernPreset({

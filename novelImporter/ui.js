@@ -21,7 +21,6 @@
         temperature: 0.7,
         maxTokens: 16000,
         apiTimeout: 300000,
-        messageChain: [{ role: 'user', content: '{PROMPT}', enabled: true }],
     };
 
     const State = {
@@ -116,7 +115,17 @@
 
     function defaultSettings() {
         const d = JSON.parse(JSON.stringify(C.DEFAULT_SETTINGS));
-        return { ...d, ...JSON.parse(JSON.stringify(API_DEFAULTS)) };
+        return { ...d, ...JSON.parse(JSON.stringify(API_DEFAULTS)), preset: C.presetDefaults() };
+    }
+
+    /** 补全设置；旧版的消息链转成预设条目 */
+    function withDefaults(saved) {
+        const d = defaultSettings();
+        const out = { ...d, ...saved, tableRoles: { ...d.tableRoles, ...(saved.tableRoles || {}) } };
+        out.worldbookCategories = C.normalizeCategories(saved.worldbookCategories || d.worldbookCategories);
+        out.preset = saved.preset ? C.normalizePreset(saved.preset) : saved.messageChain ? C.presetFromMessageChain(saved.messageChain) : d.preset;
+        delete out.messageChain;
+        return out;
     }
 
     function loadSettings() {
@@ -124,8 +133,7 @@
         try {
             const raw = localStorage.getItem(SETTINGS_KEY);
             if (raw) {
-                const saved = JSON.parse(raw);
-                State.settings = { ...d, ...saved, tableRoles: { ...d.tableRoles, ...(saved.tableRoles || {}) } };
+                State.settings = withDefaults(JSON.parse(raw));
                 return;
             }
         } catch (e) {
@@ -238,7 +246,6 @@
         ],
         worldbook: [
             { key: 'worldbookEnabled', label: '提取世界书', type: 'check' },
-            { key: 'worldbookCategories', label: '分类（JSON：name 名称、enabled 启用、constant 常驻、guide 要写的内容）', type: 'json', rows: 8 },
             { key: 'worldbookPrompt', label: '世界书额外要求', type: 'textarea', rows: 3 },
             { key: 'worldbookContextChars', label: '每层带给 AI 的已有条目字数上限', type: 'number' },
             { key: 'plotSummaryEntries', label: '每层摘要也导出为「剧情」条目', type: 'check' },
@@ -265,7 +272,6 @@
             { key: 'maxTokens', label: '最大输出 tokens', type: 'number' },
             { key: 'apiTimeout', label: '无响应超时（毫秒）', type: 'number' },
             { key: 'retries', label: '格式错误重试次数', type: 'number' },
-            { key: 'messageChain', label: '消息链（JSON，{PROMPT} 处放每层的提示词；导入酒馆预设会自动生成）', type: 'json', rows: 6 },
         ],
     };
 
@@ -550,7 +556,11 @@
         const s = { ...State.settings, ...(settingsOverride || {}) };
         return C.createEngine({
             settings: s,
-            messageChain: State.settings.messageChain,
+            // 取最新的预设：导入、开关、排序后不用重建引擎
+            get preset() {
+                return State.settings.preset;
+            },
+            substitute: substituteMacros,
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
             seedGlossary: State.seedGlossary,
@@ -776,9 +786,11 @@
         try {
             const j = JSON.parse(await readFileText(file));
             const key = State.settings.apiKey;
-            State.settings = { ...defaultSettings(), ...j, apiKey: j.apiKey || key, tableRoles: { ...C.DEFAULT_TABLE_ROLES, ...(j.tableRoles || {}) } };
+            State.settings = { ...withDefaults(j), apiKey: j.apiKey || key };
             saveSettings();
             fillFields();
+            renderPreset();
+            renderCategories();
             toast('配置已导入', 'success');
         } catch (e) {
             toast(`配置导入失败：${e.message}`, 'error');
@@ -1101,16 +1113,462 @@
 
     async function onPresetFile(file) {
         try {
-            const p = C.parseTavernPreset(JSON.parse(await readFileText(file)));
-            State.settings.messageChain = p.chain;
+            const p = C.parseSTPreset(JSON.parse(await readFileText(file)));
+            State.settings.preset = { name: file.name.replace(/\.json$/i, ''), entries: p.entries, extras: p.extras, squash: p.squash };
             if (p.params.temperature != null) State.settings.temperature = p.params.temperature;
             if (p.params.maxTokens) State.settings.maxTokens = p.params.maxTokens;
             saveSettings();
             fillFields();
-            log(`已导入预设：${p.chain.length} 条消息`);
+            presetUi.selecting = false;
+            presetUi.selected.clear();
+            renderPreset();
+            const notes = [
+                `已导入 ${p.promptCount} 个条目（启用 ${p.enabledCount}）`,
+                p.extras.length ? `${p.extras.length} 个没在酒馆顺序里的条目收在下面「没在顺序里的条目」` : '',
+                p.droppedMarkers ? `角色卡、世界书等占位 ${p.droppedMarkers} 个不导入` : '',
+                p.hadChatHistory ? '' : '预设里没有聊天记录，本层提示词放在了末尾',
+            ].filter(Boolean);
+            log(`预设 ${State.settings.preset.name}：${notes.join('；')}`);
+            toast(notes.join('；'), 'success');
         } catch (e) {
-            toast(e.message, 'error');
+            toast(`导入预设失败：${e.message}`, 'error');
         }
+    }
+
+    /** 预设条目里的 {{char}}/{{user}} 等宏交给酒馆展开 */
+    function substituteMacros(text) {
+        try {
+            const c = window.SillyTavern && window.SillyTavern.getContext();
+            if (c && typeof c.substituteParams === 'function') return c.substituteParams(text);
+        } catch (e) {
+            /* 不在酒馆里就原样发 */
+        }
+        return text;
+    }
+
+    // ============================================
+    // 预设面板：条目开关、按住抓手拖动排序、编辑、多选删除（和柏宝绘的重型提示词一样）
+    // ============================================
+
+    const ROLE_LABEL = { system: '系统', user: '用户', assistant: 'AI' };
+    const presetUi = { selecting: false, selected: new Set(), extrasOpen: false, dragId: null, editing: null };
+
+    function presetEntries() {
+        return State.settings.preset.entries;
+    }
+
+    function presetRow(e, inExtras) {
+        const slot = e.id === C.PRESET_SLOT_ID;
+        const picked = presetUi.selected.has(e.id);
+        const cls = ['nim-pr', slot ? 'is-slot' : '', !slot && (!e.enabled || inExtras) ? 'is-off' : '', presetUi.dragId === e.id ? 'is-dragging' : '', picked ? 'is-picked' : ''].join(' ');
+        let lead;
+        if (slot) lead = '<span class="nim-pr-pin" title="固定条目：每层的提示词放在这里">📌</span>';
+        else if (presetUi.selecting) lead = `<input type="checkbox" class="nim-pr-check" data-pick="${esc(e.id)}" ${picked ? 'checked' : ''} title="选择">`;
+        else if (inExtras) lead = '';
+        else lead = `<label class="nim-pr-toggle" title="${e.enabled ? '关闭此条目' : '启用此条目'}"><input type="checkbox" data-toggle="${esc(e.id)}" ${e.enabled ? 'checked' : ''}><span class="nim-switch"></span></label>`;
+        const tags = slot ? '' : `<span class="nim-pr-tag">${ROLE_LABEL[e.role]}</span><span class="nim-pr-tag ${e.position === 'depth' ? 'is-depth' : ''}">${e.position === 'depth' ? `深度 ${e.depth}` : '相对'}</span>`;
+        const handle = inExtras ? '' : `<span class="nim-pr-handle" data-drag="${esc(e.id)}" title="按住拖动排序"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>`;
+        const add = inExtras && !presetUi.selecting ? `<button class="nim-btn sm" data-append="${esc(e.id)}">加入末尾</button>` : '';
+        return `<li class="${cls}" data-id="${esc(e.id)}">${handle}${lead}<button class="nim-pr-open" data-open="${esc(e.id)}" ${slot ? 'disabled' : ''}><span class="nim-pr-name">${esc(e.name)}</span>${tags}</button>${add}</li>`;
+    }
+
+    function renderPreset() {
+        const box = $('nim-preset');
+        if (!box) return;
+        const p = State.settings.preset;
+        const real = p.entries.filter((e) => e.id !== C.PRESET_SLOT_ID);
+        const selectable = [...real, ...p.extras].map((e) => e.id);
+        const allPicked = selectable.length && selectable.every((id) => presetUi.selected.has(id));
+        $('nim-preset-name').innerHTML = `${esc(p.name || '未导入预设')}${real.length ? ` <span class="nim-muted">已启用 ${real.filter((e) => e.enabled).length}/${real.length}</span>` : ''}`;
+        $('nim-preset-list').innerHTML = p.entries.map((e) => presetRow(e, false)).join('');
+        $('nim-preset-extras').innerHTML = p.extras.length
+            ? `<button class="nim-pr-extras-head" data-extras>没在顺序里的条目（${p.extras.length}）<span class="nim-chev ${presetUi.extrasOpen ? 'up' : ''}"></span></button>` +
+              (presetUi.extrasOpen
+                  ? `<div class="nim-muted">这些条目在预设的条目库里，但酒馆的条目列表没放，酒馆里看不到也不会发送。这里同样不发送，需要的点「加入末尾」。</div><ul class="nim-pr-list">${p.extras.map((e) => presetRow(e, true)).join('')}</ul>`
+                  : '')
+            : '';
+        $('nim-preset-actions').innerHTML = presetUi.selecting
+            ? `<button class="nim-btn sm" data-act="all">${allPicked ? '全不选' : '全选'}</button><button class="nim-btn sm danger-ghost" data-act="del" ${presetUi.selected.size ? '' : 'disabled'}>删除选中（${presetUi.selected.size}）</button><button class="nim-btn sm" data-act="done">完成</button>`
+            : `<button class="nim-btn sm" data-act="add">新建条目</button>${selectable.length ? '<button class="nim-btn sm" data-act="select">多选删除</button>' : ''}${real.length ? '<button class="nim-btn sm danger-ghost" data-act="clear">清空预设</button>' : ''}`;
+        $('nim-preset-squash').checked = !!p.squash;
+    }
+
+    function findPresetEntry(id) {
+        const p = State.settings.preset;
+        return p.entries.find((e) => e.id === id) || p.extras.find((e) => e.id === id) || null;
+    }
+
+    function presetChanged() {
+        saveSettings();
+        renderPreset();
+    }
+
+    function bindPreset() {
+        const box = $('nim-preset');
+        if (!box) return;
+        box.addEventListener('change', (ev) => {
+            const t = ev.target;
+            if (t.dataset.toggle) {
+                const e = findPresetEntry(t.dataset.toggle);
+                if (e) e.enabled = t.checked;
+                presetChanged();
+            } else if (t.dataset.pick) {
+                if (t.checked) presetUi.selected.add(t.dataset.pick);
+                else presetUi.selected.delete(t.dataset.pick);
+                renderPreset();
+            } else if (t.id === 'nim-preset-squash') {
+                State.settings.preset.squash = t.checked;
+                presetChanged();
+            }
+        });
+        box.addEventListener('click', async (ev) => {
+            const t = ev.target.closest('button');
+            if (!t) return;
+            const p = State.settings.preset;
+            if (t.dataset.open) {
+                if (presetUi.selecting) {
+                    const id = t.dataset.open;
+                    if (presetUi.selected.has(id)) presetUi.selected.delete(id);
+                    else presetUi.selected.add(id);
+                    renderPreset();
+                } else openPresetEdit(t.dataset.open);
+            } else if (t.dataset.append) {
+                const i = p.extras.findIndex((e) => e.id === t.dataset.append);
+                if (i >= 0) p.entries.push({ ...p.extras.splice(i, 1)[0], enabled: true });
+                presetChanged();
+            } else if (t.hasAttribute('data-extras')) {
+                presetUi.extrasOpen = !presetUi.extrasOpen;
+                renderPreset();
+            } else if (t.dataset.act === 'add') {
+                const e = { id: `nim-custom-${Date.now().toString(36)}`, name: '新条目', role: 'system', content: '', enabled: true, position: 'relative', depth: 4, order: 100 };
+                p.entries.push(e);
+                presetChanged();
+                openPresetEdit(e.id);
+            } else if (t.dataset.act === 'select') {
+                presetUi.selecting = true;
+                presetUi.selected.clear();
+                renderPreset();
+            } else if (t.dataset.act === 'done') {
+                presetUi.selecting = false;
+                presetUi.selected.clear();
+                renderPreset();
+            } else if (t.dataset.act === 'all') {
+                const ids = [...p.entries.filter((e) => e.id !== C.PRESET_SLOT_ID), ...p.extras].map((e) => e.id);
+                const all = ids.every((id) => presetUi.selected.has(id));
+                presetUi.selected.clear();
+                if (!all) ids.forEach((id) => presetUi.selected.add(id));
+                renderPreset();
+            } else if (t.dataset.act === 'del') {
+                if (!confirm(`删除选中的 ${presetUi.selected.size} 个条目？删除后要重新导入预设才能找回。`)) return;
+                p.entries = p.entries.filter((e) => e.id === C.PRESET_SLOT_ID || !presetUi.selected.has(e.id));
+                p.extras = p.extras.filter((e) => !presetUi.selected.has(e.id));
+                presetUi.selecting = false;
+                presetUi.selected.clear();
+                presetChanged();
+            } else if (t.dataset.act === 'clear') {
+                if (!confirm('清空后所有条目都会删除，需要时重新导入。')) return;
+                State.settings.preset = C.presetDefaults();
+                presetChanged();
+            }
+        });
+        // 拖动用 Pointer Events：手机上触摸不会触发 HTML5 的 dragstart。抓手设了 touch-action:none，按住上下滑就能换位
+        const list = $('nim-preset-list');
+        list.addEventListener('pointerdown', (ev) => {
+            const h = ev.target.closest('[data-drag]');
+            if (!h || ev.button !== 0 || presetUi.selecting) return;
+            ev.preventDefault();
+            presetUi.dragId = h.dataset.drag;
+            h.setPointerCapture(ev.pointerId);
+            list.querySelector(`li[data-id="${CSS.escape(presetUi.dragId)}"]`)?.classList.add('is-dragging');
+        });
+        list.addEventListener('pointermove', (ev) => {
+            if (!presetUi.dragId) return;
+            const entries = presetEntries();
+            const from = entries.findIndex((e) => e.id === presetUi.dragId);
+            if (from < 0) return;
+            const rows = [...list.children];
+            let to = from;
+            // 越过相邻行的中线才换位，免得在交界处来回抖
+            for (let i = 0; i < rows.length; i++) {
+                const r = rows[i].getBoundingClientRect();
+                const mid = r.top + r.height / 2;
+                if (i < from && ev.clientY < mid) {
+                    to = i;
+                    break;
+                }
+                if (i > from && ev.clientY > mid) to = i;
+            }
+            if (to === from) return;
+            const [moved] = entries.splice(from, 1);
+            entries.splice(to, 0, moved);
+            const row = rows[from];
+            if (to > from) rows[to].after(row);
+            else rows[to].before(row);
+        });
+        const end = () => {
+            if (!presetUi.dragId) return;
+            presetUi.dragId = null;
+            presetChanged();
+        };
+        list.addEventListener('pointerup', end);
+        list.addEventListener('pointercancel', end);
+    }
+
+    function openPresetEdit(id) {
+        const e = findPresetEntry(id);
+        if (!e || e.id === C.PRESET_SLOT_ID) return;
+        presetUi.editing = id;
+        $('nim-pe-name').value = e.name;
+        $('nim-pe-role').value = e.role;
+        $('nim-pe-pos').value = e.position;
+        $('nim-pe-depth').value = e.depth;
+        $('nim-pe-order').value = e.order;
+        $('nim-pe-content').value = e.content;
+        $('nim-pe-depthrow').hidden = e.position !== 'depth';
+        $('nim-pe').hidden = false;
+    }
+
+    function closePresetEdit(save) {
+        const e = presetUi.editing && findPresetEntry(presetUi.editing);
+        if (save && e) {
+            e.name = $('nim-pe-name').value.trim() || e.name;
+            e.role = $('nim-pe-role').value;
+            e.position = $('nim-pe-pos').value === 'depth' ? 'depth' : 'relative';
+            e.depth = Math.max(0, Math.floor(Number($('nim-pe-depth').value)) || 0);
+            e.order = Math.floor(Number($('nim-pe-order').value)) || 0;
+            e.content = $('nim-pe-content').value;
+        }
+        presetUi.editing = null;
+        $('nim-pe').hidden = true;
+        presetChanged();
+    }
+
+    function removePresetEditing() {
+        const id = presetUi.editing;
+        const p = State.settings.preset;
+        p.entries = p.entries.filter((e) => e.id !== id);
+        p.extras = p.extras.filter((e) => e.id !== id);
+        presetUi.editing = null;
+        $('nim-pe').hidden = true;
+        presetChanged();
+    }
+
+    // ============================================
+    // 世界书分类：和「TXT转世界书」的自定义提取分类同一套字段和操作
+    // ============================================
+
+    const catUi = { editing: null };
+    const POS_OPTIONS = [
+        [0, '在角色定义之前'],
+        [1, '在角色定义之后'],
+        [2, '在作者注释之前'],
+        [3, '在作者注释之后'],
+        [4, '自定义深度'],
+    ];
+
+    function categories() {
+        return State.settings.worldbookCategories;
+    }
+
+    function renderCategories() {
+        const el = $('nim-cats');
+        if (!el) return;
+        const list = categories();
+        el.innerHTML = list.length
+            ? list
+                  .map((c, i) => {
+                      const hasDefault = C.DEFAULT_WORLDBOOK_CATEGORIES.some((d) => d.name === c.name);
+                      return `<li class="nim-pr ${c.enabled ? '' : 'is-off'}">
+                        <label class="nim-pr-toggle" title="${c.enabled ? '不提取这一类' : '提取这一类'}"><input type="checkbox" data-cat-on="${i}" ${c.enabled ? 'checked' : ''}><span class="nim-switch"></span></label>
+                        <button class="nim-pr-open" data-cat-edit="${i}"><span class="nim-pr-name">${esc(c.name)}</span>${c.isBuiltin ? '<span class="nim-pr-tag">内置</span>' : ''}${c.constant ? '<span class="nim-pr-tag is-depth">常驻</span>' : ''}</button>
+                        <button class="nim-icon-btn sm" data-cat-reset="${i}" title="重置为默认" ${hasDefault ? '' : 'disabled'}>↺</button>
+                        <button class="nim-icon-btn sm" data-cat-del="${i}" title="删除" ${c.isBuiltin ? 'disabled' : ''}>✕</button>
+                      </li>`;
+                  })
+                  .join('')
+            : '<li class="nim-empty">暂无分类</li>';
+    }
+
+    function catsChanged() {
+        saveSettings();
+        renderCategories();
+    }
+
+    function openCatEdit(index) {
+        const c = index === null ? C.normalizeCategory({ name: '' }) : categories()[index];
+        catUi.editing = index;
+        $('nim-ce-title').textContent = index === null ? '添加分类' : '编辑分类';
+        $('nim-ce-name').value = c.name;
+        $('nim-ce-example').value = index === null ? '' : c.entryExample;
+        $('nim-ce-keywords').value = index === null ? '' : c.keywordsExample.join(', ');
+        $('nim-ce-guide').value = index === null ? '' : c.contentGuide;
+        $('nim-ce-pos').value = String(c.defaultPosition);
+        $('nim-ce-depth').value = c.defaultDepth;
+        $('nim-ce-order').value = c.defaultOrder;
+        $('nim-ce-inc').checked = c.autoIncrementOrder;
+        $('nim-ce-constant').checked = c.constant;
+        $('nim-ce').hidden = false;
+        $('nim-ce-name').focus({ preventScroll: true });
+    }
+
+    function saveCatEdit() {
+        const name = $('nim-ce-name').value.trim();
+        if (!name) return toast('请输入分类名称', 'warning');
+        const list = categories();
+        const i = catUi.editing;
+        if (list.some((c, k) => c.name === name && k !== i)) return toast('这个分类名称已经有了', 'warning');
+        const old = i === null ? null : list[i];
+        const cat = C.normalizeCategory({
+            name,
+            enabled: old ? old.enabled : true,
+            isBuiltin: old ? old.isBuiltin : false,
+            entryExample: $('nim-ce-example').value.trim() || `${name}名称`,
+            keywordsExample: $('nim-ce-keywords').value,
+            contentGuide: $('nim-ce-guide').value.trim() || `基于原文的${name}描述`,
+            defaultPosition: parseInt($('nim-ce-pos').value, 10) || 0,
+            defaultDepth: parseInt($('nim-ce-depth').value, 10) || 4,
+            defaultOrder: parseInt($('nim-ce-order').value, 10) || 100,
+            autoIncrementOrder: $('nim-ce-inc').checked,
+            constant: $('nim-ce-constant').checked,
+        });
+        if (i === null) list.push(cat);
+        else list[i] = cat;
+        $('nim-ce').hidden = true;
+        catsChanged();
+    }
+
+    /** 读「TXT转世界书」存在浏览器里的自定义提取分类 */
+    async function categoriesFromTxtToWorldbook() {
+        try {
+            if (indexedDB.databases) {
+                const dbs = await indexedDB.databases();
+                if (!dbs.some((d) => d.name === 'TxtToWorldbookDB')) return toast('还没在「TXT转世界书」里设置过分类', 'warning');
+            }
+            const db = await new Promise((res, rej) => {
+                const r = indexedDB.open('TxtToWorldbookDB');
+                r.onsuccess = () => res(r.result);
+                r.onerror = () => rej(r.error);
+            });
+            const value = await new Promise((res) => {
+                if (!db.objectStoreNames.contains('categories')) return res(null);
+                const r = db.transaction(['categories'], 'readonly').objectStore('categories').get('customCategories');
+                r.onsuccess = () => res(r.result ? r.result.value : null);
+                r.onerror = () => res(null);
+            });
+            db.close();
+            if (!Array.isArray(value) || !value.length) return toast('还没在「TXT转世界书」里设置过分类', 'warning');
+            // 已有分类的「常驻」设置保留
+            const constants = new Map(categories().map((c) => [c.name, c.constant]));
+            State.settings.worldbookCategories = C.normalizeCategories(value).map((c) => ({ ...c, constant: constants.get(c.name) || false }));
+            catsChanged();
+            toast(`已读取 ${value.length} 个分类`, 'success');
+        } catch (e) {
+            toast(`读取失败：${e.message}`, 'error');
+        }
+    }
+
+    function bindCategories() {
+        const el = $('nim-cats');
+        if (!el) return;
+        el.addEventListener('change', (ev) => {
+            const i = ev.target.dataset.catOn;
+            if (i === undefined) return;
+            categories()[Number(i)].enabled = ev.target.checked;
+            catsChanged();
+        });
+        el.addEventListener('click', (ev) => {
+            const b = ev.target.closest('button');
+            if (!b) return;
+            const list = categories();
+            if (b.dataset.catEdit !== undefined) openCatEdit(Number(b.dataset.catEdit));
+            else if (b.dataset.catReset !== undefined) {
+                const i = Number(b.dataset.catReset);
+                const d = C.DEFAULT_WORLDBOOK_CATEGORIES.find((x) => x.name === list[i].name);
+                if (!d || !confirm(`把「${list[i].name}」重置为默认配置？`)) return;
+                list[i] = C.normalizeCategory(JSON.parse(JSON.stringify(d)));
+                catsChanged();
+            } else if (b.dataset.catDel !== undefined) {
+                const i = Number(b.dataset.catDel);
+                if (list[i].isBuiltin || !confirm(`删除分类「${list[i].name}」？`)) return;
+                list.splice(i, 1);
+                catsChanged();
+            }
+        });
+        $('nim-cat-add').addEventListener('click', () => openCatEdit(null));
+        $('nim-cat-ttw').addEventListener('click', categoriesFromTxtToWorldbook);
+        $('nim-cat-reset').addEventListener('click', () => {
+            if (!confirm('把分类恢复成默认？自己加的分类会删掉。')) return;
+            State.settings.worldbookCategories = C.normalizeCategories(JSON.parse(JSON.stringify(C.DEFAULT_WORLDBOOK_CATEGORIES)));
+            catsChanged();
+        });
+        $('nim-ce-pos').addEventListener('change', () => ($('nim-ce-depthrow').style.opacity = $('nim-ce-pos').value === '4' ? '1' : '.5'));
+        $('nim-ce').addEventListener('click', (ev) => {
+            const b = ev.target.closest('[data-ce]');
+            if (!b) return;
+            if (b.dataset.ce === 'save') saveCatEdit();
+            else $('nim-ce').hidden = true;
+        });
+    }
+
+    function categoriesHtml() {
+        return `<div class="nim-sub">提取分类</div>
+          <div class="nim-muted">打开的分类每层都会提取。点分类名编辑条目名示例、关键词示例和内容提取指南，和「TXT转世界书」的自定义提取分类一样。</div>
+          <ul id="nim-cats" class="nim-pr-list"></ul>
+          <div class="nim-row"><button id="nim-cat-add" class="nim-btn sm">添加分类</button><button id="nim-cat-ttw" class="nim-btn sm">从 TXT转世界书 读取分类</button><button id="nim-cat-reset" class="nim-btn sm ghost">恢复默认分类</button></div>`;
+    }
+
+    function catEditHtml() {
+        return `<div id="nim-ce" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="编辑分类">
+          <div class="nim-sheet-head"><b id="nim-ce-title">编辑分类</b><button class="nim-icon-btn" data-ce="cancel" title="关闭">✕</button></div>
+          <div class="nim-sheet-body">
+            <div class="nim-field"><label for="nim-ce-name">分类名称 *</label><input id="nim-ce-name" class="nim-input" placeholder="如：道具、玩法"></div>
+            <div class="nim-field"><label for="nim-ce-example">条目名称示例</label><input id="nim-ce-example" class="nim-input" placeholder="如：道具名称"></div>
+            <div class="nim-field"><label for="nim-ce-keywords">关键词示例 <span class="nim-hint">· 逗号分隔</span></label><input id="nim-ce-keywords" class="nim-input" placeholder="如：道具名, 别名"></div>
+            <div class="nim-field"><label for="nim-ce-guide">内容提取指南</label><textarea id="nim-ce-guide" class="nim-input nim-textarea" rows="5" placeholder="描述 AI 应该提取哪些信息..."></textarea></div>
+            <div class="nim-sub">导出时的默认配置</div>
+            <div class="nim-grid">
+              <div class="nim-field"><label for="nim-ce-pos">位置</label><select id="nim-ce-pos" class="nim-input">${POS_OPTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select></div>
+              <div class="nim-field" id="nim-ce-depthrow"><label for="nim-ce-depth">深度 <span class="nim-hint">· 位置选自定义深度时有效</span></label><input id="nim-ce-depth" class="nim-input" type="number" min="0" max="999"></div>
+              <div class="nim-field"><label for="nim-ce-order">起始顺序</label><input id="nim-ce-order" class="nim-input" type="number" min="0" max="9999"></div>
+            </div>
+            <label class="nim-check"><input type="checkbox" id="nim-ce-inc"><span class="nim-switch"></span><span>顺序自动递增<span class="nim-hint">同分类的条目从起始值开始 100、101、102…</span></span></label>
+            <label class="nim-check"><input type="checkbox" id="nim-ce-constant"><span class="nim-switch"></span><span>常驻（蓝灯）<span class="nim-hint">不用关键词触发，一直发送</span></span></label>
+          </div>
+          <div class="nim-sheet-foot"><span class="nim-grow-sp"></span><button class="nim-btn" data-ce="cancel">取消</button><button class="nim-btn primary" data-ce="save">保存</button></div>
+        </div></div>`;
+    }
+
+    function presetHtml() {
+        return `<div id="nim-preset">
+          <div class="nim-pr-bar"><div id="nim-preset-name" class="nim-pr-title"></div><label class="nim-btn primary sm">导入预设<input type="file" id="nim-preset-file" accept=".json,application/json" hidden></label></div>
+          <div class="nim-muted">支持酒馆导出的聊天补全预设 JSON，顺序和开关和酒馆里一样。角色卡、世界书、示例对话等占位条目不导入；📌 是每层的提示词（小说正文和任务），相当于预设里「聊天记录」的位置。按住左边的抓手上下拖动调整顺序，点条目名编辑。</div>
+          <ul id="nim-preset-list" class="nim-pr-list"></ul>
+          <div id="nim-preset-extras"></div>
+          <div id="nim-preset-actions" class="nim-row"></div>
+          <label class="nim-check"><input type="checkbox" id="nim-preset-squash"><span class="nim-switch"></span><span>合并相邻的系统消息<span class="nim-hint">和酒馆的「压缩系统消息」一样</span></span></label>
+        </div>`;
+    }
+
+    function presetEditHtml() {
+        return `<div id="nim-pe" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="编辑预设条目">
+          <div class="nim-sheet-head"><b>编辑条目</b><button class="nim-icon-btn" data-pe="cancel" title="关闭">✕</button></div>
+          <div class="nim-sheet-body">
+            <div class="nim-field"><label for="nim-pe-name">名称</label><input id="nim-pe-name" class="nim-input"></div>
+            <div class="nim-grid">
+              <div class="nim-field"><label for="nim-pe-role">身份</label><select id="nim-pe-role" class="nim-input"><option value="system">系统</option><option value="user">用户</option><option value="assistant">AI 助手</option></select></div>
+              <div class="nim-field"><label for="nim-pe-pos">位置</label><select id="nim-pe-pos" class="nim-input"><option value="relative">相对</option><option value="depth">聊天中（按深度）</option></select></div>
+            </div>
+            <div id="nim-pe-depthrow">
+              <div class="nim-grid">
+                <div class="nim-field"><label for="nim-pe-depth">深度</label><input id="nim-pe-depth" class="nim-input" type="number" min="0" step="1"></div>
+                <div class="nim-field"><label for="nim-pe-order">顺序</label><input id="nim-pe-order" class="nim-input" type="number" step="1"></div>
+              </div>
+              <div class="nim-muted">深度 0 放在本层提示词之后，深度 1 及以上放在它前面；同深度按顺序从小到大。</div>
+            </div>
+            <div class="nim-field"><label for="nim-pe-content">内容</label><textarea id="nim-pe-content" class="nim-input nim-textarea" rows="12" placeholder="要发送的提示词"></textarea></div>
+          </div>
+          <div class="nim-sheet-foot"><button class="nim-btn danger-ghost" data-pe="remove">删除</button><span class="nim-grow-sp"></span><button class="nim-btn" data-pe="cancel">取消</button><button class="nim-btn primary" data-pe="save">完成</button></div>
+        </div></div>`;
     }
 
     // ============================================
@@ -1424,20 +1882,20 @@
     <section class="nim-panel" data-panel="settings">
       ${card(
           'api',
-          'API 与预设',
-          'OpenAI 兼容接口；可以导入酒馆预设',
+          'API',
+          'OpenAI 兼容接口',
           `${f('api')}
            <div class="nim-row">
              <button id="nim-models" class="nim-btn sm">拉取模型列表</button>
              <select id="nim-model-list" class="nim-input nim-grow"></select>
              <button id="nim-test" class="nim-btn sm">测试</button>
-             <label class="nim-btn sm">导入酒馆预设<input type="file" id="nim-preset" accept=".json" hidden></label>
            </div>`,
       )}
+      ${card('preset', '酒馆预设', '导入后每个条目可以开关、拖动排序、编辑', presetHtml())}
       ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate'))}
       ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite'))}
       ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
-      ${card('wb', '世界书', '分类和每类要写的内容', f('worldbook'))}
+      ${card('wb', '世界书', '提取分类（和 TXT转世界书 一样）、额外要求', categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
       ${card('table', '记忆表格', '表格角色、消息模板、大总结', f('table'))}
       ${card(
           'cfg',
@@ -1509,6 +1967,8 @@
       <button id="nim-stop" class="nim-btn danger-ghost" title="停止" aria-label="停止"><span class="nim-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span><span class="nim-lbl">停止</span></button>
     </div>
   </footer>
+  ${presetEditHtml()}
+  ${catEditHtml()}
 </div></div>`;
     }
 
@@ -1650,6 +2110,42 @@ select.nim-input{appearance:auto;}
 .is-running .nim-bar-fill{background-size:200% 100%;animation:nimFlow 1.6s linear infinite;background-image:linear-gradient(90deg,var(--accent),var(--accent2),var(--accent));}
 @keyframes nimFlow{to{background-position:-200% 0;}}
 .nim-foot-actions{flex:none;display:flex;gap:8px;}
+/* 条目列表（预设、世界书分类） */
+.nim-pr-bar{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+.nim-pr-title{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.nim-pr-list{list-style:none;margin:10px 0;padding:0;display:flex;flex-direction:column;gap:6px;}
+.nim-pr{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border:1px solid var(--line);border-radius:12px;background:var(--surface2);min-height:48px;}
+.nim-pr.is-slot{border-color:rgba(139,124,246,.6);background:rgba(139,124,246,.12);}
+.nim-pr.is-off .nim-pr-open{opacity:.5;}
+.nim-pr.is-dragging{border-color:var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.35);}
+.nim-pr.is-picked{border-color:var(--bad);}
+.nim-pr.is-picked .nim-pr-open{opacity:1;}
+.nim-pr-handle{flex:none;width:36px;height:40px;display:inline-flex;align-items:center;justify-content:center;color:var(--muted);cursor:grab;touch-action:none;user-select:none;}
+.nim-pr.is-dragging .nim-pr-handle{cursor:grabbing;color:var(--accent);}
+.nim-pr-pin{flex:none;width:38px;text-align:center;}
+.nim-pr-toggle{flex:none;display:inline-flex;align-items:center;cursor:pointer;}
+.nim-pr-toggle input{position:absolute;opacity:0;pointer-events:none;}
+.nim-pr-toggle input:checked+.nim-switch{background:var(--accent);border-color:transparent;}
+.nim-pr-toggle input:checked+.nim-switch::after{transform:translateX(16px);background:#fff;}
+.nim-pr-check{flex:none;width:20px;height:20px;margin:0 9px;accent-color:var(--bad);}
+.nim-pr-open{flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:8px 0;border:0;background:none;color:inherit;text-align:left;cursor:pointer;font-family:inherit;}
+.nim-pr-open:disabled{cursor:default;}
+.nim-pr-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;}
+.nim-pr-tag{flex:none;font-size:11px;padding:1px 7px;border-radius:999px;color:var(--muted);border:1px solid var(--line2);}
+.nim-pr-tag.is-depth{color:#bdb3ff;border-color:rgba(139,124,246,.6);}
+.nim-pr-extras-head{width:100%;display:flex;align-items:center;justify-content:space-between;padding:10px 2px;border:0;border-top:1px solid var(--line);background:none;color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;}
+.nim-chev.up{transform:rotate(225deg);}
+.nim-icon-btn.sm{width:34px;height:34px;font-size:13px;}
+.nim-icon-btn:disabled{opacity:.3;cursor:not-allowed;}
+/* 编辑弹层：电脑上居中，手机上从底部弹出 */
+/* 用 fixed 而不是 absolute：弹窗本身 overflow:hidden，输入框聚焦时会把它整体卷上去 */
+.nim-sheet{position:fixed;top:0;left:0;width:100vw;height:100vh;height:100dvh;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(8,8,14,.6);padding:20px;}
+.nim-sheet[hidden]{display:none;}
+.nim-sheet-box{width:min(620px,100%);max-height:100%;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);}
+.nim-sheet-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);}
+.nim-sheet-body{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px;}
+.nim-sheet-foot{display:flex;gap:8px;align-items:center;padding:12px 16px;border-top:1px solid var(--line);}
+.nim-grow-sp{flex:1;}
 /* 手机：导航放到底部拇指够得着的地方，底栏压成一行，分层列表和详情分两屏 */
 @media (max-width:760px){
   .nim-overlay{padding:0;align-items:stretch;}
@@ -1691,6 +2187,11 @@ select.nim-input{appearance:auto;}
   .nim-detail{max-height:none;}
   .nim-pre{max-height:50vh;}
   .nim-dl{grid-template-columns:1fr 1fr;}
+  .nim-sheet{padding:0;align-items:flex-end;}
+  .nim-sheet-box{width:100%;max-height:92%;border-radius:18px 18px 0 0;border-bottom:0;}
+  .nim-sheet-foot{padding-bottom:max(12px,env(safe-area-inset-bottom));}
+  .nim-sheet-foot .nim-btn{flex:1;}
+  .nim-sheet-foot .nim-grow-sp{display:none;}
 }
 `;
 
@@ -1706,6 +2207,18 @@ select.nim-input{appearance:auto;}
                 if (file) fn(file);
             });
         on('nim-close', 'click', close);
+        bindPreset();
+        bindCategories();
+        onFile('nim-preset-file', onPresetFile);
+        $('nim-pe').addEventListener('click', (ev) => {
+            const b = ev.target.closest('[data-pe]');
+            if (!b) return;
+            if (b.dataset.pe === 'save') closePresetEdit(true);
+            else if (b.dataset.pe === 'remove') {
+                if (confirm('删除这个条目？')) removePresetEditing();
+            } else closePresetEdit(false);
+        });
+        on('nim-pe-pos', 'change', () => ($('nim-pe-depthrow').hidden = $('nim-pe-pos').value !== 'depth'));
         on('nim-detail-back', 'click', () => openDetail(false));
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
         onFile('nim-file', onNovelFile);
@@ -1725,7 +2238,6 @@ select.nim-input{appearance:auto;}
         onFile('nim-tpl', onTemplateFile);
         onFile('nim-seed-wb', onWorldbookFile);
         onFile('nim-gloss-file', onGlossaryFile);
-        onFile('nim-preset', onPresetFile);
         onFile('nim-cfg-import', importConfig);
         onFile('nim-task-import', importTask);
         on('nim-prepare', 'click', prepareLayers);
@@ -1754,6 +2266,7 @@ select.nim-input{appearance:auto;}
             for (const k of ['rewritePrompt', 'divergenceRules', 'divergenceDirection', 'worldbookCategories', 'adPatterns', 'chapterRegex']) State.settings[k] = d[k];
             saveSettings();
             fillFields();
+            renderCategories();
         });
         on('nim-task-export', 'click', exportTask);
         on('nim-preview', 'click', () => {
@@ -1828,6 +2341,8 @@ select.nim-input{appearance:auto;}
         document.body.appendChild(wrap.firstElementChild);
         bind();
         fillFields();
+        renderPreset();
+        renderCategories();
         switchTab(State.tab);
         if (!State.text) {
             const snap = await dbGet();
