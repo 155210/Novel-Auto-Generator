@@ -587,6 +587,13 @@ describe('运行引擎', () => {
         expect(C.parseWordReplace('a → b\n/[/ → x\n没箭头').length).toBe(1);
     });
 
+    it('分隔线不会把上一行变成 Markdown 标题，**第二话** 也认成章节标题', () => {
+        const lines = C.formatBodyHeadings(['笑了很久。', '---', '**第二话 试着幼驯染**', '正文', '=====', '后文', '***'], {}, '话');
+        expect(C.fixSeparators(lines, 'bt')).toEqual(['笑了很久。', '<bt>\n#第2话：试着幼驯染\n</bt>', '正文', '', '=====', '后文']);
+        expect(C.formatBodyHeadings(['---', '## 第1话 雨夜', '正文'], {}, '话', { dropFirst: true })).toEqual(['---', '正文']);
+        expect(C.fixSeparators(['---', '正文'], 'bt')).toEqual(['正文']);
+    });
+
     it('楼层里可以额外放 AI 回复里的标签', async () => {
         const { engine } = makeEngine((layer) => normal(layer) + '\n<Plotline>伏笔一</Plotline>\n<Calculated_data>次数: 1</Calculated_data>', { floorTags: 'Plotline，<Calculated_data>, 没有的, 正文' });
         await engine.run();

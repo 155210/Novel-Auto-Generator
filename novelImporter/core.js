@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.33';
+    const VERSION = '1.4.34';
 
     // ============================================
     // 默认配置
@@ -363,6 +363,31 @@ P段号 |  | ++新段落          在该段之后另起一段
         return { body: body.replace(/\n{3,}/g, '\n\n'), extras };
     }
 
+    // 只有符号的分隔线（---、***、=====）
+    const SEPARATOR_RE = /^(?:[-=*_~—－＝]\s*){3,}$/;
+
+    /**
+     * 分隔线在 Markdown 里紧跟在文字下面会把上一行变成大标题（---、=== 是标题下划线），
+     * 前面空一行就成了普通分隔线；紧挨着章节标题或在开头结尾的分隔线没用，去掉。
+     */
+    function fixSeparators(lines, titleTag) {
+        const isSep = (l) => SEPARATOR_RE.test(stripMarks(l).trim());
+        const out = [];
+        for (let k = 0; k < lines.length; k++) {
+            if (!isSep(lines[k])) {
+                out.push(lines[k]);
+                continue;
+            }
+            let n = k + 1;
+            while (n < lines.length && isSep(lines[n])) n++;
+            const next = n < lines.length ? stripMarks(lines[n]).trim() : '';
+            if (!out.length || !next || next.startsWith(`<${titleTag || 'bt'}>`)) continue;
+            if (out[out.length - 1] !== '') out.push('');
+            out.push(lines[k]);
+        }
+        return out;
+    }
+
     /**
      * 正文里独占一行的章节标题（第X章/第X话 标题）改成和楼层标题一样的 <bt>#第X章：标题</bt>。
      * opts.dropFirst：楼层标题就是取的本层第一个章节标题时，正文开头那行重复了，去掉。
@@ -375,14 +400,15 @@ P段号 |  | ++新段落          在该段之后另起一段
         const out = [];
         let first = true;
         for (const line of paras) {
-            const t = stripMarks(line).trim();
+            // AI 有时把标题写成 **第二话 xxx** 或 ## 第二话，先去掉 Markdown 记号再判断
+            const t = stripMarks(line).trim().replace(/^(?:#+\s*|[*_]{1,3})|[*_]{1,3}$/g, '').trim();
             // 「第3话说的是……」这种句子不算：章号后面要有空格/冒号，或者整行很短又没有句读
             const m = t && t.length <= 40 ? re.exec(t) : null;
             const rest = m ? t.slice(m[0].length) : '';
             const ok = m && (!rest || /^[\s：:、.．\-—]/.test(rest) || (t.length <= 20 && !/[。，！？…“”「」,!?]/.test(rest)));
             const p = ok ? parseChapterTitle(t) : null;
             const wasFirst = first;
-            if (t) first = false;
+            if (t && !SEPARATOR_RE.test(t)) first = false;
             if (!p) {
                 out.push(line);
                 continue;
@@ -2643,7 +2669,7 @@ ${blocks}`;
             const split = splitBodyBlocks(paras.join('\n'), settings.bodyTag);
             const clean = split.body.split('\n').filter((l) => stripMarks(l).trim().length > 0);
             const dropFirst = settings.titleMode === 'original' && !!(layer.chapters || []).length;
-            return { paras: formatBodyHeadings(clean, settings, E.stats.chapterUnit, { dropFirst }), extras: split.extras };
+            return { paras: fixSeparators(formatBodyHeadings(clean, settings, E.stats.chapterUnit, { dropFirst }), settings.titleTag), extras: split.extras };
         }
 
         function finalState() {
@@ -3056,6 +3082,7 @@ ${sums}`;
         formatHeading,
         formatBodyHeadings,
         splitBodyBlocks,
+        fixSeparators,
         parseWordReplace,
         applyWordReplace,
         marksToHtml,
