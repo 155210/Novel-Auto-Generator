@@ -513,6 +513,10 @@ describe('运行引擎', () => {
         expect(p1).toContain('<上一层结尾>');
         expect(p1).toContain(tail.slice(-10));
         expect(p1).toContain('<Plotline>\n雨夜相遇，埋下伏笔\n</Plotline>');
+        // 第 2 层没输出 Plotline，第 3 层沿用第 1 层的
+        const p2 = calls[2].messages.map((m) => m.content).join('\n');
+        expect(p2).toContain('来自第 1 层');
+        expect(p2).toContain('<Plotline>\n雨夜相遇，埋下伏笔\n</Plotline>');
         expect(p1).not.toContain('<不存在的>');
         expect(C.splitTagList('<Plotline>，摘要、 a')).toEqual(['Plotline', '摘要', 'a']);
         expect(C.splitTagList('Calculated data, <Calculated_data>')).toEqual(['Calculated data', 'Calculated_data']);
