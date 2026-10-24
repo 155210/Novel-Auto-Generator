@@ -159,6 +159,59 @@
         }
     }
 
+    /**
+     * 插件里每张表的填写说明（note / 初始化、插入、更新、删除的触发条件）。
+     * 新版插件存在 power_user.table_database_templates[].cellHistory 的 sheet_origin 里，
+     * 旧版存在 extension_settings.muyoo_dataTable.tableStructure 里。按表名返回。
+     */
+    function readPluginTemplateNotes() {
+        const out = {};
+        const pick = (d) => ({
+            note: d.note || '',
+            initNode: d.initNode || '',
+            insertNode: d.insertNode || '',
+            updateNode: d.updateNode || '',
+            deleteNode: d.deleteNode || '',
+        });
+        try {
+            const old = (memorySettings() || {}).tableStructure;
+            if (Array.isArray(old)) for (const t of old) if (t && t.tableName) out[t.tableName] = pick(t);
+        } catch (e) {
+            /* 没有旧版设置 */
+        }
+        try {
+            const tpls = (ctx().powerUserSettings || {}).table_database_templates;
+            if (Array.isArray(tpls)) {
+                for (const t of tpls) {
+                    const origin = (t && Array.isArray(t.cellHistory) ? t.cellHistory : []).find((h) => h && h.type === 'sheet_origin');
+                    if (t && t.name && origin && origin.data) out[t.name] = pick(origin.data);
+                }
+            }
+        } catch (e) {
+            /* 没有新版模板 */
+        }
+        return out;
+    }
+
+    /** 插件设置里的「消息模板」（给 AI 说明怎么用表格、怎么改表格的那段，带 {{tableData}}） */
+    function readMessageTemplate() {
+        const s = memorySettings();
+        return (s && typeof s.message_template === 'string' && s.message_template) || '';
+    }
+
+    /** 上传一张图到 user/images/<角色名>/，返回酒馆里的路径 */
+    async function uploadImage(chName, filename, base64, format) {
+        const c = ctx();
+        const resp = await fetch('/api/images/upload', {
+            method: 'POST',
+            headers: c.getRequestHeaders(),
+            body: JSON.stringify({ image: base64, format, ch_name: chName, filename }),
+        });
+        if (!resp.ok) throw new Error(`上传插图失败：HTTP ${resp.status}`);
+        const j = await resp.json();
+        return j.path;
+    }
+
     /** 模板表名、列数和插件里的是否一致；不一致时行号会错位 */
     function checkTemplate(expected) {
         const live = readPluginTables();
@@ -340,6 +393,9 @@
         saveChat,
         openChat,
         readPluginTables,
+        readPluginTemplateNotes,
+        readMessageTemplate,
+        uploadImage,
         checkTemplate,
         compareTables,
         rebuildTables,

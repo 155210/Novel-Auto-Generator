@@ -340,7 +340,7 @@ describe('运行引擎', () => {
         await engine.run();
         const floors = engine.renderFloors();
         expect(floors.length).toBe(3);
-        expect(floors[0].mes).toContain('<bt>第1段</bt>');
+        expect(floors[0].mes).toContain('<bt>\n#第1章：第1段\n</bt>');
         expect(floors[0].mes).toContain('“你来了。”裘月寒抬眸道。');
         // 第二层才学到的称呼，第一层也替换
         expect(floors[0].mes).toContain('{{user}}推门而入');
@@ -377,9 +377,9 @@ describe('运行引擎', () => {
         });
         await engine.run();
         const floors = engine.renderFloors();
-        expect(floors[1].mes).toContain('<bt>【改写起点】同行</bt>');
+        expect(floors[1].mes).toContain('<bt>\n#第2章：【改写起点】同行\n</bt>');
         expect(floors[1].mes).toContain('{{user}}牵起她的手');
-        expect(floors[2].mes).toContain('<bt>【改写中】分别</bt>');
+        expect(floors[2].mes).toContain('<bt>\n#第3章：【改写中】分别\n</bt>');
         expect(engine.finalState().divergence.active).toBe(false);
     });
 
@@ -445,6 +445,78 @@ describe('运行引擎', () => {
         const card = C.buildCharacterCard({ name: '修仙界', worldName: '修仙界', worldbook: engine.exportWorldbook() });
         expect(card.data.extensions.world).toBe('修仙界');
         expect(card.data.character_book.entries.length).toBeGreaterThan(0);
+    });
+});
+
+describe('标题格式', () => {
+    const L = (index, chapters, translate = false) => ({ index, chapters, translate });
+    it('拆章节标题：中文数字、话/章、日文、英文、韩文', () => {
+        expect(C.parseChapterTitle('第一百二十三章 雨夜')).toEqual({ num: 123, unit: '章', title: '雨夜' });
+        expect(C.parseChapterTitle('第12話　出会い')).toEqual({ num: 12, unit: '话', title: '出会い' });
+        expect(C.parseChapterTitle('Chapter 7: The Rain')).toEqual({ num: 7, unit: '', title: 'The Rain' });
+        expect(C.parseChapterTitle('제3화 만남')).toEqual({ num: 3, unit: '话', title: '만남' });
+        expect(C.parseChapterTitle('普通的一句话')).toBe(null);
+        expect(C.detectChapterUnit(['第1话 a', '第2话 b', '第3章 c'])).toBe('话');
+    });
+    it('AI 标题用层号，原文标题用原文的章号和标题', () => {
+        expect(C.formatHeading(L(4, ['第9章 雨夜']), '古庙', {}, '章')).toBe('#第5章：古庙');
+        expect(C.formatHeading(L(4, ['第9话 雨夜']), '古庙', { titleMode: 'original' }, '话')).toBe('#第9话：雨夜');
+        expect(C.formatHeading(L(0, ['第9话 雨夜']), '', { titleMode: 'original', chapterUnit: '章' }, '话')).toBe('#第9章：雨夜');
+        // 翻译时：章号取原文，标题用 AI 给的译名
+        expect(C.formatHeading(L(0, ['第3話 出会い'], true), '第3话 相遇', { titleMode: 'original' }, '话')).toBe('#第3话：相遇');
+        expect(C.formatHeading(L(0, ['序章'], false), '', { titleMode: 'original' }, '章')).toBe('#序章');
+        expect(C.formatHeading(L(0, []), '', {}, '章')).toBe('#第1章');
+    });
+});
+
+describe('翻译模式', () => {
+    const fill = (w) => `${w}。`.repeat(200);
+    const JP = ['第1話 雨の夜', '「来たか」と月寒は言った。', '路長遠は扉を押して入った。', fill('雨の音がする'), '第2話 旅立ち', '「行こう」', '長安道人は笑った。', fill('風の音がする')].join('\n');
+    const tr = (layer, prompt) => {
+        const terms = layer === 0 ? '路長遠 → 路长远\n月寒 → 月寒（女主）' : '長安道人 → 长安道人';
+        const body = layer === 0 ? '第1话 雨夜\n“来了啊。”月寒说道。\n路长远推门而入。\n〔插图1〕' : '第2话 启程\n“走吧。”\n长安道人笑了。';
+        return [`<bt>${layer === 0 ? '雨夜' : '启程'}</bt>`, `<摘要>摘要${layer}</摘要>`, `<正文>\n${body}\n</正文>`, '<改写判定>{"触发":false}</改写判定>', '<称呼></称呼>', '<世界书>{}</世界书>', '<表格>{}</表格>', `<新术语>\n${terms}\n</新术语>`].join('\n');
+    };
+
+    it('认出外文，整层翻译成中文，术语表逐层积累并只带本层出现的', async () => {
+        expect(C.detectForeign(JP)).toBe(true);
+        expect(C.detectForeign('第一章 雨夜\n“你来了。”路长远推门而入。'.repeat(20))).toBe(false);
+        const prompts = [];
+        const engine = C.createEngine({
+            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 0, titleMode: 'original', tablesEnabled: false },
+            seedGlossary: [{ source: '雨の夜', target: '雨夜' }],
+            callModel: async (messages, info) => {
+                const p = messages[messages.length - 1].content;
+                prompts.push(p);
+                return tr(info.layer, p);
+            },
+        });
+        engine.prepare(JP + '\n〔插图1〕');
+        expect(engine.stats.translate).toBe(true);
+        expect(engine.layers.length).toBe(2);
+        await engine.run();
+        expect(prompts[0]).toContain('完整翻译');
+        expect(prompts[0]).not.toContain('<补丁>');
+        expect(prompts[0]).toContain('雨の夜 → 雨夜');
+        // 第二层原文里有「長安道人」但没有「路長遠」：只带出现了的术语
+        expect(prompts[1]).not.toContain('路長遠 → 路长远');
+        expect(prompts[1]).not.toContain('雨の夜 → 雨夜');
+        expect(engine.finalState().glossary.map((g) => g.source)).toEqual(['雨の夜', '路長遠', '月寒', '長安道人']);
+        const floors = engine.renderFloors();
+        expect(floors[0].mes).toContain('<bt>\n#第1话：雨夜\n</bt>');
+        expect(floors[0].mes).toContain('{{user}}推门而入。');
+        expect(floors[0].mes).not.toContain('新术语');
+        expect(floors[1].mes).toContain('#第2话：启程');
+    });
+
+    it('整层重写时漏掉的插图占位行按位置补回', () => {
+        const src = [{ text: 'a' }, { text: '〔插图1〕' }, { text: 'b' }, { text: 'c' }, { text: '〔插图2〕' }];
+        expect(C.ensureImageMarkers(src, ['A', 'B', 'C', '〔插图2〕'])).toEqual(['A', '〔插图1〕', 'B', 'C', '〔插图2〕']);
+    });
+
+    it('术语表合并：已有的原文不覆盖', () => {
+        const g = C.mergeGlossary([{ source: 'A', target: '甲', note: '' }], C.parseGlossaryLines('A → 乙\nB -> 丙（地名）\n无'));
+        expect(g).toEqual([{ source: 'A', target: '甲', note: '' }, { source: 'B', target: '丙', note: '地名' }]);
     });
 });
 
