@@ -527,6 +527,14 @@ describe('运行引擎', () => {
         expect(engine.renderFloors()[0].mes).toContain('裘月寒抬眸道');
     });
 
+    it('输出格式放在原文后面', async () => {
+        const { engine, calls } = makeEngine(normal);
+        await engine.run();
+        const p = calls[0].messages.map((m) => m.content).join('\n');
+        expect(p.lastIndexOf('## 输出格式') > p.lastIndexOf('</原文>')).toBe(true);
+        expect(p.trim().endsWith('代码块标记。')).toBe(true);
+    });
+
     it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
         let runningDuring = null;
         let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';

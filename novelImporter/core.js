@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.24';
+    const VERSION = '1.4.25';
 
     // ============================================
     // 默认配置
@@ -585,6 +585,8 @@ P段号 |  | ++新段落          在该段之后另起一段
 <世界书>JSON，没有新内容就输出 {}</世界书>
 <表格>JSON，没有变化就输出 {}</表格>`;
 
+    const JSON_REMINDER = `<改写判定>、<世界书>、<表格> 里必须是能被 JSON.parse 解析的合法 JSON：键和字符串一律用英文双引号 "，字符串里要用引号就写成 \\" 或改用「」，字符串里不要直接回车（换行写 \\n），不要注释、尾逗号、代码块标记。`;
+
     const PATCH_RULES = `## 补丁规则
 - 锚点必须从该段原文中**原样复制**一小段（5 到 15 个字），并且在该段里只出现一次
 - 单条补丁的补充内容不超过 {MAX_PATCH} 字
@@ -888,7 +890,6 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
         if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
         if (!protagonistOf(s, state)) format += '\n<主角>主角的名字，看不出就留空</主角>';
-        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : ''));
         if (extra.feedback) {
             parts.push(`## 用户对上一次结果的修改意见（优先遵守）\n${extra.feedback}`);
             if (extra.previousRaw) parts.push(`## 你上一次的输出\n${extra.previousRaw}`);
@@ -896,6 +897,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
         parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
+        // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
+        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + JSON_REMINDER);
         return parts.join('\n\n');
     }
 
@@ -2338,8 +2341,8 @@ ${blocks}`;
                 : '';
             if (old) parts.push(old);
             if ((extraPrompt || '').trim()) parts.push(`## 用户的补充要求（优先遵守）\n${extraPrompt.trim()}`);
-            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>`);
             parts.push(`## 本层定稿正文\n<原文>\n${body}\n</原文>`);
+            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>\n\n${JSON_REMINDER}`);
             return parts.join('\n\n');
         }
 
