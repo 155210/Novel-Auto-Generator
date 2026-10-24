@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.27';
+    const VERSION = '1.4.28';
 
     // ============================================
     // 默认配置
@@ -109,6 +109,25 @@
         eventsPerLayer: '3到5',
     };
 
+    // 每层回复的输出格式（设置里可以改，清空或点「恢复默认」回到这里）
+    const OUTPUT_FORMAT = `## 输出格式（严格遵守，按顺序输出这些标签，不要输出其他内容）
+<bt>本层标题，10 字以内，概括本层主要剧情</bt>
+<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>
+<补丁>
+每行一条补丁，没有就留空。格式：
+P段号 | 锚点 | +补充内容      在锚点文字之后插入补充内容
+P段号 | 锚点 | =替换内容      把锚点文字整体替换成替换内容
+P段号 |  | +补充内容         在该段末尾追加
+P段号 |  | ++新段落          在该段之后另起一段
+</补丁>
+<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>
+<称呼>本层新出现的、指代主角的称呼，用 / 分隔；没有就留空</称呼>
+<世界书>JSON，没有新内容就输出 {}</世界书>
+<表格>JSON，没有变化就输出 {}</表格>`;
+
+    // 放在输出格式后面的 JSON 写法提醒
+    const JSON_REMINDER = `<改写判定>、<世界书>、<表格> 里必须是能被 JSON.parse 解析的合法 JSON：键和字符串一律用英文双引号 "，字符串里要用引号就写成 \\" 或改用「」，字符串里不要直接回车（换行写 \\n），不要注释、尾逗号、代码块标记。`;
+
     const DEFAULT_SETTINGS = {
         // 分层
         layerChars: 15000,
@@ -126,6 +145,8 @@
         // 改写
         expansionRatio: 10,
         rewritePrompt: DEFAULT_REWRITE_PROMPT,
+        outputFormat: OUTPUT_FORMAT,
+        jsonReminder: JSON_REMINDER,
         maxPatchChars: 120,
         extraRules: '',
         // 酒馆里开着的世界书当作输出要求发给 AI；stWorldExclude 是取消勾选的书名
@@ -615,22 +636,6 @@
     // 提示词
     // ============================================
 
-    const OUTPUT_FORMAT = `## 输出格式（严格遵守，按顺序输出这些标签，不要输出其他内容）
-<bt>本层标题，10 字以内，概括本层主要剧情</bt>
-<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>
-<补丁>
-每行一条补丁，没有就留空。格式：
-P段号 | 锚点 | +补充内容      在锚点文字之后插入补充内容
-P段号 | 锚点 | =替换内容      把锚点文字整体替换成替换内容
-P段号 |  | +补充内容         在该段末尾追加
-P段号 |  | ++新段落          在该段之后另起一段
-</补丁>
-<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>
-<称呼>本层新出现的、指代主角的称呼，用 / 分隔；没有就留空</称呼>
-<世界书>JSON，没有新内容就输出 {}</世界书>
-<表格>JSON，没有变化就输出 {}</表格>`;
-
-    const JSON_REMINDER = `<改写判定>、<世界书>、<表格> 里必须是能被 JSON.parse 解析的合法 JSON：键和字符串一律用英文双引号 "，字符串里要用引号就写成 \\" 或改用「」，字符串里不要直接回车（换行写 \\n），不要注释、尾逗号、代码块标记。`;
 
     const PATCH_RULES = `## 补丁规则
 - 锚点必须从该段原文中**原样复制**一小段（5 到 15 个字），并且在该段里只出现一次
@@ -929,7 +934,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (extra.prevTail) parts.push(`## 上一层正文的结尾（只用来承接，让本层开头衔接自然；不要重复输出这段）\n<上一层结尾>\n${extra.prevTail}\n</上一层结尾>`);
         for (const t of extra.carryTags || [])
             parts.push(`## 目前最新的 <${t.tag}>（来自第 ${t.layer + 1} 层，在这个基础上更新；本层照常输出完整的 <${t.tag}>）\n<${t.tag}>\n${t.content}\n</${t.tag}>`);
-        let format = OUTPUT_FORMAT.replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
+        let format = (String(s.outputFormat || '').trim() || OUTPUT_FORMAT).replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
         const guide = String(s.summaryGuide || '').trim();
         if (guide) format = format.replace('<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>', () => `<摘要>${guide}</摘要>`);
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
@@ -943,7 +948,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
         parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
         // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
-        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + JSON_REMINDER);
+        parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + String(s.jsonReminder ?? JSON_REMINDER).trim());
         return parts.join('\n\n');
     }
 
@@ -2389,7 +2394,7 @@ ${blocks}`;
             if (old) parts.push(old);
             if ((extraPrompt || '').trim()) parts.push(`## 用户的补充要求（优先遵守）\n${extraPrompt.trim()}`);
             parts.push(`## 本层定稿正文\n<原文>\n${body}\n</原文>`);
-            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>\n\n${JSON_REMINDER}`);
+            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>\n\n${String(s.jsonReminder ?? JSON_REMINDER).trim()}`);
             return parts.join('\n\n');
         }
 

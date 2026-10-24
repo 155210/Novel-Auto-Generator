@@ -548,6 +548,20 @@ describe('运行引擎', () => {
         expect(p.trim().endsWith('代码块标记。')).toBe(true);
     });
 
+    it('输出格式和 JSON 提醒可以自定义，清空输出格式就用默认的', async () => {
+        const run = async (extra) => {
+            const { engine, calls } = makeEngine(normal, extra);
+            await engine.run();
+            return calls[0].messages.map((m) => m.content).join('\n');
+        };
+        const custom = await run({ outputFormat: C.OUTPUT_FORMAT + '\n<我的标签>随便</我的标签>', jsonReminder: '记得写好 JSON' });
+        expect(custom).toContain('<我的标签>随便</我的标签>');
+        expect(custom.trim().endsWith('记得写好 JSON')).toBe(true);
+        const empty = await run({ outputFormat: '' });
+        expect(empty).toContain('<改写判定>{"触发": false');
+        expect(C.DEFAULT_SETTINGS.outputFormat).toBe(C.OUTPUT_FORMAT);
+    });
+
     it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
         let runningDuring = null;
         let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';
