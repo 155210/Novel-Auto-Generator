@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.37';
+    const VERSION = '1.4.38';
 
     // ============================================
     // 默认配置
@@ -1581,6 +1581,35 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /**
+     * 列出一段文字里每条规则换掉的地方（按规则顺序依次替换，和 applyWordReplace 结果一致）。
+     * 每处给前后 ctx 个字：{ rule, from, to, before, after }，before/after 是替换前后的片段。
+     */
+    function findWordReplaceHits(text, rules, ctx = 15) {
+        const hits = [];
+        let t = String(text ?? '');
+        (rules || []).forEach((r, ri) => {
+            const re = new RegExp(r.re.source, r.re.flags);
+            let m;
+            const found = [];
+            while ((m = re.exec(t))) {
+                if (!m[0]) {
+                    re.lastIndex++;
+                    continue;
+                }
+                found.push({ at: m.index, match: m[0], to: m[0].replace(new RegExp(r.re.source, r.re.flags.replace('g', '')), r.to) });
+            }
+            for (const f of found) {
+                const pre = (f.at > ctx ? '…' : '') + t.slice(Math.max(0, f.at - ctx), f.at);
+                const end = f.at + f.match.length;
+                const post = t.slice(end, end + ctx) + (end + ctx < t.length ? '…' : '');
+                hits.push({ rule: ri, from: f.match, to: f.to, pre, post });
+            }
+            t = t.replace(r.re, r.to);
+        });
+        return hits;
+    }
+
+    /**
      * 转成酒馆世界书文件格式（{entries: {uid: entry}}），称呼替换在这里做。
      * 条目注释沿用「TXT转世界书」的「分类 - 名称」，两边导出的条目可以混用。
      */
@@ -2622,6 +2651,36 @@ ${blocks}`;
             return changed;
         }
 
+        /**
+         * 先看看词语替换会换掉哪些地方，不改内容。
+         * 返回 { rules: [{ text, count }], hits: [{ layer, where, rule, from, to, pre, post }] }。
+         */
+        function previewReplaceInResults(text) {
+            const lines = String(text || '')
+                .split('\n')
+                .map((l) => l.trim())
+                .filter((l) => parseWordReplace(l).length);
+            const rules = lines.map((l) => parseWordReplace(l)[0]);
+            const hits = [];
+            const scan = (layer, where, v) => {
+                if (typeof v === 'string') {
+                    for (const h of findWordReplaceHits(v, rules)) hits.push({ layer, where, ...h });
+                } else if (Array.isArray(v)) v.forEach((x) => scan(layer, where, x));
+                else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) scan(layer, where, k), scan(layer, where, x);
+            };
+            for (let i = 0; i < E.results.length; i++) {
+                const r = E.results[i];
+                if (!r || r.status !== 'done') continue;
+                const p = r.parsed || {};
+                scan(i, '标题', p.title);
+                (r.finalParas || []).forEach((x) => scan(i, '正文', x));
+                scan(i, '摘要', [p.summary, p.bigSummary]);
+                scan(i, '世界书', p.worldbook);
+                scan(i, '表格', r.tableActions || p.tableOps);
+            }
+            return { rules: lines.map((l, ri) => ({ text: l, count: hits.filter((h) => h.rule === ri).length })), hits };
+        }
+
         /** 从第 i 层起全部重跑 */
         function resetFrom(i) {
             for (let k = i; k < E.results.length; k++) E.results[k] = null;
@@ -2856,6 +2915,7 @@ ${sums}`;
             redoWithFeedback,
             regenJson,
             applyReplaceToResults,
+            previewReplaceInResults,
             resetFrom,
             replay,
             renderFloors,
@@ -3196,6 +3256,7 @@ ${sums}`;
         parseLooseJson,
         replaceTag,
         stripMarks,
+        findWordReplaceHits,
         parsePatchLines,
         parseLayerResponse,
         applyPatches,
