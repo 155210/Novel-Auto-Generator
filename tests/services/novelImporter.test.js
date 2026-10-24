@@ -562,6 +562,18 @@ describe('运行引擎', () => {
         expect(C.DEFAULT_SETTINGS.outputFormat).toBe(C.OUTPUT_FORMAT);
     });
 
+    it('可以选择保留「=====」分隔线', () => {
+        const text = '第一章 雨夜\n' + '雨声。'.repeat(50) + '\n=====\n' + '风声。'.repeat(50);
+        const run = (extra) => {
+            const engine = C.createEngine({ settings: { layerChars: 100000, ...extra }, callModel: async () => '' });
+            engine.prepare(text);
+            return engine.layers[0].paras.map((p) => p.text);
+        };
+        expect(run({}).includes('=====')).toBe(false);
+        expect(run({ keepSeparatorLines: true }).includes('=====')).toBe(true);
+        expect(C.adPatternsFor({ adPatterns: C.DEFAULT_AD_PATTERNS, keepSeparatorLines: true })).not.toContain('^=+$');
+    });
+
     it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
         let runningDuring = null;
         let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';
