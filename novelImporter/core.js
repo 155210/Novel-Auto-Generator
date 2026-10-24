@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.19';
+    const VERSION = '1.4.20';
 
     // ============================================
     // 默认配置
@@ -183,6 +183,7 @@
         tableRoles: { ...DEFAULT_TABLE_ROLES },
         tablePrompt: '',
         tableContextRows: 30,
+        tableContextAll: false, // 每层把表格的行全部发给 AI（不只发本层提到的）
 
         // 审阅
         reviewMode: 'divergence', // off | every | divergence
@@ -1521,6 +1522,24 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (!t) return '（无）';
         const roles = { ...DEFAULT_TABLE_ROLES, ...(settings.tableRoles || {}) };
         const maxRows = Number(settings.tableContextRows) || 30;
+        // 行的主键（比如「佐仓花恋」）在原文里可能是别的写法：翻译时原文是外文，平时也有称呼、外号。
+        // 用术语表的原文写法、同名世界书条目的关键词、主角的称呼一起去找，免得本层明明出场却没带上这一行，AI 又插一行重复的
+        const memo = new Map();
+        const namesFor = (key) => {
+            if (memo.has(key)) return memo.get(key);
+            const out = [key];
+            for (const g of state.glossary || []) if (g && g.target === key && g.source) out.push(g.source);
+            for (const items of Object.values(state.worldbook || {})) {
+                for (const [n, e] of Object.entries(items || {})) {
+                    const ks = (e && e.关键词) || [];
+                    if (n === key || ks.includes(key)) out.push(n, ...ks);
+                }
+            }
+            if (key === protagonistOf(settings, state)) out.push(...(state.aliases || []));
+            const res = uniq(out.map((x) => String(x || '').trim()).filter((x) => x.length >= 2));
+            memo.set(key, res);
+            return res;
+        };
         const lines = [];
         t.template.tables.forEach((tb, i) => {
             if (tb.name === roles.summaryTable) {
@@ -1529,7 +1548,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             }
             let rows = t.rows[i];
             if (roles.appendOnly.includes(tb.name)) rows = rows.slice(-5);
-            else if (!roles.singleRow.includes(tb.name)) rows = rows.filter((r) => r[0] && text.includes(r[0])).slice(0, maxRows);
+            else if (settings.tableContextAll) rows = rows.slice();
+            else if (!roles.singleRow.includes(tb.name)) rows = rows.filter((r) => r[0] && namesFor(r[0]).some((n) => text.includes(n))).slice(0, maxRows);
             lines.push(`[${tb.name}] ${tb.columns.join(',')}`);
             if (!rows.length) lines.push('（无相关行）');
             for (const r of rows) lines.push(r.join(','));

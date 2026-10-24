@@ -311,6 +311,30 @@ describe('解析回复', () => {
     });
 });
 
+describe('表格相关行', () => {
+    const mk = () => {
+        const tables = C.createTableState(TEMPLATE);
+        tables.rows[1].push(['佐仓花恋', '黑发', '软弱', '学生'], ['九条水纪', '', '', '']);
+        return { tables, glossary: [{ source: '佐倉花恋', target: '佐仓花恋' }], worldbook: { 角色: { 九条水纪: { 关键词: ['九条水纪', '水纪', 'みずき'] } } }, aliases: [] };
+    };
+    const layer = (text) => ({ index: 0, chars: text.length, paras: [{ id: 1, text }], chapters: [], translate: false });
+    const settings = { tablesEnabled: true, worldbookEnabled: false };
+
+    it('原文是外文或用别名时，也按译名、世界书关键词带上那一行', () => {
+        const p = C.buildLayerPrompt(layer('佐倉花恋は笑った。みずきも来た。'), settings, mk());
+        expect(p).toContain('佐仓花恋,黑发,软弱,学生');
+        expect(p).toContain('九条水纪,,,');
+    });
+
+    it('没提到的不带；勾上「全部发」就整张表都带', () => {
+        const p = C.buildLayerPrompt(layer('今天下雨。'), settings, mk());
+        expect(p).not.toContain('佐仓花恋,黑发');
+        const all = C.buildLayerPrompt(layer('今天下雨。'), { ...settings, tableContextAll: true }, mk());
+        expect(all).toContain('佐仓花恋,黑发,软弱,学生');
+        expect(all).toContain('九条水纪');
+    });
+});
+
 describe('JSON 修复', () => {
     it('模型先「想」时提到的格式不算：取最后一个完整标签', () => {
         const think = '先想想格式：<bt>标题</bt> <正文>译文</正文> <世界书>JSON</世界书>\n好，开始输出。\n';
