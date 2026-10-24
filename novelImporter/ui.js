@@ -1898,13 +1898,19 @@
     // 渲染
     // ============================================
 
+    /** 滚动框是不是停在（接近）底部 */
+    function atBottom(el) {
+        return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    }
+
     function log(msg) {
         const el = $('nim-log');
         const line = `[${new Date().toLocaleTimeString()}] ${msg}`;
         console.log(`[NovelImporter] ${msg}`);
         if (!el) return;
+        const follow = atBottom(el);
         el.textContent = (el.textContent ? el.textContent + '\n' : '') + line;
-        el.scrollTop = el.scrollHeight;
+        if (follow) el.scrollTop = el.scrollHeight;
         const last = $('nim-last-log');
         if (last) last.textContent = msg;
     }
@@ -1921,8 +1927,11 @@
             streamRaf = 0;
             const el = $('nim-stream');
             if (!el) return;
-            el.textContent = State.stream.slice(-3000);
-            el.scrollTop = el.scrollHeight;
+            // 用户往上翻着看的时候不拉回底部；停在底部附近才跟着新内容走
+            const follow = atBottom(el);
+            const top = el.scrollTop;
+            el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
+            el.scrollTop = follow ? el.scrollHeight : top;
             setStatus(`第 ${info.layer + 1} 层输出中 · ${State.stream.length} 字`);
         });
     }
