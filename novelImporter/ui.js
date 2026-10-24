@@ -295,6 +295,7 @@
             { key: 'tableRoles.summaryThreshold', label: '事件满多少条触发大总结', type: 'number' },
             { key: 'tablePrompt', label: '表格额外要求', type: 'textarea', rows: 3 },
             { key: 'tableContextRows', label: '每张表带给 AI 的相关行数上限', type: 'number' },
+            { key: 'tableContextAll', label: '每层把表格全部发给 AI', type: 'check', hint: '默认只发本层提到的角色/物品那几行（会按译名、世界书关键词、称呼去找）；勾上就每层都发整张表，更稳但更费 token' },
         ],
         api: [
             { key: 'apiEndpoint', label: 'API 地址（OpenAI 兼容）', type: 'text', hint: '例如 https://api.example.com/v1' },
