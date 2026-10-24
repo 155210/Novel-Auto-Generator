@@ -808,6 +808,14 @@ describe('每层摘要和剧情条目', () => {
 });
 
 describe('酒馆世界书当作输出要求', () => {
+    it('单独关掉的条目（书名::uid）不发，整本都关掉就不出这本', () => {
+        const entries = { 5: { uid: 5, comment: '甲', content: 'a', order: 1 }, 7: { uid: 7, comment: '乙', content: 'b', order: 2 } };
+        expect(C.outputRuleItems(entries).map((x) => x.key)).toEqual(['5', '7']);
+        expect(C.buildOutputRules([{ name: '书', entries }], { skip: new Set(['书::5']) })).toBe('### 《书》\n【乙】\nb');
+        expect(C.buildOutputRules([{ name: '书', entries }], { skip: ['书::5', '书::7'] })).toBe('');
+        expect(C.buildOutputRules([{ name: '别的', entries }], { skip: ['书::5'] })).toContain('【甲】');
+    });
+
     it('关掉的和空的条目不要，按顺序值排，放进每层提示词', async () => {
         const rules = C.buildOutputRules([
             { name: '文风', entries: { 0: { comment: '第二条', content: '多写心理', order: 200 }, 1: { comment: '第一条', content: '第三人称', order: 100 }, 2: { comment: '关掉的', content: 'x', disable: true }, 3: { comment: '空', content: ' ' } } },

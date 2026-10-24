@@ -1605,11 +1605,10 @@
         const list = [];
         for (const b of books) {
             try {
-                const rules = C.buildOutputRules([{ name: b.name, entries: await ST.loadWorldbookEntries(b.name) }]);
-                const count = rules ? (rules.match(/^【/gm) || []).length || 1 : 0;
-                list.push({ ...b, rules, count, chars: rules.length });
+                const entries = await ST.loadWorldbookEntries(b.name);
+                list.push({ ...b, entries, items: C.outputRuleItems(entries) });
             } catch (e) {
-                list.push({ ...b, rules: '', count: 0, chars: 0, error: e.message });
+                list.push({ ...b, entries: {}, items: [], error: e.message });
             }
         }
         State.stWorlds = list;
@@ -1618,8 +1617,15 @@
         return list;
     }
 
+    const entryKey = (book, it) => `${book}::${it.key}`;
+
     function updateOutputRules() {
         const ex = new Set(State.settings.stWorldExclude || []);
+        const skip = new Set(State.settings.stWorldEntryExclude || []);
+        for (const b of State.stWorlds || []) {
+            b.rules = C.buildOutputRules([{ name: b.name, entries: b.entries }], { skip });
+            b.on = (b.items || []).filter((it) => !skip.has(entryKey(b.name, it))).length;
+        }
         State.outputRules = (State.stWorlds || [])
             .filter((b) => !ex.has(b.name) && b.rules)
             .map((b) => b.rules)
@@ -1639,21 +1645,51 @@
             return;
         }
         const ex = new Set(State.settings.stWorldExclude || []);
+        const skip = new Set(State.settings.stWorldEntryExclude || []);
+        const open = State.stwbOpen || (State.stwbOpen = new Set());
         const picked = list.filter((b) => !ex.has(b.name));
         box.innerHTML =
             list
-                .map(
-                    (b) =>
-                        `<label class="nim-check"><input type="checkbox" data-stwb="${esc(b.name)}" ${ex.has(b.name) ? '' : 'checked'}><span class="nim-switch"></span><span>${esc(b.name)} <span class="nim-pr-tag">${b.source}</span><span class="nim-hint">${b.error ? `读取失败：${esc(b.error)}` : `${b.count} 个条目，约 ${b.chars} 字`}</span></span></label>`,
-                )
-                .join('') + `<div class="nim-muted">勾选的 ${picked.length} 本合计约 ${State.outputRules.length} 字，每层都会带上。点「开始」时会重新读一遍，在酒馆里改了世界书不用再点读取。</div>`;
+                .map((b) => {
+                    const items = b.items || [];
+                    const info = b.error ? `读取失败：${esc(b.error)}` : `发 ${b.on} / ${items.length} 个条目，约 ${b.rules.length} 字`;
+                    const entries = items
+                        .map(
+                            (it) =>
+                                `<label class="nim-check nim-stwb-entry"><input type="checkbox" data-stwb-entry="${esc(entryKey(b.name, it))}" ${skip.has(entryKey(b.name, it)) ? '' : 'checked'}><span class="nim-switch"></span><span>${esc(it.title || '（没有标题）')}<span class="nim-hint">${esc(it.content.slice(0, 60))}${it.content.length > 60 ? '…' : ''}</span></span></label>`,
+                        )
+                        .join('');
+                    return `<div class="nim-stwb-book">
+                      <label class="nim-check"><input type="checkbox" data-stwb="${esc(b.name)}" ${ex.has(b.name) ? '' : 'checked'}><span class="nim-switch"></span><span>${esc(b.name)} <span class="nim-pr-tag">${b.source}</span><span class="nim-hint">${info}</span></span></label>
+                      ${
+                          items.length
+                              ? `<details class="nim-fold" data-stwb-fold="${esc(b.name)}" ${open.has(b.name) ? 'open' : ''}><summary>逐条开关</summary>
+                          <div class="nim-row"><button class="nim-btn ghost sm" data-stwb-all="${esc(b.name)}" data-on="1">全开</button><button class="nim-btn ghost sm" data-stwb-all="${esc(b.name)}" data-on="0">全关</button></div>
+                          ${entries}</details>`
+                              : ''
+                      }
+                    </div>`;
+                })
+                .join('') +
+            `<div class="nim-muted">勾选的 ${picked.length} 本合计约 ${State.outputRules.length} 字，每层都会带上。这里的开关只管发不发给 AI，不改酒馆里的条目。点「开始」时会重新读一遍，在酒馆里改了世界书不用再点读取。</div>`;
+    }
+
+    function setEntrySkip(keys, on) {
+        const skip = new Set(State.settings.stWorldEntryExclude || []);
+        for (const k of keys) on ? skip.delete(k) : skip.add(k);
+        State.settings.stWorldEntryExclude = [...skip];
+        saveSettings();
+        updateOutputRules();
+        renderStWorlds();
     }
 
     function bindStWorlds() {
         const box = $('nim-stwb');
         if (!box) return;
         box.addEventListener('change', (ev) => {
-            const name = ev.target.dataset && ev.target.dataset.stwb;
+            const d = ev.target.dataset || {};
+            if (d.stwbEntry !== undefined) return setEntrySkip([d.stwbEntry], ev.target.checked);
+            const name = d.stwb;
             if (name === undefined) return;
             const ex = new Set(State.settings.stWorldExclude || []);
             if (ev.target.checked) ex.delete(name);
@@ -1663,6 +1699,24 @@
             updateOutputRules();
             renderStWorlds();
         });
+        box.addEventListener('click', (ev) => {
+            const btn = ev.target.closest && ev.target.closest('[data-stwb-all]');
+            if (!btn) return;
+            ev.preventDefault();
+            const b = (State.stWorlds || []).find((x) => x.name === btn.dataset.stwbAll);
+            if (b) setEntrySkip((b.items || []).map((it) => entryKey(b.name, it)), btn.dataset.on === '1');
+        });
+        // 记住展开了哪本，重绘后保持展开
+        box.addEventListener(
+            'toggle',
+            (ev) => {
+                const name = ev.target.dataset && ev.target.dataset.stwbFold;
+                if (name === undefined) return;
+                const open = State.stwbOpen || (State.stwbOpen = new Set());
+                ev.target.open ? open.add(name) : open.delete(name);
+            },
+            true,
+        );
         $('nim-stwb-refresh').addEventListener('click', async () => {
             try {
                 const list = await refreshStWorlds();
@@ -2512,6 +2566,8 @@ select.nim-input{appearance:auto;}
 .nim-detail-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .nim-detail-title{font-size:15px;font-weight:650;}
 .nim-pre{white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.6;background:var(--bg);border:1px solid var(--line);padding:10px 12px;border-radius:10px;max-height:340px;overflow-y:auto;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+.nim-stwb-book{border-bottom:1px solid var(--line);padding:4px 0;}
+.nim-stwb-entry{padding-left:12px;}
 .nim-hl{background:rgba(242,180,65,.35);color:inherit;border-radius:3px;padding:0 1px;}
 .nim-log{max-height:200px;}
 .nim-fold{margin-top:10px;}
