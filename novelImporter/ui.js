@@ -245,6 +245,15 @@
             { key: 'expansionRatio', label: '扩写比例 %', type: 'number', hint: '补充内容约占原文字数的比例，默认 10' },
             { key: 'maxPatchChars', label: '单条补丁最多字数', type: 'number' },
             { key: 'rewritePrompt', label: '改写要求', type: 'textarea', rows: 5 },
+            {
+                key: 'outputFormat',
+                label: '输出格式',
+                type: 'textarea',
+                rows: 8,
+                reset: true,
+                hint: '放在提示词最后（原文后面）。<bt>、<摘要> 两行和 <补丁> 块别删：标题、摘要写法和翻译时的正文会自动替换进去',
+            },
+            { key: 'jsonReminder', label: '输出格式后面的 JSON 提醒', type: 'textarea', rows: 3, reset: true },
             { key: 'extraRules', label: '其他规则（随便写，会原样放进提示词）', type: 'textarea', rows: 3 },
             { key: 'prevTailChars', label: '带上一层正文结尾的字数', type: 'number', hint: '让本层开头和上一层接得上；0 不带。取的是上一层处理完的正文（补丁、翻译、改写后的）' },
             { key: 'carryTags', label: '上一层回复里一起发的标签', type: 'text', hint: '逗号分隔，比如 Plotline, Calculated_data。从上一层 AI 的原始回复里取（楼层里没有也行），原样带给本层；哪层没输出就沿用最近一次的' },
@@ -336,7 +345,8 @@
             const t = f.type === 'number' ? 'number' : f.type === 'password' ? 'password' : 'text';
             input = `<input id="${id}" class="nim-input" type="${t}" ${f.step ? `step="${f.step}"` : ''} data-key="${f.key}" data-type="${f.type}">`;
         }
-        return `<div class="nim-field${wide || f.wide ? ' wide' : ''}"><label for="${id}">${esc(f.label)}${hint}</label>${input}</div>`;
+        const reset = f.reset ? ` <button type="button" class="nim-btn ghost sm" data-reset="${f.key}">恢复默认</button>` : '';
+        return `<div class="nim-field${wide || f.wide ? ' wide' : ''}"><label for="${id}">${esc(f.label)}${hint}${reset}</label>${input}</div>`;
     }
 
     function fillFields() {
@@ -2965,6 +2975,17 @@ select.nim-input{appearance:auto;}
             renderCategories();
         });
         on('nim-task-export', 'click', exportTask);
+        document.querySelectorAll('#nim-modal [data-reset]').forEach((b) =>
+            b.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                const key = b.dataset.reset;
+                if (!confirm('恢复成默认内容？你改过的会丢掉。')) return;
+                State.settings[key] = defaultSettings()[key];
+                fillFields();
+                collectFields();
+                toast('已恢复默认', 'success');
+            }),
+        );
         on('nim-preview', 'click', async () => {
             if (!State.engine) return toast('请先选择小说', 'warning');
             collectFields();
