@@ -178,7 +178,12 @@ function bindEvents() {
         }
 
         if (typeof window.NovelImporter !== 'undefined') {
-            window.NovelImporter.open();
+            try {
+                await window.NovelImporter.open();
+            } catch (e) {
+                toastr.error(`小说导入改写打开失败：${e.message}`);
+                console.error('[NovelGen] 打开 novelImporter 失败:', e);
+            }
         } else {
             toastr.error('小说导入改写模块未加载');
         }
