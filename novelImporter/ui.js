@@ -613,6 +613,9 @@
     function onEngineEvent(type, p) {
         if (type === 'layer-start') log(`第 ${p.index + 1} 层开始`);
         else if (type === 'layer-retry') log(`第 ${p.index + 1} 层第 ${p.attempt + 1} 次结果不合格：${p.error}`);
+        else if (type === 'layer-repair') log(`第 ${p.index + 1} 层正文没问题，只是 JSON 格式坏了（${p.error}），只让 AI 修格式，不重写正文`);
+        else if (type === 'layer-repair-failed') log(`第 ${p.index + 1} 层修格式的请求失败：${p.error}`);
+        else if (type === 'layer-warn') log(`第 ${p.index + 1} 层：${p.warnings.join('；')}`);
         else if (type === 'layer-failed') log(`第 ${p.index + 1} 层失败：${p.error}`);
         else if (type === 'layer-done') {
             const r = p.result;

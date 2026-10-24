@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.5';
+    const VERSION = '1.4.6';
 
     // ============================================
     // 默认配置
@@ -857,32 +857,92 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return { found: true, closed: true, content: s.slice(start, end).trim() };
     }
 
-    /** 宽松 JSON：去代码块、中文引号、尾逗号 */
+    /**
+     * 字符串里的裸换行、制表符转义掉；字符串外当分隔符用的中文引号换成英文引号。
+     * 模型常见的写法：“键”: “值”，或者值里直接回车换行。
+     */
+    function normalizeJsonText(t) {
+        let out = '';
+        let inStr = false;
+        let closer = '"';
+        for (let i = 0; i < t.length; i++) {
+            const c = t[i];
+            if (inStr) {
+                if (c === '\\') {
+                    out += c + (t[i + 1] || '');
+                    i++;
+                } else if (c === closer && /^[ \t]*(\r?\n|[,}\]:，：]|$)/.test(t.slice(i + 1, i + 40))) {
+                    // 后面紧跟逗号、括号、冒号才算字符串结束，否则是正文里的引号
+                    out += '"';
+                    inStr = false;
+                } else if (c === '"') out += '\\"';
+                else if (c === '\n') out += '\\n';
+                else if (c === '\r') out += '';
+                else if (c === '\t') out += '\\t';
+                else out += c;
+            } else if (c === '"' || c === '“' || c === '”') {
+                out += '"';
+                inStr = true;
+                closer = c === '"' ? '"' : '”';
+            } else if (c === '，') out += ',';
+            else if (c === '：') out += ':';
+            else out += c;
+        }
+        return out;
+    }
+
+    /** 宽松 JSON：去代码块、中文引号、尾逗号、注释、字符串里的裸换行；「无」当空对象 */
     function parseLooseJson(text) {
         let t = String(text || '').trim();
         if (!t) return {};
         t = t.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim();
+        if (/^(无|没有|空|暂无|none|null|n\/a|-)?[。.]?$/i.test(t)) return {};
         try {
             return JSON.parse(t);
         } catch (e) {
             /* 继续修 */
         }
-        const fixed = t.replace(/,\s*([}\]])/g, '$1');
-        try {
-            return JSON.parse(fixed);
-        } catch (e) {
-            /* 继续修 */
-        }
-        const first = fixed.indexOf('{');
-        const last = fixed.lastIndexOf('}');
-        if (first >= 0 && last > first) {
+        const first = t.search(/[{[]/);
+        const lastObj = Math.max(t.lastIndexOf('}'), t.lastIndexOf(']'));
+        if (first < 0 || lastObj < first) throw new Error('JSON 解析失败');
+        const body = t.slice(first, lastObj + 1);
+        const tries = [];
+        const trailing = (x) => x.replace(/,\s*([}\]])/g, '$1');
+        tries.push(trailing(body));
+        let n = normalizeJsonText(body);
+        n = n.replace(/^\s*\/\/.*$/gm, '');
+        n = n.replace(/\bTrue\b/g, 'true').replace(/\bFalse\b/g, 'false').replace(/\bNone\b/g, 'null');
+        n = trailing(n);
+        tries.push(n);
+        // 键没加引号：{触发: false}
+        tries.push(n.replace(/([{,]\s*)([^\s"{}\[\],:]+)\s*:/g, '$1"$2":'));
+        // 缺了相邻两项之间的逗号："a"\n"b"、}\n"b"
+        tries.push(tries[tries.length - 1].replace(/(["}\]0-9]|true|false|null)(\s*\n\s*)(["{[])/g, '$1,$2$3'));
+        for (const x of tries) {
             try {
-                return JSON.parse(fixed.slice(first, last + 1));
+                return JSON.parse(x);
             } catch (e) {
-                /* 放弃 */
+                /* 下一种 */
             }
         }
         throw new Error('JSON 解析失败');
+    }
+
+    /** 只是 JSON 块坏了（正文、摘要都好好的）的错误 */
+    const JSON_TAGS = ['改写判定', '世界书', '表格'];
+    function isJsonError(msg) {
+        return JSON_TAGS.some((t) => msg === `<${t}> 不是合法 JSON`);
+    }
+
+    /** 把回复里某个标签的内容换掉 */
+    function replaceTag(raw, tag, content) {
+        const s = String(raw || '');
+        const m = new RegExp(`<${escapeRegExp(tag)}>`, 'i').exec(s);
+        if (!m) return s;
+        const start = m.index + m[0].length;
+        const end = s.indexOf(`</${tag}>`, start);
+        if (end < 0) return s;
+        return s.slice(0, start) + content + s.slice(end);
     }
 
     function parsePatchLines(text) {
@@ -935,6 +995,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 
     function parseLayerResponse(raw, opts = {}) {
         const errors = [];
+        const warnings = [];
         const title = extractTag(raw, 'bt');
         const summary = extractTag(raw, '摘要');
         const patch = extractTag(raw, '补丁');
@@ -968,7 +1029,10 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                     resume: j.回归原文 === true || j.resume === true,
                 };
             } catch (e) {
-                errors.push('<改写判定> 不是合法 JSON');
+                if (opts.lenient) {
+                    warnings.push('<改写判定> 格式坏了，已按有没有 <改写正文> 判断');
+                    divergence.triggered = !opts.translate && rewritten.closed && !!rewritten.content;
+                } else errors.push('<改写判定> 不是合法 JSON');
             }
         }
         if (!opts.translate && divergence.triggered && !rewritten.closed) errors.push('触发了剧情改写但没有完整的 <改写正文>');
@@ -980,7 +1044,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 try {
                     worldbook = parseLooseJson(wb.content) || {};
                 } catch (e) {
-                    errors.push('<世界书> 不是合法 JSON');
+                    if (opts.lenient) warnings.push('<世界书> 格式坏了，本层的世界书更新跳过');
+                    else errors.push('<世界书> 不是合法 JSON');
                 }
             }
         }
@@ -991,7 +1056,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 try {
                     tableOps = parseLooseJson(tb.content) || {};
                 } catch (e) {
-                    errors.push('<表格> 不是合法 JSON');
+                    if (opts.lenient) warnings.push('<表格> 格式坏了，本层的表格更新跳过');
+                    else errors.push('<表格> 不是合法 JSON');
                 }
             }
         }
@@ -1003,6 +1069,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return {
             ok: errors.length === 0,
             errors,
+            // 只有 JSON 块坏了：正文能用，修格式就行，不用整层重写
+            jsonOnly: errors.length > 0 && errors.every(isJsonError),
+            warnings,
             title: title.content.replace(/\s+/g, ' ').trim(),
             summary: summary.content,
             patches,
@@ -1905,6 +1974,36 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             };
         }
 
+        /** 把坏掉的 JSON 块单独发给 AI 修，返回替换好的回复；请求失败就原样返回 */
+        async function repairJsonBlocks(i, raw, errors) {
+            const tags = JSON_TAGS.filter((t) => errors.includes(`<${t}> 不是合法 JSON`));
+            const blocks = tags.map((t) => `<${t}>\n${extractTag(raw, t).content}\n</${t}>`).join('\n\n');
+            const prompt = `下面几段本该是 JSON，但格式写坏了，解析不了。请只修正格式，让每段都是能被 JSON.parse 解析的合法 JSON：
+- 键和字符串一律用英文双引号，字符串里的双引号写成 \\"，换行写成 \\n
+- 不要尾逗号、注释、代码块标记
+- 内容一个字都不要改、不要增删条目
+- 原样保留外面的标签，只输出这几段，别的什么都不要写
+
+${blocks}`;
+            try {
+                if (E.stopRequested) throw new Error('ABORTED');
+                const messages = buildMessages(prompt);
+                const fixed = await cfg.callModel(messages, { layer: i, attempt: 0, prompt, purpose: 'repair' });
+                E.stats.inputTokens += estimateTokens(messages.map((m) => m.content).join('\n'));
+                E.stats.outputTokens += estimateTokens(fixed);
+                let out = raw;
+                for (const t of tags) {
+                    const x = extractTag(fixed, t);
+                    if (x.closed && x.content) out = replaceTag(out, t, x.content);
+                }
+                return out;
+            } catch (e) {
+                if (String(e.message || e) === 'ABORTED') throw e;
+                emit('layer-repair-failed', { index: i, error: String(e.message || e) });
+                return raw;
+            }
+        }
+
         async function processLayer(i, extra = {}) {
             const st = replay(i);
             const req = buildRequest(i, st, extra);
@@ -1924,9 +2023,19 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                     continue;
                 }
                 const layerNow = E.layers[i];
-                const parsed = parseLayerResponse(raw, { translate: !!layerNow.translate, bodyTag: settings.bodyTag });
+                const popts = { translate: !!layerNow.translate, bodyTag: settings.bodyTag };
+                let parsed = parseLayerResponse(raw, popts);
                 E.stats.inputTokens += estimateTokens(req.messages.map((m) => m.content).join('\n'));
                 E.stats.outputTokens += estimateTokens(raw);
+                // 正文没问题、只是 JSON 块写坏了：单独让 AI 修格式（只回几个 JSON，很省），
+                // 修不好就丢掉坏的那几块，保住正文，不整层重写
+                if (!parsed.ok && parsed.jsonOnly) {
+                    emit('layer-repair', { index: i, error: parsed.errors.join('；') });
+                    raw = await repairJsonBlocks(i, raw, parsed.errors);
+                    parsed = parseLayerResponse(raw, popts);
+                    if (!parsed.ok && parsed.jsonOnly) parsed = parseLayerResponse(raw, { ...popts, lenient: true });
+                    if (parsed.warnings.length) emit('layer-warn', { index: i, warnings: parsed.warnings });
+                }
                 if (!parsed.ok) {
                     lastErr = new Error(parsed.errors.join('；'));
                     emit('layer-retry', { index: i, attempt, error: lastErr.message });
@@ -1934,6 +2043,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 }
                 r.raw = raw;
                 r.parsed = parsed;
+                r.warnings = parsed.warnings;
                 const layer = E.layers[i];
                 const useRewrite = !!parsed.rewrittenText && (layer.translate || st.divergence.active || parsed.divergence.triggered);
                 if (useRewrite) {
@@ -2484,6 +2594,7 @@ ${sums}`;
         assemblePresetMessages,
         extractTag,
         parseLooseJson,
+        replaceTag,
         parsePatchLines,
         parseLayerResponse,
         applyPatches,

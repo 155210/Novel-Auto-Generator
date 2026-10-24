@@ -311,6 +311,27 @@ describe('解析回复', () => {
     });
 });
 
+describe('JSON 修复', () => {
+    it('中文引号、字符串里的换行、无、缺引号的键都能读', () => {
+        expect(C.parseLooseJson('无')).toEqual({});
+        expect(C.parseLooseJson('{“触发”: false， “说明”: “他说\n走吧”}')).toEqual({ 触发: false, 说明: '他说\n走吧' });
+        expect(C.parseLooseJson('{"内容": "第一行\n第二行"}').内容).toBe('第一行\n第二行');
+        expect(C.parseLooseJson('{触发: false, 规则: ""}')).toEqual({ 触发: false, 规则: '' });
+        expect(C.parseLooseJson('{"a": "他说"走"了"}').a).toBe('他说"走"了');
+    });
+
+    it('只有 JSON 块坏了时标出来，宽松模式丢掉坏块保住正文', () => {
+        const bad = reply({ patches: 'P2 | 你来了。” | +x' }).replace('<世界书>{}</世界书>', '<世界书>{"角色": {{</世界书>');
+        const r = C.parseLayerResponse(bad);
+        expect(r.ok).toBe(false);
+        expect(r.jsonOnly).toBe(true);
+        const l = C.parseLayerResponse(bad, { lenient: true });
+        expect(l.ok).toBe(true);
+        expect(l.warnings[0]).toContain('世界书');
+        expect(C.parseLayerResponse('<bt>x</bt>').jsonOnly).toBe(false);
+    });
+});
+
 describe('运行引擎', () => {
     // 每章补一段 600 字的雨声，让三章正好切成三层
     // 每章的填充段各不相同，免得被当成重复垃圾段删掉
@@ -363,6 +384,33 @@ describe('运行引擎', () => {
         await fresh.run();
         expect(fresh.exportTables()).toEqual(engine.exportTables());
         expect(fresh.renderFloors().map((f) => f.mes)).toEqual(engine.renderFloors().map((f) => f.mes));
+    });
+
+    it('只有 JSON 坏了：只发一次修格式请求，不重写正文', async () => {
+        const { engine, calls } = makeEngine((layer, last, n) => {
+            if (/只修正格式/.test(last)) return '<世界书>\n{"角色": {"路长远": {"内容": "修好了"}}}\n</世界书>';
+            const r = normal(layer);
+            return layer === 0 ? r.replace(/<世界书>[\s\S]*?<\/世界书>/, '<世界书>{"角色": {{坏</世界书>') : r;
+        });
+        await engine.run();
+        const l0 = calls.filter((c) => c.info.layer === 0);
+        expect(l0.length).toBe(2);
+        expect(l0[1].info.purpose).toBe('repair');
+        expect(engine.results[0].status).toBe('done');
+        expect(engine.results[0].parsed.worldbook.角色.路长远.内容).toBe('修好了');
+    });
+
+    it('修格式也修不好：丢掉坏的 JSON 块，正文照用', async () => {
+        const { engine, calls } = makeEngine((layer, last) => {
+            if (/只修正格式/.test(last)) return '还是坏的';
+            const r = normal(layer);
+            return layer === 0 ? r.replace(/<表格>[\s\S]*?<\/表格>/, '<表格>{坏</表格>') : r;
+        });
+        await engine.run();
+        expect(calls.filter((c) => c.info.layer === 0).length).toBe(2);
+        expect(engine.results[0].status).toBe('done');
+        expect(engine.results[0].warnings[0]).toContain('表格');
+        expect(engine.renderFloors()[0].mes).toContain('裘月寒抬眸道');
     });
 
     it('逐层跑完：补丁、称呼、表格、世界书都进楼层', async () => {
