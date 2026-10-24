@@ -780,6 +780,20 @@ describe('翻译模式', () => {
         expect(floors[0].mes).toContain('{{user}}推门而入。');
         expect(floors[0].mes).not.toContain('新术语');
         expect(floors[1].mes).toContain('#第2话：启程');
+        // 正文开头那行章节标题和楼层标题重复，去掉
+        expect(floors[0].body.startsWith('第1话')).toBe(false);
+        expect(floors[0].mes.split('#第1话：雨夜').length).toBe(2);
+    });
+
+    it('正文里的章节标题行改成 <bt>#第X话：标题</bt>', () => {
+        expect(C.formatBodyHeadings(['第2话　启程', '“走吧。”', '第三话 夜行', '第3话说的是……这句不是标题因为太长了太长了太长了太长了太长了太长了太长了太长了'], {}, '话')).toEqual([
+            '<bt>\n#第2话：启程\n</bt>',
+            '“走吧。”',
+            '<bt>\n#第3话：夜行\n</bt>',
+            '第3话说的是……这句不是标题因为太长了太长了太长了太长了太长了太长了太长了太长了',
+        ]);
+        expect(C.formatBodyHeadings(['第一章雨夜'], {}, '章')).toEqual(['<bt>\n#第1章：雨夜\n</bt>']);
+        expect(C.formatBodyHeadings(['', '第1话 雨夜', '正文', '\uE000第2章 新\uE001'], { chapterUnit: '话' }, '章', { dropFirst: true })).toEqual(['', '正文', '<bt>\n#第2话：新\n</bt>']);
     });
 
     it('术语表里删掉的词，AI 再报也不收；改过的译名优先', async () => {
