@@ -78,6 +78,17 @@ describe('清洗与分层', () => {
         expect(r.text.split('\n').filter(Boolean)).toEqual(['第一卷 山村', '1.雨夜', '路长远走进古庙。', '“嗯。”', '“嗯。”', '“嗯。”', '5.正文', '夏怜雪回头看他。']);
         expect(r.emptyChapters).toEqual(['2.垃圾一', '3.垃圾二', '4.垃圾三']);
         expect(r.inlineRemoved).toBe(7);
+        // 清掉了什么都记下来给用户核对：水印带章节，重复段同一段只记一次
+        expect(r.log.inline[0]).toEqual({ chapter: '1.雨夜', text: 'bg90○ cc', line: '路长远走进古庙。bg90○ cc' });
+        expect(r.log.repeated.length).toBeLessThan(r.repeated);
+        expect(r.log.repeated[0].chapter).toBe('2.垃圾一');
+        expect(r.log.repeated.find((x) => x.text === '偶尔混进来的一行别的话也一起删').reason).toBe('chapter');
+    });
+
+    it('广告行记下所在章节和连带删掉的上一行', () => {
+        const r = C.cleanText('第一章 开始\n正文一。\n修仙界只有妖女了是吗\n请收藏：\nwww.example.com\n正文二。', C.DEFAULT_AD_PATTERNS, true, C.DEFAULT_CHAPTER_REGEX);
+        expect(r.log.ads[0]).toEqual({ chapter: '第一章 开始', text: '请收藏：', prev: '修仙界只有妖女了是吗' });
+        expect(r.log.ads.map((a) => a.text)).toContain('www.example.com');
     });
 
     it('按字数切层并对齐到章节标题', () => {
@@ -510,6 +521,22 @@ describe('翻译模式', () => {
         expect(floors[1].mes).toContain('#第2话：启程');
     });
 
+    it('术语表里删掉的词，AI 再报也不收；改过的译名优先', async () => {
+        const cfg = {
+            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 0, tablesEnabled: false },
+            seedGlossary: [{ source: '月寒', target: '月寒寒' }],
+            glossaryRemoved: ['長安道人'],
+            callModel: async (messages, info) => tr(info.layer),
+        };
+        const engine = C.createEngine(cfg);
+        engine.prepare(JP);
+        await engine.run();
+        expect(engine.finalState().glossary.map((g) => `${g.source}=${g.target}`)).toEqual(['月寒=月寒寒', '路長遠=路长远']);
+        // 引擎每次取最新的：恢复删掉的词后重放就会收
+        cfg.glossaryRemoved = [];
+        expect(engine.finalState().glossary.map((g) => g.source)).toContain('長安道人');
+    });
+
     it('整层重写时漏掉的插图占位行按位置补回', () => {
         const src = [{ text: 'a' }, { text: '〔插图1〕' }, { text: 'b' }, { text: 'c' }, { text: '〔插图2〕' }];
         expect(C.ensureImageMarkers(src, ['A', 'B', 'C', '〔插图2〕'])).toEqual(['A', '〔插图1〕', 'B', 'C', '〔插图2〕']);
@@ -618,6 +645,24 @@ describe('酒馆预设条目', () => {
         await engine.run();
         expect(seen[0]).toEqual({ role: 'system', content: '系统' });
         expect(seen[2].content).toContain('## 本层正文');
+    });
+});
+
+describe('每层摘要和剧情条目', () => {
+    it('摘要写法可以改，剧情条目的位置、深度、顺序按设置导出', async () => {
+        let prompt;
+        const engine = C.createEngine({
+            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false, summaryGuide: '按「时间｜地点｜人物｜事件」写，50 字内', plotPosition: '4', plotDepth: 2, plotOrder: 300 },
+            callModel: async (messages) => {
+                prompt = messages.map((m) => m.content).join('\n');
+                return reply({ title: '雨夜', summary: '夜｜古庙｜路长远｜避雨' });
+            },
+        });
+        engine.prepare('第一章 开始\n' + '正文。'.repeat(50));
+        await engine.run();
+        expect(prompt).toContain('<摘要>按「时间｜地点｜人物｜事件」写，50 字内</摘要>');
+        const e = Object.values(engine.exportWorldbook().entries).find((x) => x.comment.startsWith('剧情'));
+        expect([e.comment, e.position, e.depth, e.order]).toEqual(['剧情 - 第1层 雨夜', 4, 2, 300]);
     });
 });
 

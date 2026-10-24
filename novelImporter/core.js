@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.3.0';
+    const VERSION = '1.4.0';
 
     // ============================================
     // 默认配置
@@ -166,6 +166,11 @@
         worldbookPrompt: '',
         worldbookContextChars: 6000,
         plotSummaryEntries: true,
+        // 每层 <摘要> 的写法；摘要导出为「剧情」条目，也用作前情提要和角色卡简介
+        summaryGuide: '本层剧情摘要，100 到 200 字，写清楚谁做了什么',
+        plotPosition: 0,
+        plotDepth: 4,
+        plotOrder: 50,
 
         // 表格
         tablesEnabled: true,
@@ -345,12 +350,21 @@
         let lines = normalizeText(text).split('\n');
         let removed = 0;
         let inlineRemoved = 0;
+        // 清掉了什么都记下来，方便用户核对有没有删错（每类最多记 LOG_MAX 条）
+        const LOG_MAX = 3000;
+        const log = { ads: [], inline: [], repeated: [] };
+        const push = (list, item) => list.length < LOG_MAX && list.push(item);
+        let chap = '';
+        const track = (l) => {
+            if (protect && l && isChapterTitle(l, protect)) chap = l;
+        };
         if (inline.length) {
             lines = lines.map((line) => {
+                track(line);
                 let l = line;
                 for (const r of inline) {
                     r.lastIndex = 0;
-                    l = l.replace(r, () => (inlineRemoved++, ''));
+                    l = l.replace(r, (m) => (inlineRemoved++, push(log.inline, { chapter: chap, text: m, line }), ''));
                 }
                 return l === line ? line : l.trim();
             });
@@ -374,19 +388,32 @@
             };
             const kept = [];
             let chapter = [];
+            let title = '';
+            const seen = new Map();
             const flush = () => {
                 const total = chapter.reduce((n, l) => n + l.length, 0);
                 const junk = chapter.reduce((n, l) => n + (isJunk(l) ? l.length : 0), 0);
                 const dropAll = total > 0 && junk / total >= 0.6;
                 for (const l of chapter) {
-                    if (l && (dropAll || isJunk(l))) repeated++;
-                    else kept.push(l);
+                    if (l && (dropAll || isJunk(l))) {
+                        repeated++;
+                        // 同一段只记一次，记下出现的次数和第一次所在的章
+                        const k = key(l);
+                        const hit = seen.get(k);
+                        if (hit) hit.count++;
+                        else if (log.repeated.length < LOG_MAX) {
+                            const item = { chapter: title, text: l, count: 1, reason: isJunk(l) ? 'repeat' : 'chapter' };
+                            seen.set(k, item);
+                            log.repeated.push(item);
+                        }
+                    } else kept.push(l);
                 }
                 chapter = [];
             };
             for (const l of lines) {
                 if (protect && isChapterTitle(l, protect)) {
                     flush();
+                    title = l;
                     kept.push(l);
                 } else chapter.push(l);
             }
@@ -395,18 +422,23 @@
         }
 
         const out = [];
+        chap = '';
         for (const line of lines) {
+            track(line);
             if (line && regs.some((r) => r.test(line))) {
                 removed++;
+                let prev = '';
                 if (removePrev) {
                     // 回退到上一条非空行
                     let k = out.length - 1;
                     while (k >= 0 && !out[k]) k--;
                     if (k >= 0 && out[k].length <= 40 && !SENTENCE_END.test(out[k]) && !regs.some((r) => r.test(out[k])) && !(protect && protect.test(out[k]))) {
+                        prev = out[k];
                         out.splice(k, 1);
                         removed++;
                     }
                 }
+                push(log.ads, { chapter: chap, text: line, prev });
                 continue;
             }
             out.push(line);
@@ -433,7 +465,7 @@
                 result = out.filter((l) => (l.length > 0 ? !drop.has(++n) : true));
             }
         }
-        return { text: result.join('\n'), removed, repeated, inlineRemoved, emptyChapters };
+        return { text: result.join('\n'), removed, repeated, inlineRemoved, emptyChapters, log };
     }
 
     function splitParagraphs(text) {
@@ -760,6 +792,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const prevSummary = (state.summaries || []).slice(-2).map((x) => `- ${x.title}：${x.summary}`).join('\n');
         if (prevSummary) parts.push(`## 前情提要\n${prevSummary}`);
         let format = OUTPUT_FORMAT.replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
+        const guide = String(s.summaryGuide || '').trim();
+        if (guide) format = format.replace('<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>', () => `<摘要>${guide}</摘要>`);
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
         if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
         parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : ''));
@@ -1232,13 +1266,16 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 k++;
             }
         }
+        const plot = opts.plot || {};
         for (const p of opts.plotEntries || []) {
             entries[uid] = makeWorldEntry(uid, {
                 key: uniq((p.keys || []).map(conv)),
                 comment: `剧情 - ${conv(p.title)}`,
                 content: conv(p.content),
                 constant: false,
-                order: 50,
+                position: finiteInt(plot.position, 0),
+                depth: finiteInt(plot.depth, 4),
+                order: finiteInt(plot.order, 50, Number.MIN_SAFE_INTEGER),
             });
             uid++;
         }
@@ -1655,6 +1692,12 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             };
         }
 
+        /** 用户在术语表里删掉的词，AI 之后再报也不收 */
+        function keptTerms(terms) {
+            const removed = new Set(cfg.glossaryRemoved || []);
+            return removed.size ? normalizeGlossary(terms).filter((t) => !removed.has(t.source)) : terms;
+        }
+
         /** 有预设条目时按条目拼，否则用旧的消息链 */
         function buildMessages(prompt) {
             return cfg.preset ? assemblePresetMessages(cfg.preset, prompt, cfg.substitute) : applyMessageChain(prompt, cfg.messageChain);
@@ -1667,8 +1710,10 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 
         function replay(upTo) {
             const sig = JSON.stringify(settings) + '|' + E.layers.length;
-            if (replayCache.sig !== sig || replayCache.tpl !== cfg.tableTemplate || replayCache.seed !== cfg.seedWorldbook || replayCache.gloss !== cfg.seedGlossary) {
-                Object.assign(replayCache, { sig, tpl: cfg.tableTemplate, seed: cfg.seedWorldbook, gloss: cfg.seedGlossary, states: [], refs: [] });
+            const gloss = cfg.seedGlossary;
+            const removed = cfg.glossaryRemoved;
+            if (replayCache.sig !== sig || replayCache.tpl !== cfg.tableTemplate || replayCache.seed !== cfg.seedWorldbook || replayCache.gloss !== gloss || replayCache.removed !== removed) {
+                Object.assign(replayCache, { sig, tpl: cfg.tableTemplate, seed: cfg.seedWorldbook, gloss, removed, states: [], refs: [] });
             }
             let k = 0;
             const max = Math.min(upTo, replayCache.states.length - 1);
@@ -1710,7 +1755,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 tables: st.tables,
                 divergence: clone(st.divergence),
                 summaries: st.summaries.concat([{ layer: i, title: p.title, summary: p.summary }]),
-                glossary: layer.translate && settings.glossaryEnabled ? mergeGlossary(st.glossary, p.terms) : st.glossary,
+                glossary: layer.translate && settings.glossaryEnabled ? mergeGlossary(st.glossary, keptTerms(p.terms)) : st.glossary,
             };
             next.aliases = mergeAliases(st.aliases, p.aliases, {
                 protagonistName: settings.protagonistName,
@@ -1764,6 +1809,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             E.stats.repeatedLines = cleaned.repeated;
             E.stats.inlineAds = cleaned.inlineRemoved;
             E.stats.emptyChapters = cleaned.emptyChapters;
+            E.stats.cleanLog = cleaned.log;
             const paras = splitParagraphs(cleaned.text);
             E.layers = splitLayers(paras, settings);
             const translate = settings.translateMode === 'on' || (settings.translateMode === 'auto' && detectForeign(cleaned.text));
@@ -1964,6 +2010,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 aliases: st.aliases,
                 target,
                 plotEntries: plot,
+                plot: { position: settings.plotPosition, depth: settings.plotDepth, order: settings.plotOrder },
             });
         }
 
