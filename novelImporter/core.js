@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.1';
+    const VERSION = '1.4.2';
 
     // ============================================
     // 默认配置
@@ -657,9 +657,18 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
 - <改写判定> 的 "说明" 写本层又改了什么，供后续层参考`;
     }
 
+    /** 主角原名：用户填的优先，没填就用 AI 在前面的层认出来的 */
+    function protagonistOf(settings, state) {
+        return String(settings.protagonistName || (state && state.protagonist) || '').trim();
+    }
+
     function buildAliasSection(settings, state) {
-        const name = settings.protagonistName || '';
-        if (!name) return '';
+        const name = protagonistOf(settings, state);
+        if (!name) {
+            return `## 主角
+还不知道主角是谁。请根据本层判断主角（故事的主人公、叙述视角所跟随的人物），把主角的名字写进 <主角>：写正文里实际出现的名字（翻译时写中文译名），只写一个；本层还看不出主角名字就留空。
+- 第一人称叙述里的「我」不算称呼，不要写进 <称呼>`;
+        }
         const aliases = uniq([name, ...(state.aliases || [])]);
         return `## 主角
 主角是「${name}」，已知称呼：${aliases.join('、')}
@@ -806,6 +815,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (guide) format = format.replace('<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>', () => `<摘要>${guide}</摘要>`);
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
         if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
+        if (!protagonistOf(s, state)) format += '\n<主角>主角的名字，看不出就留空</主角>';
         parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : ''));
         if (extra.feedback) {
             parts.push(`## 用户对上一次结果的修改意见（优先遵守）\n${extra.feedback}`);
@@ -902,6 +912,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const tb = extractTag(raw, '表格');
         const big = extractTag(raw, '大总结');
         const terms = extractTag(raw, '新术语');
+        const hero = extractTag(raw, '主角');
 
         if (!title.closed) errors.push('缺少 <bt> 标题');
         if (!summary.closed) errors.push('缺少 <摘要>');
@@ -969,6 +980,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             tableOps,
             bigSummary: big.closed ? big.content : '',
             terms: terms.closed ? parseGlossaryLines(terms.content) : [],
+            // 只认一个短名字；「无」「未知」之类当没认出来
+            protagonist: (() => {
+                const n = hero.closed ? hero.content.split(/[/／、,，\n]/)[0].trim() : '';
+                return n && n.length <= 12 && !/^(无|未知|不明|不确定|空)$/.test(n) && !/[看不出留]/.test(n) ? n : '';
+            })(),
         };
     }
 
@@ -1699,6 +1715,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 divergence: { active: false, startLayer: -1, notes: [] },
                 summaries: [],
                 glossary: normalizeGlossary(cfg.seedGlossary),
+                protagonist: '', // 没填主角原名时，AI 认出来的主角
             };
         }
 
@@ -1766,9 +1783,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 divergence: clone(st.divergence),
                 summaries: st.summaries.concat([{ layer: i, title: p.title, summary: p.summary }]),
                 glossary: layer.translate && settings.glossaryEnabled ? mergeGlossary(st.glossary, keptTerms(p.terms)) : st.glossary,
+                // 第一次认出来的就定下来，后面的层不再改
+                protagonist: st.protagonist || (settings.protagonistName ? '' : p.protagonist || ''),
             };
             next.aliases = mergeAliases(st.aliases, p.aliases, {
-                protagonistName: settings.protagonistName,
+                protagonistName: protagonistOf(settings, next),
                 blacklist: settings.aliasBlacklist,
                 target: aliasTargetOf(settings),
             });
@@ -2040,7 +2059,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             const st = finalState();
             const target = aliasTargetOf(settings);
             const chars = st.worldbook.角色 || {};
-            const name = settings.protagonistName;
+            const name = protagonistOf(settings, st);
             let hit = Object.entries(chars).find(([, e]) => e.定位 === '主角');
             if (!hit && name) hit = Object.entries(chars).find(([n, e]) => n === name || (e.关键词 || []).includes(name));
             if (!hit) return { name: target, description: '' };
@@ -2412,6 +2431,7 @@ ${sums}`;
         parseGlossaryLines,
         selectGlossary,
         buildOutputRules,
+        protagonistOf,
         aliasTargetOf,
         cleanCell,
         estimateTokens,
