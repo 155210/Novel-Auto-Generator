@@ -678,6 +678,22 @@ describe('运行引擎', () => {
         expect(engine.results[1]).toBe(null);
     });
 
+    it('生成简介默认不套预设，格式放最后，处理中标记 running', async () => {
+        let seen;
+        const { engine } = makeEngine((layer, last) => (/角色卡信息/.test(last) ? '<简介>一部小说</简介>\n<场景>导入</场景>' : normal(layer)));
+        await engine.run();
+        const req = engine.buildCardInfoRequest();
+        expect(req.messages.length).toBe(1);
+        expect(req.prompt).toContain('不是续写小说');
+        expect(req.prompt.indexOf('## 分层摘要') < req.prompt.indexOf('## 输出格式')).toBe(true);
+        const job = engine.generateCardInfo();
+        seen = engine.running;
+        const info = await job;
+        expect(seen).toBe(true);
+        expect(engine.running).toBe(false);
+        expect(info).toEqual({ description: '一部小说', scenario: '导入' });
+    });
+
     it('每层可以提前写专属提示词，跑到这层时放在提示词最后', async () => {
         const { engine, calls } = makeEngine(normal);
         engine.setLayerNote(1, '  这层女主先开口  ');
