@@ -2328,11 +2328,27 @@
     }
 
     /** 这一层发出去的提示词：可以改本模块拼的那部分，然后用它重做这层 */
+    /** 提示词构成：各部分字数和占比，重复发送的大段标出来 */
+    function breakdownHtml(r) {
+        const b = C.promptBreakdown(r.prompt, r.request);
+        if (!b.total) return '';
+        const pct = (n) => `${Math.round((n / b.total) * 100)}%`;
+        const rows = b.parts.map((x) => `<tr><td>${esc(x.name)}</td><td class="nim-num">${fmtNum(x.chars)}</td><td class="nim-num">${pct(x.chars)}</td></tr>`).join('');
+        const dup = b.promptCopies > 1 ? `<div class="nim-alert warn">本模块的提示词在完整消息里出现了 ${b.promptCopies} 次，被重复发送了（检查预设里是不是有多个聊天记录位置）</div>` : '';
+        const rep = b.repeats.length
+            ? `<div class="nim-alert warn">完整消息里有 ${b.repeats.length} 段 200 字以上的内容重复出现：${b.repeats
+                  .slice(0, 5)
+                  .map((x) => `「${esc(x.text.slice(0, 30))}…」${x.count} 次（${fmtNum(x.text.length)} 字）`)
+                  .join('；')}</div>`
+            : '';
+        return `<details class="nim-fold"><summary>提示词构成（共 ${fmtNum(b.total)} 字）</summary>${dup}${rep}<table class="nim-bd"><tr><th>部分</th><th>字数</th><th>占比</th></tr>${rows}</table><div class="nim-muted">按字数算，不是 token；中文大约 1 字 1 token 多一点。</div></details>`;
+    }
+
     function promptHtml(r) {
         if (!r.request && !r.prompt) return '';
         const full = (r.request || []).map((m) => `【${m.role}】\n${m.content}`).join('\n\n');
-        return `<details class="nim-fold"><summary>本层发出去的提示词${r.customPrompt ? '（用的是你改过的）' : ''}</summary>
-          ${full ? `<details class="nim-fold"><summary>完整消息（套上预设后的，${(r.request || []).length} 条）</summary><pre class="nim-pre">${esc(full)}</pre></details>` : ''}
+        return `${breakdownHtml(r)}<details class="nim-fold"><summary>本层发出去的提示词${r.customPrompt ? '（用的是你改过的）' : ''}</summary>
+          ${full ? `<details class="nim-fold"><summary>完整消息（套上预设后的，${(r.request || []).length} 条）</summary><div class="nim-row"><button id="nim-req-export" class="nim-btn sm">导出完整消息为文件</button></div><pre class="nim-pre">${esc(full)}</pre></details>` : ''}
           ${
               r.prompt
                   ? `<div class="nim-muted">下面是本模块拼的部分（任务、规则、世界书、表格、原文），发送时会照常套上预设。改完点按钮，用改过的重做这一层，之后的层作废。预设里的条目在设置「酒馆预设」里改。</div>
@@ -2517,6 +2533,19 @@
                 }
                 saveProgress();
                 renderAll();
+            };
+        const reqBtn = $('nim-req-export');
+        if (reqBtn)
+            reqBtn.onclick = () => {
+                const b = C.promptBreakdown(r.prompt, r.request);
+                const head = [
+                    `第 ${i + 1} 层发出去的完整消息（${(r.request || []).length} 条，共 ${b.total} 字）`,
+                    '提示词构成：' + b.parts.map((x) => `${x.name} ${x.chars} 字`).join('，'),
+                    b.promptCopies > 1 ? `本模块的提示词出现了 ${b.promptCopies} 次` : '',
+                    b.repeats.length ? `重复出现的大段：${b.repeats.length} 段` : '',
+                ].filter(Boolean);
+                const body = (r.request || []).map((m, k) => `===== 第 ${k + 1} 条消息【${m.role}】${String(m.content || '').length} 字 =====\n${m.content}`).join('\n\n');
+                download(head.join('\n') + '\n\n' + body, `${baseName()}-第${i + 1}层-完整消息.txt`, 'text/plain');
             };
         const redoBtn = $('nim-prompt-redo');
         if (redoBtn)
@@ -3023,6 +3052,9 @@ select.nim-input{appearance:auto;}
 .nim-cl-line .nim-btn{flex:none;}
 .nim-cl-line .nim-btn.is-on{background:var(--ok);border-color:transparent;color:#0b1a12;}
 .nim-cl-prev{font-size:12px;color:var(--muted);}
+.nim-bd{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0;}
+.nim-bd th,.nim-bd td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;}
+.nim-bd .nim-num{text-align:right;white-space:nowrap;}
 .nim-keep-later{display:flex;align-items:center;gap:6px;margin:6px 0;font-size:12px;}
 .nim-cl-mark{background:rgba(240,100,100,.25);color:var(--text);border-radius:3px;padding:0 2px;}
 .nim-wr-to{background:rgba(80,200,120,.25);color:var(--text);border-radius:3px;padding:0 2px;margin-left:2px;text-decoration:none;}
