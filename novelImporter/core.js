@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.39';
+    const VERSION = '1.4.40';
 
     // ============================================
     // 默认配置
@@ -995,6 +995,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const wrLines = aiReplaceLines(s);
         if (wrLines.length) parts.push(`别忘了按「名称和称呼替换」按语境换掉：${wrLines.join('；')}`);
         // 修改要求放在最后：前面有上一次的输出和整层原文，放中间 AI 很容易看漏
+        if ((layer.note || '').trim()) parts.push(`## 这一层的额外要求（用户提前为第 ${layer.index + 1} 层写的，必须做到；其他照上面的要求和格式）\n${layer.note.trim()}`);
         if (extra.feedback) parts.push(`## 这次重做的修改要求（最优先，必须做到；其他照上面的要求和格式）\n${extra.feedback}`);
         return parts.join('\n\n');
     }
@@ -2244,7 +2245,10 @@ ${tr ? '- 译文里直接用新的写法' : '- 原文里出现要换的词的地
             E.stats.emptyChapters = cleaned.emptyChapters;
             E.stats.cleanLog = cleaned.log;
             const paras = splitParagraphs(cleaned.text);
+            // 重新分层时，每层提前写好的提示词按这层第一段对回去
+            const notes = new Map((E.layers || []).filter((l) => l.note && l.paras && l.paras[0]).map((l) => [l.paras[0].text, l.note]));
             E.layers = splitLayers(paras, settings);
+            for (const l of E.layers) if (l.paras[0] && notes.has(l.paras[0].text)) l.note = notes.get(l.paras[0].text);
             const translate = settings.translateMode === 'on' || (settings.translateMode === 'auto' && detectForeign(cleaned.text));
             E.layers.forEach((l) => (l.translate = translate));
             E.stats.translate = translate;
@@ -2715,6 +2719,15 @@ ${blocks}`;
             return { rules: lines.map((l, ri) => ({ text: l, count: hits.filter((h) => h.rule === ri).length })), hits };
         }
 
+        /** 给第 i 层提前写提示词，处理到这层（包括重做）时一起发给 AI；空字符串就是删掉 */
+        function setLayerNote(i, text) {
+            const l = E.layers[i];
+            if (!l) return;
+            const t = String(text || '').trim();
+            if (t) l.note = t;
+            else delete l.note;
+        }
+
         /** 从第 i 层起全部重跑 */
         function resetFrom(i) {
             for (let k = i; k < E.results.length; k++) E.results[k] = null;
@@ -2950,6 +2963,7 @@ ${sums}`;
             regenJson,
             applyReplaceToResults,
             previewReplaceInResults,
+            setLayerNote,
             resetFrom,
             replay,
             renderFloors,

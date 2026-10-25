@@ -2167,6 +2167,7 @@
             if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag">${r.patchStats.failed.length} 条补丁没对上</span>`);
             if (r && r.askedBigSummary) flags.push('<span class="nim-tag blue">大总结</span>');
             if (l.translate) flags.push('<span class="nim-tag violet">翻译</span>');
+            if (l.note) flags.push('<span class="nim-tag blue" title="这层有提前写好的提示词">专属提示词</span>');
             rows.push(
                 `<button class="nim-layer ${State.selected === i ? 'sel' : ''}" data-i="${i}" title="${STATE_TEXT[st] || ''}">
                    <span class="nim-dot ${st}"></span><span class="nim-layer-no">${i + 1}</span>
@@ -2365,6 +2366,11 @@
               <div class="nim-row"><button id="nim-json-go" class="nim-btn sm">只重新输出 JSON</button><span class="nim-muted">只要改写判定、世界书、表格三段，之后的层保留</span></div>
             </details>`;
         }
+        const note = e.layers[i].note || '';
+        body += `<details class="nim-fold"${note || !r ? ' open' : ''}><summary>这层的专属提示词${note ? '<span class="nim-muted">：已填</span>' : ''}</summary>
+              <textarea id="nim-layer-note" class="nim-input nim-textarea" rows="3" placeholder="提前写好，处理到这层时（包括重做）放在提示词最后一起发给 AI。例如：这层把告白那段改成女主先开口；这层开始叫主角「远」">${esc(note)}</textarea>
+              <div class="nim-row"><button id="nim-layer-note-save" class="nim-btn sm">保存</button><span class="nim-muted">${r && r.status === 'done' ? '这层已经生成过了，要生效得重做这层' : '自动保存，跑到这层时生效'}</span></div>
+            </details>`;
         if (r) body += promptHtml(r);
         if (r) body += callsHtml(r);
         body += `<details class="nim-fold"><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
@@ -2377,6 +2383,21 @@
             : '';
         el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
         bindHlNav();
+        const noteEl = $('nim-layer-note');
+        const saveNote = () => {
+            const t = noteEl.value.trim();
+            e.setLayerNote(i, t);
+            saveProgress();
+            renderLayers();
+            toast(t ? '已保存，跑到这层时一起发给 AI' : '已删掉这层的专属提示词', 'success');
+        };
+        // 边打边记到层上，处理中界面刷新也不会丢字
+        noteEl.addEventListener('input', () => e.setLayerNote(i, noteEl.value));
+        noteEl.addEventListener('change', () => {
+            saveProgress();
+            renderLayers();
+        });
+        $('nim-layer-note-save').onclick = saveNote;
         const fbBtn = $('nim-layer-fb-go');
         if (fbBtn)
             fbBtn.onclick = async () => {
