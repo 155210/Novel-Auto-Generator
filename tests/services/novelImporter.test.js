@@ -578,6 +578,7 @@ describe('运行引擎', () => {
         const { engine } = makeEngine(normal);
         await engine.run();
         expect(engine.renderFloors()[0].mes).toContain('裘月寒');
+        engine.settings.wordReplaceMode = 'text';
         engine.settings.wordReplace = '裘月寒 → 裘寒月\n/雨+/ -> 风\n不完整的一行\n推门 →';
         const f = engine.renderFloors()[0];
         expect(f.mes).not.toContain('裘月寒');
@@ -585,6 +586,21 @@ describe('运行引擎', () => {
         expect(f.mes).not.toContain('推门');
         expect(JSON.stringify(engine.exportWorldbook())).not.toContain('雨');
         expect(C.parseWordReplace('a → b\n/[/ → x\n没箭头').length).toBe(1);
+    });
+
+    it('词语替换默认交给 AI 按语境换，导出时不再按文字换', async () => {
+        const { engine, calls } = makeEngine(normal, { wordReplace: '路长远 → 路远\n推门 →' });
+        await engine.run();
+        const prompt = calls[0].messages[calls[0].messages.length - 1].content;
+        expect(prompt).toContain('## 名称和称呼替换');
+        expect(prompt).toContain('- 路长远 → 路远');
+        expect(prompt).toContain('- 推门 → （删掉）');
+        expect(prompt).toContain('用「=」补丁改');
+        expect(prompt.trim().endsWith('推门 → （删掉）')).toBe(true);
+        expect(engine.renderFloors()[0].mes).toContain('推门');
+        const text = makeEngine(normal, { wordReplace: '路长远 → 路远', wordReplaceMode: 'text' });
+        await text.engine.run();
+        expect(text.calls[0].messages[text.calls[0].messages.length - 1].content).not.toContain('名称和称呼替换');
     });
 
     it('词语替换可以直接写进已生成的层', async () => {
