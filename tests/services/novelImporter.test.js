@@ -223,6 +223,18 @@ describe('世界书', () => {
         expect(r.worldbook.道具).toBeUndefined();
     });
 
+    it('看过的条目 AI 只回了追加的一段时，接在旧内容后面，不覆盖', () => {
+        const old = { 角色: { 椎名美步: { 关键词: ['椎名美步'], 内容: '**背景**：' + '很长的旧设定。'.repeat(20) } } };
+        const opts = { providedNames: new Set(['角色/椎名美步']) };
+        const a = C.mergeWorldbook(old, { 角色: { 椎名美步: { 内容: '# NSFW追加\n**关键事件追加**：' + '新内容。'.repeat(30) } } }, opts);
+        expect(a.worldbook.角色.椎名美步.内容).toContain('很长的旧设定');
+        expect(a.worldbook.角色.椎名美步.内容).toContain('NSFW追加');
+        expect(a.log[0].type).toBe('append');
+        const b = C.mergeWorldbook(old, { 角色: { 椎名美步: { 内容: '**背景**：' + '改写整合后的完整设定。'.repeat(12) } } }, opts);
+        expect(b.worldbook.角色.椎名美步.内容).not.toContain('很长的旧设定');
+        expect(b.log[0].type).toBe('replace');
+    });
+
     it('导出成酒馆格式，注释沿用「分类 - 名称」，称呼一起替换', () => {
         const st = C.worldbookToST(
             { 角色: { 路长远: { 关键词: ['路长远', '长安道人'], 内容: '路长远是主角' } } },
@@ -860,7 +872,8 @@ describe('运行引擎', () => {
         // 世界书：主角条目 + 剧情条目，主角人设可单独导出
         const wb = engine.exportWorldbook();
         expect(Object.values(wb.entries).map((e) => e.comment)).toContain('角色 - {{user}}');
-        expect(engine.exportPersona().description).toBe('{{user}}第3层');
+        // 第 3 层回的内容比旧内容短一大截，当补充接在后面，旧信息不丢
+        expect(engine.exportPersona().description).toBe('{{user}}第1层\n\n{{user}}第2层\n\n{{user}}第3层');
     });
 
     it('格式错误会重试', async () => {
