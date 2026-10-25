@@ -256,7 +256,7 @@
             },
             { key: 'jsonReminder', label: '输出格式后面的 JSON 提醒', type: 'textarea', rows: 3, reset: true },
             { key: 'extraRules', label: '其他规则（随便写，会原样放进提示词）', type: 'textarea', rows: 3 },
-            { key: 'prevTailChars', label: '带上一层正文结尾的字数', type: 'number', hint: '让本层开头和上一层接得上；0 不带。取的是上一层处理完的正文（补丁、翻译、改写后的）' },
+            { key: 'prevTailChars', label: '带上一层正文结尾的字数', type: 'number', hint: '让本层开头和上一层接得上；0 不带。取的是上一层处理完的正文（补丁、翻译、改写后的）；翻译时还会带上一层原文结尾的同样字数，让 AI 补上漏译的最后几句' },
             { key: 'carryTags', label: '上一层回复里一起发的标签', type: 'text', hint: '逗号分隔，比如 Plotline, Calculated_data。从上一层 AI 的原始回复里取（楼层里没有也行），原样带给本层；哪层没输出就沿用最近一次的' },
             { key: 'divergenceEnabled', label: '启用剧情改写强规则', type: 'check' },
             { key: 'divergenceRules', label: '触发剧情改写的情节（每行一条，可以随意加）', type: 'textarea', rows: 4 },
@@ -2197,6 +2197,14 @@
         );
     }
 
+    /** 3725000 → 「1 小时 2 分」；不到 1 分钟写「不到 1 分钟」 */
+    function fmtDuration(ms) {
+        const m = Math.round(ms / 60000);
+        if (m < 1) return '不到 1 分钟';
+        const h = Math.floor(m / 60);
+        return h ? `${h} 小时${m % 60 ? ` ${m % 60} 分` : ''}` : `${m} 分钟`;
+    }
+
     function renderProgress() {
         const e = State.engine;
         const total = e ? e.layers.length : 0;
@@ -2205,7 +2213,8 @@
         const bar = $('nim-progress-bar');
         if (bar) bar.style.width = `${pct}%`;
         const t = $('nim-progress');
-        if (t) t.textContent = total ? `${done} / ${total} 层 · ${pct}%` : '还没有分层';
+        const eta = e && done < total ? e.estimateRemaining() : 0;
+        if (t) t.textContent = total ? `${done} / ${total} 层 · ${pct}%${eta ? ` · 约剩 ${fmtDuration(eta)}` : ''}` : '还没有分层';
         const tk = $('nim-tokens');
         if (tk) tk.textContent = e ? `${e.stats.estimated ? '估算 ' : ''}输入 ${fmtNum(e.stats.inputTokens)}${e.stats.cachedTokens ? `（缓存 ${fmtNum(e.stats.cachedTokens)}）` : ''} · 输出 ${fmtNum(e.stats.outputTokens)} tokens` : '';
     }
