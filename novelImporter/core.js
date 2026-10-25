@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.38';
+    const VERSION = '1.4.39';
 
     // ============================================
     // 默认配置
@@ -186,7 +186,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         titleTag: 'bt',
         floorTags: '',
         floorTagsBefore: '', // 额外放在标题和正文之间的标签，逗号分隔
-        wordReplace: '', // 词语替换：每行「原词 → 新词」，导出和导入酒馆时替换 // 额外放进楼层的标签：从 AI 原始回复里取，放在正文后面，逗号分隔
+        wordReplace: '', // 词语替换：每行「原词 → 新词」
+        wordReplaceMode: 'ai', // ai：写进提示词让 AI 输出时按语境换；text：导出和导入酒馆时按文字直接换 // 额外放进楼层的标签：从 AI 原始回复里取，放在正文后面，逗号分隔
         bodyTag: '正文',
         titleMode: 'ai', // ai：AI 起标题；original：用原文章节标题
         titleFormat: '#第{n}{unit}：{title}',
@@ -953,6 +954,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (div) parts.push(div);
         const alias = buildAliasSection(s, state);
         if (alias) parts.push(alias);
+        const wr = buildWordReplaceSection(s, tr);
+        if (wr) parts.push(wr);
         if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, state, layerText));
         if (s.worldbookEnabled) {
             parts.push(buildWorldbookSection(s) + (tr ? '\n- 条目名和内容用中文译名；"关键词" 里同时写中文译名和原文写法（方便后面的层按原文找到这个条目）' : ''));
@@ -989,6 +992,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
         // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
         parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + String(s.jsonReminder ?? JSON_REMINDER).trim());
+        const wrLines = aiReplaceLines(s);
+        if (wrLines.length) parts.push(`别忘了按「名称和称呼替换」按语境换掉：${wrLines.join('；')}`);
         // 修改要求放在最后：前面有上一次的输出和整层原文，放中间 AI 很容易看漏
         if (extra.feedback) parts.push(`## 这次重做的修改要求（最优先，必须做到；其他照上面的要求和格式）\n${extra.feedback}`);
         return parts.join('\n\n');
@@ -1578,6 +1583,35 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         let t = String(text ?? '');
         for (const r of rules || []) t = t.replace(r.re, r.to);
         return t;
+    }
+
+    /** 导出时按文字直接替换的规则；交给 AI 替换时导出不再换，免得单字称呼之类被误换 */
+    function textReplaceRules(settings) {
+        return (settings.wordReplaceMode || 'ai') === 'text' ? parseWordReplace(settings.wordReplace) : [];
+    }
+
+    /** 交给 AI 替换时写进提示词的规则行 */
+    function aiReplaceLines(s) {
+        if ((s.wordReplaceMode || 'ai') !== 'ai') return [];
+        return String(s.wordReplace || '')
+            .split('\n')
+            .map((l) => l.trim())
+            .filter((l) => parseWordReplace(l).length)
+            .map((l) => {
+                const m = /^(.*?)\s*(?:→|->)\s*(.*)$/.exec(l);
+                return `${m[1].trim()} → ${m[2].trim() || '（删掉）'}`;
+            });
+    }
+
+    function buildWordReplaceSection(s, tr) {
+        const lines = aiReplaceLines(s);
+        if (!lines.length) return '';
+        return `## 名称和称呼替换（正文、标题、摘要、世界书、表格都要做到，和术语表、世界书里已有的写法冲突时以这里为准）
+用户要求把左边的词换成右边的（/…/ 是正则写法）：
+${lines.map((l) => '- ' + l).join('\n')}
+- 按语境替换：只换真正指这个人、这个东西的地方；原词只是别的词的一部分，或者意思不一样时不要换
+- 换名字后，别人对他的称呼（单字、昵称、尊称等）也按新名字自然地改过来
+${tr ? '- 译文里直接用新的写法' : '- 原文里出现要换的词的地方，用「=」补丁改：锚点从原文复制包含原词的一小段，替换内容写换好之后的这段；一段里出现几次就写几条，锚点互不重叠；补充内容里直接用新的写法'}`;
     }
 
     /**
@@ -2766,7 +2800,7 @@ ${blocks}`;
 
         /** 导出前的最后一步：主角称呼替换 + 用户的词语替换 */
         function outText(s, st) {
-            return applyWordReplace(applyAliases(s, st.aliases, aliasTargetOf(settings)), parseWordReplace(settings.wordReplace));
+            return applyWordReplace(applyAliases(s, st.aliases, aliasTargetOf(settings)), textReplaceRules(settings));
         }
 
         /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
@@ -2827,7 +2861,7 @@ ${blocks}`;
                 categories: settings.worldbookCategories,
                 aliases: st.aliases,
                 target,
-                replace: parseWordReplace(settings.wordReplace),
+                replace: textReplaceRules(settings),
                 plotEntries: plot,
                 plot: { position: settings.plotPosition, depth: settings.plotDepth, order: settings.plotOrder },
             });
