@@ -653,6 +653,31 @@ describe('运行引擎', () => {
         expect(text.engine.renderFloors()[0].mes).toContain('{{user}}推门而入');
     });
 
+    it('只重 roll 一层，后面的层保留；失败时放回旧结果', async () => {
+        let fail = false;
+        const { engine, calls } = makeEngine((layer, last, n) => (fail ? '坏掉的回复' : normal(layer).replace('摘要' + (layer + 1), `摘要${layer + 1}-${n}`)));
+        await engine.run();
+        const later = engine.results[2];
+        const oldSummary = engine.results[1].parsed.summary;
+        const res = await engine.rerollLayer(1);
+        expect(res.status).toBe('done');
+        expect(engine.results[1].parsed.summary).not.toBe(oldSummary);
+        expect(engine.results[2]).toBe(later);
+        expect(engine.reviewing).toBe(null);
+        expect(engine.renderFloors().length).toBe(3);
+        fail = true;
+        const kept = engine.results[1];
+        const bad = await engine.rerollLayer(1);
+        expect(bad.status).toBe('failed');
+        expect(engine.results[1]).toBe(kept);
+        fail = false;
+        await engine.redoWithFeedback(0, '多写点', { keepLater: true });
+        expect(engine.results[2]).toBe(later);
+        expect(calls.slice(-1)[0].messages.slice(-1)[0].content).toContain('多写点');
+        await engine.redoWithFeedback(0, '再来');
+        expect(engine.results[1]).toBe(null);
+    });
+
     it('每层可以提前写专属提示词，跑到这层时放在提示词最后', async () => {
         const { engine, calls } = makeEngine(normal);
         engine.setLayerNote(1, '  这层女主先开口  ');

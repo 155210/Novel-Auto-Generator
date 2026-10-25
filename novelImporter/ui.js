@@ -2348,6 +2348,12 @@
         };
     }
 
+    /** 重做时是否保留后面的层：详情页的勾选框，没有后面的层时无所谓 */
+    function keepLaterChecked() {
+        const b = $('nim-keep-later');
+        return b ? b.checked : false;
+    }
+
     function renderDetail() {
         const el = $('nim-detail');
         const e = State.engine;
@@ -2359,6 +2365,7 @@
         }
         const r = e.results[i];
         const reviewing = e.reviewing === i;
+        const hasLater = e.results.slice(i + 1).some((x) => x);
         let body = '';
         if (r && r.status === 'done') {
             const floor = e.renderFloors()[i];
@@ -2378,7 +2385,7 @@
         if (!reviewing && r && (r.status === 'done' || r.status === 'failed'))
             body += `<div class="nim-sub">这层的修改要求</div>
               <textarea id="nim-layer-fb" class="nim-input nim-textarea" rows="3" placeholder="例如：NTR 那段改得更彻底；对话多补几句神态；译名统一用「花恋」"></textarea>
-              <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">按要求重做这层</button><span class="nim-muted">会带上这层上次的输出，之后的层作废</span></div>`;
+              <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">按要求重做这层</button><span class="nim-muted">会带上这层上次的输出</span></div>`;
         if (!reviewing && r && r.status === 'done') {
             const bad = r.warnings && r.warnings.length;
             body += `<details class="nim-fold"${bad ? ' open' : ''}><summary>只重新输出 JSON（正文不动）${bad ? '<span class="nim-muted">：这层有 JSON 没用上</span>' : ''}</summary>
@@ -2402,7 +2409,7 @@
                  <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">按意见重做这层</button></div>
                </div>`
             : '';
-        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div>${reviewHtml}${body}`;
+        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><div class="nim-row" style="justify-content:flex-end">${r && (r.status === 'done' || r.status === 'failed') ? '<button id="nim-reroll" class="nim-btn sm" title="同样的提示词再要一次，后面的层保留">只重 roll 这层</button>' : ''}<button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div></div>${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}${reviewHtml}${body}`;
         bindHlNav();
         const noteEl = $('nim-layer-note');
         const saveNote = () => {
@@ -2425,11 +2432,12 @@
                 if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
                 const fb = $('nim-layer-fb').value.trim();
                 if (!fb) return toast('请先写修改要求', 'warning');
-                if (i < e.results.length - 1 && e.results[i + 1] && !confirm(`第 ${i + 2} 层及之后的结果会清空，确定吗？`)) return;
+                const keepLater = keepLaterChecked();
+                if (!keepLater && hasLater && !confirm(`第 ${i + 2} 层及之后的结果会清空，确定吗？`)) return;
                 collectFields();
                 State.stopped = false;
-                log(`按要求重做第 ${i + 1} 层：${fb}`);
-                const job = e.redoWithFeedback(i, fb);
+                log(`按要求重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}：${fb}`);
+                const job = e.redoWithFeedback(i, fb, { keepLater });
                 renderButtons();
                 await job;
                 saveProgress();
@@ -2465,11 +2473,12 @@
                 if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
                 const p = $('nim-prompt-edit').value;
                 if (!p.trim()) return toast('提示词是空的', 'warning');
-                if (!confirm(`用改过的提示词重做第 ${i + 1} 层？第 ${i + 1} 层及之后的结果会清空`)) return;
+                const keepLater = keepLaterChecked();
+                if (!confirm(`用改过的提示词重做第 ${i + 1} 层？${keepLater || !hasLater ? '' : `第 ${i + 2} 层及之后的结果会清空`}`)) return;
                 collectFields();
                 State.stopped = false;
-                log(`用改过的提示词重做第 ${i + 1} 层`);
-                const job = e.redoWithPrompt(i, p);
+                log(`用改过的提示词重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}`);
+                const job = e.redoWithPrompt(i, p, { keepLater });
                 renderButtons();
                 await job;
                 saveProgress();
@@ -2480,6 +2489,23 @@
             hlBtn.onclick = () => {
                 State.hlOff = !State.hlOff;
                 renderDetail();
+            };
+        const keepBox = $('nim-keep-later');
+        if (keepBox) keepBox.onchange = () => (State.keepLater = keepBox.checked);
+        const rerollBtn = $('nim-reroll');
+        if (rerollBtn)
+            rerollBtn.onclick = async () => {
+                if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
+                collectFields();
+                State.stopped = false;
+                log(`只重 roll 第 ${i + 1} 层，后面的层保留`);
+                const job = e.rerollLayer(i, { keepLater: true });
+                renderButtons();
+                const res = await job;
+                if (res && res.status !== 'done') toast(`第 ${i + 1} 层重 roll 失败，保留了原来的结果：${res.error || ''}`, 'error');
+                else if (res) toast(`第 ${i + 1} 层已重 roll`, 'success');
+                saveProgress();
+                renderAll();
             };
         $('nim-rerun').onclick = () => {
             if (!confirm(`第 ${i + 1} 层及之后的结果会清空，确定吗？`)) return;
@@ -2943,6 +2969,7 @@ select.nim-input{appearance:auto;}
 .nim-cl-line .nim-btn{flex:none;}
 .nim-cl-line .nim-btn.is-on{background:var(--ok);border-color:transparent;color:#0b1a12;}
 .nim-cl-prev{font-size:12px;color:var(--muted);}
+.nim-keep-later{display:flex;align-items:center;gap:6px;margin:6px 0;font-size:12px;}
 .nim-cl-mark{background:rgba(240,100,100,.25);color:var(--text);border-radius:3px;padding:0 2px;}
 .nim-wr-to{background:rgba(80,200,120,.25);color:var(--text);border-radius:3px;padding:0 2px;margin-left:2px;text-decoration:none;}
 .nim-sheet-box{width:min(620px,100%);max-height:100%;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,.5);}
