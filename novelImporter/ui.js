@@ -232,6 +232,12 @@
                 ],
             },
             {
+                key: 'userMacroToName',
+                label: '导入酒馆时把楼层里的 {{user}} 换成酒馆当前用户名',
+                type: 'check',
+                hint: '酒馆显示楼层时不会替换 {{user}}；勾上就在导入和导出聊天记录时写成你现在的用户名。世界书里的不换（酒馆发给 AI 时会自己换）',
+            },
+            {
                 key: 'imageMode',
                 label: 'EPUB 插图',
                 type: 'select',
@@ -809,7 +815,7 @@
         const worldbook = e.exportWorldbook();
         const persona = e.exportPersona();
         const userName = ST.currentUserName() || 'User';
-        const chat = C.buildChatArray(floors, { charName: cardName, userName });
+        const chat = C.buildChatArray(floors, { charName: cardName, userName, replaceUserMacro: State.settings.userMacroToName !== false && !!ST.currentUserName() });
         return { floors, cardName, worldName, worldbook, persona, chat, tables: e.exportTables() };
     }
 

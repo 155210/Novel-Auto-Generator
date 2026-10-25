@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.48';
+    const VERSION = '1.4.49';
 
     // ============================================
     // 默认配置
@@ -219,6 +219,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         plotDepth: 4,
         plotOrder: 50,
         plotAutoIncrement: true, // 剧情条目顺序按层递增
+        userMacroToName: true, // 导入酒馆时楼层里的 {{user}} 换成酒馆当前用户名（酒馆显示楼层时不替换宏）
 
         // 表格
         tablesEnabled: true,
@@ -2058,15 +2059,17 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             create_date: humanDate(now),
             chat_metadata: opts.chatMetadata || {},
         };
+        // opts.replaceUserMacro：酒馆显示楼层时不替换 {{user}}，导入时直接写成用户名
+        const fix = (t) => (opts.replaceUserMacro ? String(t).replace(/\{\{user\}\}/gi, userName) : t);
         const msgs = floors.map((f, i) => ({
             name: charName,
             is_user: false,
             is_system: false,
             send_date: humanDate(new Date(now.getTime() + i * 1000)),
-            mes: f.mes,
+            mes: fix(f.mes),
             extra: { novel_importer: { layer: f.layer, divergence: f.divergence || false } },
             swipe_id: 0,
-            swipes: [f.mes],
+            swipes: [fix(f.mes)],
             swipe_info: [],
         }));
         return [header, ...msgs];
