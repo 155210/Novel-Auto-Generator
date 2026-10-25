@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.43';
+    const VERSION = '1.4.44';
 
     // ============================================
     // 默认配置
@@ -1487,6 +1487,12 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * providedNames：本次请求里提供给 AI 的条目（"分类/名称"），这些条目 AI 已经看过全文，
      * 输出的是完整新内容，直接替换；没看过的条目只能追加，免得覆盖掉旧信息。
      */
+    /** AI 只回了「追加」那一段：比旧内容短一大截，或者以追加、补充、新增开头 */
+    function isPartialWbUpdate(content, oldContent) {
+        const c = String(content || '').trim();
+        return c.length < String(oldContent || '').length * 0.6 || /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(c);
+    }
+
     function mergeWorldbook(wb, delta, opts = {}) {
         const out = clone(wb || {});
         const provided = opts.providedNames || new Set();
@@ -1518,8 +1524,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 if (role) e.定位 = role;
                 // 旧内容发给过 AI，按理回的是改好的完整版，整条替换；
                 // 但 AI 常常只写「追加」那一段，比旧内容短一大截时当补充接在后面，免得旧信息丢掉
-                const partial = content.length < (e.内容 || '').length * 0.6 || /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(content);
-                if (provided.has(`${category}/${existing}`) && !partial) {
+                if (provided.has(`${category}/${existing}`) && !isPartialWbUpdate(content, e.内容)) {
                     e.内容 = content;
                     log.push({ type: 'replace', category, name: existing });
                 } else if (!e.内容.includes(content)) {
@@ -3363,6 +3368,7 @@ ${sums}`;
         replaceTag,
         stripMarks,
         findWordReplaceHits,
+        isPartialWbUpdate,
         parsePatchLines,
         parseLayerResponse,
         applyPatches,

@@ -233,6 +233,8 @@ describe('世界书', () => {
         const b = C.mergeWorldbook(old, { 角色: { 椎名美步: { 内容: '**背景**：' + '改写整合后的完整设定。'.repeat(12) } } }, opts);
         expect(b.worldbook.角色.椎名美步.内容).not.toContain('很长的旧设定');
         expect(b.log[0].type).toBe('replace');
+        expect(C.isPartialWbUpdate('# NSFW追加\n很长很长很长很长很长', '短')).toBe(true);
+        expect(C.isPartialWbUpdate('完整的新版本内容', '旧版本内容')).toBe(false);
     });
 
     it('导出成酒馆格式，注释沿用「分类 - 名称」，称呼一起替换', () => {

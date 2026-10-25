@@ -2237,9 +2237,11 @@
         for (const [cat, entries] of Object.entries(wb)) for (const [name, it] of Object.entries(entries || {})) if (it && typeof it === 'object') items.push({ cat, name, it });
         if (!items.length) return `<div class="nim-sub">本层世界书</div><div class="nim-muted">这一层没有新增或更新条目</div>`;
         let before = {};
+        let after = {};
         let aliases = [];
         try {
             before = (e.replay(i) || {}).worldbook || {};
+            after = (e.replay(i + 1) || {}).worldbook || {};
             aliases = e.finalState().aliases || [];
         } catch (err) {
             /* 比不出来就都当新增 */
@@ -2256,18 +2258,18 @@
         const rows = items.map((x) => {
             const keys = Array.isArray(x.it.关键词) ? x.it.关键词 : x.it.关键词 ? [String(x.it.关键词)] : [];
             const old = findOld(x.cat, x.name, keys);
-            const kind = !old ? 'add' : provided.has(`${x.cat}/${old}`) ? 'replace' : 'append';
+            const kind = !old ? 'add' : provided.has(`${x.cat}/${old}`) && !C.isPartialWbUpdate(x.it.内容, before[x.cat][old].内容) ? 'replace' : 'append';
             return { ...x, keys, old, kind };
         });
         const n = (k) => rows.filter((x) => x.kind === k).length;
         const TAG = { add: '新增', replace: '更新（整条改写）', append: '补充（接在旧内容后）' };
         return (
             `<details class="nim-fold" open><summary>本层世界书（${rows.length} 条：新增 ${n('add')}，更新 ${n('replace') + n('append')}）</summary>` +
-            `<div class="nim-muted">这里是 AI 这一层原样给的内容。同名或关键词对上的条目会并进同一条，导出时一个角色只有一条。「整条改写」：AI 拿到了旧内容，回的是改好的完整版，直接替换；「补充」：这次没把旧内容发给 AI，新内容接在旧内容后面。称呼表里的名字导出时会换成 ${esc(target)}。</div><ul class="nim-wb-list">` +
+            `<div class="nim-muted">这里是 AI 这一层原样给的内容。同名或关键词对上的条目会并进同一条，导出时一个角色只有一条。「整条改写」：AI 拿到了旧内容，回的是改好的完整版，直接替换；「补充」：这次没把旧内容发给 AI，或者 AI 只回了追加的一段，新内容接在旧内容后面。点「合并后的完整条目」看这一层处理完后条目的样子。称呼表里的名字导出时会换成 ${esc(target)}。</div><ul class="nim-wb-list">` +
             rows
                 .map(({ cat, name, keys, old, kind }) => {
                     const asUser = aliases.includes(name);
-                    return `<li><div class="nim-wb-head"><span class="nim-pr-tag">${esc(cat)}</span><b>${esc(name)}</b><span class="nim-pr-tag ${kind === 'add' ? 'is-depth' : ''}">${TAG[kind]}</span>${old && old !== name ? `<span class="nim-muted">并进「${esc(old)}」</span>` : ''}${asUser ? `<span class="nim-muted">导出为 ${esc(target)}</span>` : ''}</div>${keys.length ? `<div class="nim-muted">关键词：${esc(keys.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(r.parsed.worldbook[cat][name].内容 || ''))}</div></li>`;
+                    return `<li><div class="nim-wb-head"><span class="nim-pr-tag">${esc(cat)}</span><b>${esc(name)}</b><span class="nim-pr-tag ${kind === 'add' ? 'is-depth' : ''}">${TAG[kind]}</span>${old && old !== name ? `<span class="nim-muted">并进「${esc(old)}」</span>` : ''}${asUser ? `<span class="nim-muted">导出为 ${esc(target)}</span>` : ''}</div>${keys.length ? `<div class="nim-muted">关键词：${esc(keys.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(r.parsed.worldbook[cat][name].内容 || ''))}</div>${old && after[cat] && after[cat][old] ? `<details class="nim-fold"><summary>合并后的完整条目</summary><div class="nim-wb-content">${esc(String(after[cat][old].内容 || ''))}</div></details>` : ''}</li>`;
                 })
                 .join('') +
             `</ul></details>`
