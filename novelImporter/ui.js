@@ -342,6 +342,7 @@
             { key: 'plotPosition', label: '剧情条目的位置', type: 'select', options: POS_OPTIONS },
             { key: 'plotDepth', label: '剧情条目的深度（位置选自定义深度时）', type: 'number' },
             { key: 'plotOrder', label: '剧情条目的顺序', type: 'number', hint: '默认 50' },
+            { key: 'plotAutoIncrement', label: '剧情条目顺序自动递增', type: 'check', hint: '按层从上面的顺序开始 50、51、52…' },
         ],
         table: [
             { key: 'tablesEnabled', label: '每层填写记忆表格', type: 'check' },
@@ -798,6 +799,9 @@
     function buildOutputs() {
         const e = State.engine;
         if (!e) throw new Error('还没有处理结果');
+        // 设置里刚改的（分类的位置、顺序、递增，剧情条目设置）导出时要用上
+        collectFields();
+        e.settings.worldbookCategories = State.settings.worldbookCategories;
         const floors = e.renderFloors({ highlight: State.settings.importHighlight });
         if (!floors.length) throw new Error('还没有处理完的层');
         const cardName = State.meta.cardName || baseName();
@@ -839,12 +843,23 @@
         } catch (e) {
             return toast(e.message, 'warning');
         }
+        const btn = $('nim-import');
+        const box = $('nim-import-result');
+        const showResult = (cls, text) => {
+            box.className = `nim-alert ${cls}`;
+            box.textContent = text;
+            box.hidden = false;
+        };
+        btn.disabled = true;
+        btn.textContent = '导入中…';
         if (!State.meta.description && State.settings.apiEndpoint) {
             toast('简介是空的，先让 AI 生成简介，再导入', 'info');
+            showResult('', '简介是空的，正在让 AI 生成简介…');
             await genCardInfo();
         }
         State.importing = true;
         State.stopped = false;
+        showResult('', '正在导入，请稍等…');
         try {
             const res = await ST.importAll({
                 cardName: out.cardName,
@@ -855,7 +870,10 @@
                 avatar: State.meta.avatar,
                 chatArray: await attachImages(out.chat, out.cardName, true),
                 expectedTables: State.settings.tablesEnabled && State.tableTemplate ? out.tables : null,
-                onStep: (s) => log(`导入：${s}`),
+                onStep: (s) => {
+                    log(`导入：${s}`);
+                    showResult('', `正在导入：${s}`);
+                },
                 onProgress: (i, n) => setStatus(`重建表格 ${i}/${n}`),
                 shouldStop: () => State.stopped,
             });
@@ -867,11 +885,16 @@
                 else log(`⚠️ 记忆表格和预期不一致：${res.tables.diffs.map((d) => `${d.table}：${d.reason}`).join('；')}`);
             }
             toast('导入完成', 'success');
+            const tableNote = res.tables ? (res.tables.ok ? '，记忆表格核对通过' : '，⚠️ 记忆表格和预期不一致（详情见日志）') : '';
+            showResult(res.tables && !res.tables.ok ? 'warn' : 'ok', `✅ ${new Date().toLocaleTimeString()} 导入完成：角色卡「${out.cardName}」、世界书「${out.worldName}」、${out.floors.length} 层楼层${tableNote}。酒馆里已经打开这张卡的聊天`);
         } catch (e) {
             log(`导入失败：${e.message}`);
             toast(`导入失败：${e.message}`, 'error');
+            showResult('danger', `❌ 导入失败：${e.message}`);
         } finally {
             State.importing = false;
+            btn.disabled = false;
+            btn.textContent = '一键导入酒馆';
             setStatus('');
         }
     }
@@ -1523,6 +1546,8 @@
 
     function catsChanged() {
         saveSettings();
+        // 恢复的任务里引擎带的是当时的设置副本，分类改了要同步过去，导出才按新的位置、顺序走
+        if (State.engine) State.engine.settings.worldbookCategories = State.settings.worldbookCategories;
         renderCategories();
     }
 
@@ -2750,6 +2775,7 @@
         <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn ghost xs">AI 生成</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="5"></textarea></div>
         <div id="nim-card-avatar" class="nim-muted"></div>
         <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
+        <div id="nim-import-result" class="nim-alert" hidden></div>
         <div class="nim-muted nim-center">角色卡 + 世界书 + 聊天楼层 + 插图，然后让记忆插件逐层重建表格并核对</div>
       </div></div>
       <div class="nim-card static"><div class="nim-card-body">
@@ -2925,6 +2951,8 @@ select.nim-input{appearance:auto;}
 .nim-alert{padding:9px 12px;border-radius:10px;font-size:12px;margin:6px 0;}
 .nim-alert.warn{background:rgba(242,180,65,.12);border:1px solid rgba(242,180,65,.3);}
 .nim-alert.danger{background:rgba(240,100,100,.12);border:1px solid rgba(240,100,100,.3);}
+.nim-alert.ok{background:rgba(80,200,120,.12);border:1px solid rgba(80,200,120,.3);}
+.nim-alert:not(.ok):not(.warn):not(.danger){background:var(--surface2);border:1px solid var(--line);}
 .nim-review{border:1px solid rgba(242,180,65,.45);background:rgba(242,180,65,.06);border-radius:12px;padding:12px;margin:8px 0;}
 .nim-review .nim-sub{margin-top:0;}
 /* 底栏 */

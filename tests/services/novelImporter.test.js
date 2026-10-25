@@ -1293,6 +1293,16 @@ describe('每层摘要和剧情条目', () => {
         const e = Object.values(engine.exportWorldbook().entries).find((x) => x.comment.startsWith('剧情'));
         expect([e.comment, e.position, e.depth, e.order]).toEqual(['剧情 - 第1层 雨夜', 4, 2, 300]);
     });
+
+    it('剧情条目和分类条目的顺序可以自动递增', () => {
+        const plotEntries = [1, 2, 3].map((n) => ({ title: `第${n}层`, keys: [], content: 'x' }));
+        const orders = (auto) => Object.values(C.worldbookToST({}, { plotEntries, plot: { order: 50, autoIncrement: auto } }).entries).map((x) => x.order);
+        expect(orders(true)).toEqual([50, 51, 52]);
+        expect(orders(false)).toEqual([50, 50, 50]);
+        const cats = [C.normalizeCategory({ name: '角色', defaultOrder: 100, autoIncrementOrder: true })];
+        const wb = C.worldbookToST({ 角色: { 甲: { 内容: 'a' }, 乙: { 内容: 'b' } } }, { categories: cats });
+        expect(Object.values(wb.entries).map((x) => x.order)).toEqual([100, 101]);
+    });
 });
 
 describe('酒馆世界书当作输出要求', () => {
