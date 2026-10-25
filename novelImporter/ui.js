@@ -2135,11 +2135,25 @@
     }
 
     /** 手机上分层列表和单层详情分两屏，点一层进详情，「返回」回列表 */
+    // 手机上打开详情时列表被隐藏，滚动位置会丢；记下来，返回时滚回原处
+    const listScroll = { body: 0, list: 0 };
+
     function openDetail(on) {
         const box = document.querySelector('#nim-modal .nim-runbox');
-        if (box) box.classList.toggle('detail-open', !!on);
         const body = document.querySelector('#nim-modal .nim-body');
-        if (body && on && window.matchMedia('(max-width: 760px)').matches) body.scrollTop = 0;
+        const list = $('nim-layers');
+        const narrow = window.matchMedia('(max-width: 760px)').matches;
+        const wasOpen = !!(box && box.classList.contains('detail-open'));
+        if (on && !wasOpen) {
+            listScroll.body = body ? body.scrollTop : 0;
+            listScroll.list = list ? list.scrollTop : 0;
+        }
+        if (box) box.classList.toggle('detail-open', !!on);
+        if (body && on && narrow) body.scrollTop = 0;
+        if (!on && wasOpen && narrow) {
+            if (list) list.scrollTop = listScroll.list;
+            if (body) body.scrollTop = listScroll.body;
+        }
     }
 
     function layerState(r, i, e) {
