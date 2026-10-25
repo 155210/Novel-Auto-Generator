@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.41';
+    const VERSION = '1.4.42';
 
     // ============================================
     // 默认配置
@@ -977,6 +977,10 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const prevSummary = (state.summaries || []).slice(-2).map((x) => `- ${x.title}：${x.summary}`).join('\n');
         if (prevSummary) parts.push(`## 前情提要\n${prevSummary}`);
         if (extra.prevTail) parts.push(`## 上一层正文的结尾（只用来承接，让本层开头衔接自然；不要重复输出这段）\n<上一层结尾>\n${extra.prevTail}\n</上一层结尾>`);
+        if (extra.prevTail && extra.prevSourceTail)
+            parts.push(
+                `## 上一层原文的结尾（和上面的译文结尾对照）\n<上一层原文结尾>\n${extra.prevSourceTail}\n</上一层原文结尾>\n- 对照看上一层译文是不是翻到了原文最后：如果原文最后几句在译文里漏掉了，本层译文开头先把漏掉的那几句译出来，再接着译本层；已经译过的不要重复`,
+            );
         for (const t of extra.carryTags || [])
             parts.push(`## 目前最新的 <${t.tag}>（来自第 ${t.layer + 1} 层，在这个基础上更新；本层照常输出完整的 <${t.tag}>）\n<${t.tag}>\n${t.content}\n</${t.tag}>`);
         let format = (String(s.outputFormat || '').trim() || OUTPUT_FORMAT).replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
@@ -2298,6 +2302,8 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             const prevDone = prev && prev.status === 'done';
             const tailN = Math.max(0, Number(settings.prevTailChars) || 0);
             const prevTail = prevDone && tailN && prev.finalParas ? tailText(splitBodyBlocks(prev.finalParas.join('\n'), settings.bodyTag).body, tailN) : '';
+            // 翻译时把上一层原文结尾也带上同样字数，AI 对照着看上一层最后几句有没有漏译
+            const prevSourceTail = prevTail && i > 0 && E.layers[i - 1].translate ? tailText(E.layers[i - 1].paras.map((p) => p.text).join('\n'), tailN) : '';
             // 像表格一样带「最新的一份」：上一层没输出这个标签，就往前找最近一次有的，状态不会断
             const carryTags = splitTagList(settings.carryTags)
                 .map((tag) => {
@@ -2314,6 +2320,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             const prompt = typeof extra.customPrompt === 'string' && extra.customPrompt.trim() ? extra.customPrompt : buildLayerPrompt(layer, settings, st, {
                 outputRules: typeof cfg.outputRules === 'string' ? cfg.outputRules : '',
                 prevTail,
+                prevSourceTail,
                 carryTags,
                 ...extra,
                 needBigSummary: askBig,
@@ -2409,6 +2416,7 @@ ${blocks}`;
         async function processLayer(i, extra = {}) {
             const st = replay(i);
             const req = buildRequest(i, st, extra);
+            const startedAt = Date.now();
             const r = {
                 status: 'running',
                 attempts: 0,
@@ -2473,6 +2481,8 @@ ${blocks}`;
                 r.divergenceStart = c.out.divergenceStart;
                 r.inDivergence = c.out.inDivergence;
                 r.status = 'done';
+                // 这层用了多久（含重试、修格式），用来估算剩余时间
+                r.ms = Date.now() - startedAt;
                 emit('layer-done', { index: i, result: r });
                 return r;
             }
@@ -2758,6 +2768,14 @@ ${blocks}`;
             else delete l.note;
         }
 
+        /** 剩余时间估算（毫秒）：最近 10 层的平均耗时 × 没跑完的层数；还没有跑完的层记过时间就返回 0 */
+        function estimateRemaining() {
+            const times = E.results.filter((r) => r && r.status === 'done' && r.ms > 0).map((r) => r.ms).slice(-10);
+            if (!times.length) return 0;
+            const left = E.layers.length - E.results.filter((r) => r && r.status === 'done').length;
+            return Math.round((times.reduce((a, b) => a + b, 0) / times.length) * left);
+        }
+
         /** 从第 i 层起全部重跑 */
         function resetFrom(i) {
             for (let k = i; k < E.results.length; k++) E.results[k] = null;
@@ -3000,6 +3018,7 @@ ${sums}`;
             applyReplaceToResults,
             previewReplaceInResults,
             setLayerNote,
+            estimateRemaining,
             resetFrom,
             replay,
             renderFloors,

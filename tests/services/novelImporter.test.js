@@ -497,6 +497,40 @@ describe('运行引擎', () => {
         expect(C.stripMarks(m)).toBe(floor.body);
     });
 
+    it('翻译时带上一层原文结尾同样字数，让 AI 补漏译', async () => {
+        const prompts = [];
+        const engine = C.createEngine({
+            settings: { layerChars: 300, reviewMode: 'off', retries: 0, tablesEnabled: false, prevTailChars: 20 },
+            callModel: async (messages) => {
+                prompts.push(messages[messages.length - 1].content);
+                return `<bt>雨夜</bt>\n<摘要>x</摘要>\n<正文>\n${Array.from({ length: 40 }, (_, k) => `听见了第${k}次声音，雨一直下。`).join('\n')}\n译文${prompts.length}结尾在这里\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{}</表格>`;
+            },
+        });
+        const lines = (w) => Array.from({ length: 40 }, (_, k) => `${w}が${k}回聞こえた。`).join('\n');
+        engine.prepare(`第1話 雨の夜\n${lines('雨の音')}\n最後の一言だ。\n第2話 朝\n${lines('風の音')}`);
+        expect(engine.layers.length > 1).toBe(true);
+        await engine.run();
+        expect(prompts[0]).not.toContain('<上一层原文结尾>');
+        expect(prompts[1]).toContain('译文1结尾在这里\n</上一层结尾>');
+        const src = prompts[1].slice(prompts[1].indexOf('<上一层原文结尾>'), prompts[1].indexOf('</上一层原文结尾>'));
+        const last = engine.layers[0].paras.map((p) => p.text).join('\n').slice(-5);
+        expect(src).toContain(last);
+        expect(src.length <= '<上一层原文结尾>\n'.length + 20).toBe(true);
+        expect(prompts[1]).toContain('漏掉的那几句译出来');
+    });
+
+    it('按已跑完的层的平均耗时估算剩余时间', async () => {
+        const { engine } = makeEngine(normal);
+        expect(engine.estimateRemaining()).toBe(0);
+        await engine.run();
+        expect(engine.results.every((r) => r.ms >= 0)).toBe(true);
+        engine.results[0].ms = 60000;
+        engine.results[1].ms = 120000;
+        engine.results[2] = null;
+        expect(engine.layers.length).toBe(3);
+        expect(engine.estimateRemaining()).toBe(90000);
+    });
+
     it('修格式的请求不套预设', async () => {
         const { engine, calls } = makeEngine((layer, last) => {
             if (/只修正格式/.test(last)) return '<表格>{}</表格>';
