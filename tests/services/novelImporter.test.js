@@ -1004,6 +1004,10 @@ describe('运行引擎', () => {
         const chat = C.buildChatArray(engine.renderFloors(), { charName: '修仙界', userName: 'fary' });
         expect(chat[0].character_name).toBe('修仙界');
         expect(chat.slice(1).every((m) => m.is_user === false && m.swipes[0] === m.mes)).toBe(true);
+        expect(chat.slice(1).some((m) => m.mes.includes('{{user}}'))).toBe(true);
+        const named = C.buildChatArray(engine.renderFloors(), { charName: '修仙界', userName: 'fary', replaceUserMacro: true });
+        expect(named.slice(1).some((m) => m.mes.includes('{{user}}'))).toBe(false);
+        expect(named.slice(1).some((m) => m.mes.includes('fary') && m.swipes[0] === m.mes)).toBe(true);
         const card = C.buildCharacterCard({ name: '修仙界', worldName: '修仙界', worldbook: engine.exportWorldbook() });
         expect(card.data.extensions.world).toBe('修仙界');
         expect(card.data.character_book.entries.length).toBeGreaterThan(0);
