@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.47';
+    const VERSION = '1.4.48';
 
     // ============================================
     // 默认配置
@@ -218,6 +218,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         plotPosition: 0,
         plotDepth: 4,
         plotOrder: 50,
+        plotAutoIncrement: true, // 剧情条目顺序按层递增
 
         // 表格
         tablesEnabled: true,
@@ -1717,6 +1718,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             }
         }
         const plot = opts.plot || {};
+        let pk = 0;
         for (const p of opts.plotEntries || []) {
             entries[uid] = makeWorldEntry(uid, {
                 key: uniq((p.keys || []).map(conv)),
@@ -1725,9 +1727,10 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 constant: false,
                 position: finiteInt(plot.position, 0),
                 depth: finiteInt(plot.depth, 4),
-                order: finiteInt(plot.order, 50, Number.MIN_SAFE_INTEGER),
+                order: finiteInt(plot.order, 50, Number.MIN_SAFE_INTEGER) + (plot.autoIncrement ? pk : 0),
             });
             uid++;
+            pk++;
         }
         return { entries };
     }
@@ -2953,7 +2956,7 @@ ${blocks}`;
                 target,
                 replace: textReplaceRules(settings),
                 plotEntries: plot,
-                plot: { position: settings.plotPosition, depth: settings.plotDepth, order: settings.plotOrder },
+                plot: { position: settings.plotPosition, depth: settings.plotDepth, order: settings.plotOrder, autoIncrement: settings.plotAutoIncrement !== false },
             });
         }
 
