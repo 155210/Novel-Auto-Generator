@@ -588,6 +588,24 @@ describe('运行引擎', () => {
         expect(C.parseWordReplace('a → b\n/[/ → x\n没箭头').length).toBe(1);
     });
 
+    it('每层可以提前写专属提示词，跑到这层时放在提示词最后', async () => {
+        const { engine, calls } = makeEngine(normal);
+        engine.setLayerNote(1, '  这层女主先开口  ');
+        expect(engine.layers[1].note).toBe('这层女主先开口');
+        await engine.run();
+        const promptOf = (k) => calls.find((c) => c.info.layer === k).messages.slice(-1)[0].content;
+        expect(promptOf(0)).not.toContain('这一层的额外要求');
+        expect(promptOf(1).trim().endsWith('这层女主先开口')).toBe(true);
+        const saved = engine.serialize();
+        const again = makeEngine(normal).engine;
+        again.restore(JSON.parse(JSON.stringify(saved)));
+        expect(again.layers[1].note).toBe('这层女主先开口');
+        engine.prepare(NOVEL);
+        expect(engine.layers[1].note).toBe('这层女主先开口');
+        engine.setLayerNote(1, '');
+        expect('note' in engine.layers[1]).toBe(false);
+    });
+
     it('词语替换默认交给 AI 按语境换，导出时不再按文字换', async () => {
         const { engine, calls } = makeEngine(normal, { wordReplace: '路长远 → 路远\n推门 →' });
         await engine.run();
