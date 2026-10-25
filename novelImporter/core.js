@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.49';
+    const VERSION = '1.4.50';
 
     // ============================================
     // 默认配置
@@ -1489,6 +1489,40 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * providedNames：本次请求里提供给 AI 的条目（"分类/名称"），这些条目 AI 已经看过全文，
      * 输出的是完整新内容，直接替换；没看过的条目只能追加，免得覆盖掉旧信息。
      */
+    /**
+     * 提示词构成：本模块拼的部分按「## 小节」分开计字，预设部分 = 完整消息总字数 - 本模块部分。
+     * 另外找出完整消息里重复出现的大段（200 字以上的段落出现两次以上），看是不是重复发了。
+     * 返回 { total, parts: [{name, chars}]（按字数从多到少）, promptCopies, repeats: [{text, count}] }
+     */
+    function promptBreakdown(prompt, request) {
+        const msgs = Array.isArray(request) ? request : [];
+        const full = msgs.map((m) => String(m.content || '')).join('\n\n');
+        const p = String(prompt || '');
+        const total = msgs.length ? msgs.reduce((n, m) => n + String(m.content || '').length, 0) : p.length;
+        const parts = [];
+        if (p) {
+            const sections = p.split(/\n\n(?=## )/);
+            for (const sec of sections) {
+                const head = /^## ([^\n（(]+)/.exec(sec);
+                const name = head ? head[1].trim() : '任务说明';
+                const hit = parts.find((x) => x.name === name);
+                if (hit) hit.chars += sec.length;
+                else parts.push({ name, chars: sec.length });
+            }
+        }
+        const promptCopies = p && msgs.length ? full.split(p).length - 1 : p ? 1 : 0;
+        const moduleChars = p.length * Math.max(promptCopies, 1);
+        if (msgs.length && total > moduleChars) parts.push({ name: '酒馆预设和其他消息', chars: total - moduleChars });
+        parts.sort((a, b) => b.chars - a.chars);
+        const counts = new Map();
+        for (const para of full.split(/\n\s*\n/)) {
+            const t = para.trim();
+            if (t.length >= 200) counts.set(t, (counts.get(t) || 0) + 1);
+        }
+        const repeats = [...counts.entries()].filter(([, n]) => n > 1).map(([text, count]) => ({ text, count })).sort((a, b) => b.text.length * b.count - a.text.length * a.count);
+        return { total, parts, promptCopies, repeats };
+    }
+
     /** AI 只回了「追加」那一段：比旧内容短一大截，或者以追加、补充、新增开头 */
     function isPartialWbUpdate(content, oldContent) {
         const c = String(content || '').trim();
@@ -3399,6 +3433,7 @@ ${sums}
         stripMarks,
         findWordReplaceHits,
         isPartialWbUpdate,
+        promptBreakdown,
         parsePatchLines,
         parseLayerResponse,
         applyPatches,

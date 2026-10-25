@@ -694,6 +694,19 @@ describe('运行引擎', () => {
         expect(info).toEqual({ description: '一部小说', scenario: '导入' });
     });
 
+    it('提示词构成：按小节计字，算出预设部分，找出重复发送的', () => {
+        const prompt = '任务开头\n\n## 世界书任务\nabc\n\n## 本层正文（第 1 层）\n' + '原文'.repeat(50);
+        const big = '预设里很长的一段。'.repeat(30);
+        const b = C.promptBreakdown(prompt, [{ role: 'system', content: big }, { role: 'user', content: prompt }]);
+        expect(b.parts.map((x) => x.name)).toEqual(['酒馆预设和其他消息', '本层正文', '世界书任务', '任务说明']);
+        expect(Math.abs(b.parts.reduce((a, x) => a + x.chars, 0) - b.total) < 10).toBe(true);
+        expect(b.promptCopies).toBe(1);
+        expect(b.repeats).toEqual([]);
+        const dup = C.promptBreakdown(prompt, [{ role: 'system', content: big }, { role: 'system', content: big }, { role: 'user', content: prompt + '\n\n' + prompt }]);
+        expect(dup.promptCopies).toBe(2);
+        expect(dup.repeats[0].count).toBe(2);
+    });
+
     it('每层可以提前写专属提示词，跑到这层时放在提示词最后', async () => {
         const { engine, calls } = makeEngine(normal);
         engine.setLayerNote(1, '  这层女主先开口  ');
