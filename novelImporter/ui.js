@@ -290,6 +290,16 @@
                 ],
             },
             { key: 'aliasTarget', label: '自定义称呼', type: 'text' },
+            {
+                key: 'aliasReplaceBy',
+                label: '主角替换怎么做',
+                type: 'select',
+                options: [
+                    ['ai', 'AI 输出时按语境替换（写进每层提示词）'],
+                    ['text', '导出和导入酒馆时按称呼直接替换'],
+                ],
+                hint: '交给 AI 时，单字称呼、带「君」「同学」的称呼也会换，别的角色同名同字不会被误换；只对之后生成或重做的层有效。已经按旧方式生成的层，切到「按称呼直接替换」导出才会换。补丁模式下 AI 要逐处写替换补丁，补丁会多一些',
+            },
             { key: 'titleTag', label: '标题标签', type: 'text' },
             { key: 'bodyTag', label: '正文标签', type: 'text' },
             {
