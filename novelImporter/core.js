@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.44';
+    const VERSION = '1.4.45';
 
     // ============================================
     // 默认配置
@@ -2559,9 +2559,15 @@ ${blocks}`;
         /**
          * 重做第 i 层（之后的层作废）。中途点了停止就把原来的结果放回去，什么都不丢。
          */
-        async function redoLayer(i, extra) {
-            const saved = E.results.slice(i);
-            for (let k = i; k < E.results.length; k++) E.results[k] = null;
+        /**
+         * 重做第 i 层。opts.keepLater：只换这一层，后面的层保留（世界书、表格按新结果重算）；
+         * 这时重做失败就把这层的旧结果放回去，不进审阅。
+         */
+        async function redoLayer(i, extra, opts = {}) {
+            const keep = !!opts.keepLater;
+            const saved = keep ? [E.results[i]] : E.results.slice(i);
+            if (keep) E.results[i] = null;
+            else for (let k = i; k < E.results.length; k++) E.results[k] = null;
             E.reviewing = null;
             let res;
             try {
@@ -2572,9 +2578,19 @@ ${blocks}`;
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
                 return null;
             }
+            if (keep) {
+                if (res.status !== 'done' && saved[0]) E.results[i] = saved[0];
+                emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
+                return res;
+            }
             E.reviewing = res.status === 'done' ? i : null;
             emit('review', { index: i, result: res });
             return res;
+        }
+
+        /** 只重 roll 第 i 层（同样的提示词再要一次），默认保留后面的层 */
+        async function rerollLayer(i, opts = { keepLater: true }) {
+            return runSingle(() => (E.layers[i] ? redoLayer(i, {}, opts) : null));
         }
 
         /** 只让 AI 重新输出 JSON 的提示词：用这层处理完的正文当原文，不再要正文 */
@@ -2690,24 +2706,24 @@ ${blocks}`;
             }
         }
 
-        async function redoWithFeedback(i, feedback) {
-            return runSingle(() => redoWithFeedbackInner(i, feedback));
+        async function redoWithFeedback(i, feedback, opts) {
+            return runSingle(() => redoWithFeedbackInner(i, feedback, opts));
         }
 
-        async function redoWithFeedbackInner(i, feedback) {
+        async function redoWithFeedbackInner(i, feedback, opts) {
             if (!E.layers[i]) return null;
             const prev = E.results[i];
-            return redoLayer(i, { feedback, previousRaw: prev && prev.raw });
+            return redoLayer(i, { feedback, previousRaw: prev && prev.raw }, opts);
         }
 
         /** 用改过的提示词重做第 i 层（之后的层作废） */
-        async function redoWithPrompt(i, prompt) {
-            return runSingle(() => redoWithPromptInner(i, prompt));
+        async function redoWithPrompt(i, prompt, opts) {
+            return runSingle(() => redoWithPromptInner(i, prompt, opts));
         }
 
-        async function redoWithPromptInner(i, prompt) {
+        async function redoWithPromptInner(i, prompt, opts) {
             if (!E.layers[i]) return null;
-            return redoLayer(i, { customPrompt: String(prompt || '') });
+            return redoLayer(i, { customPrompt: String(prompt || '') }, opts);
         }
 
         /**
@@ -3026,6 +3042,7 @@ ${sums}`;
             applyReplaceToResults,
             previewReplaceInResults,
             setLayerNote,
+            rerollLayer,
             estimateRemaining,
             resetFrom,
             replay,
