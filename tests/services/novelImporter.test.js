@@ -382,7 +382,7 @@ describe('运行引擎', () => {
     function makeEngine(responder, extra = {}) {
         const calls = [];
         const engine = C.createEngine({
-            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1, ...extra },
+            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1, aliasReplaceBy: 'text', ...extra },
             tableTemplate: TEMPLATE,
             callModel: async (messages, info) => {
                 calls.push({ messages, info });
@@ -484,7 +484,7 @@ describe('运行引擎', () => {
         const pad = '雨一直下个不停。'.repeat(40);
         const body = `第1话 雨夜\n“来了啊。”月寒说道。⟪她的手在发抖。⟫\n⟪\n新加的一整段。\n⟫\n${pad}`;
         const engine = C.createEngine({
-            settings: { layerChars: 100000, reviewMode: 'off', retries: 0, tablesEnabled: false },
+            settings: { aliasReplaceBy: 'text', layerChars: 100000, reviewMode: 'off', retries: 0, tablesEnabled: false },
             callModel: async () => `<bt>雨夜</bt>\n<摘要>x</摘要>\n<正文>\n${body}\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{}</表格>`,
         });
         engine.prepare('第1話 雨の夜\n' + '雨の音がする。'.repeat(200));
@@ -586,6 +586,23 @@ describe('运行引擎', () => {
         expect(f.mes).not.toContain('推门');
         expect(JSON.stringify(engine.exportWorldbook())).not.toContain('雨');
         expect(C.parseWordReplace('a → b\n/[/ → x\n没箭头').length).toBe(1);
+    });
+
+    it('主角写成 {{user}} 默认交给 AI 按语境做，导出时不再按称呼硬换', async () => {
+        const { engine, calls } = makeEngine(normal, { aliasReplaceBy: 'ai', wordReplace: '夏怜雪 → 夏雪' });
+        await engine.run();
+        const prompt = calls[1].messages.slice(-1)[0].content;
+        expect(prompt).toContain('## 主角在输出里写成 {{user}}');
+        expect(prompt).toContain('主角「路长远」');
+        expect(prompt).toContain('另一个人也叫');
+        expect(prompt.indexOf('## 主角在输出里写成') > prompt.indexOf('## 世界书任务')).toBe(true);
+        expect(prompt.indexOf('## 名称和称呼替换') < prompt.indexOf('## 本层正文')).toBe(true);
+        expect(prompt).toContain('指主角的名字和称呼一律写成 {{user}}');
+        expect(engine.renderFloors()[0].mes).toContain('路长远推门而入');
+        const text = makeEngine(normal, { aliasReplaceBy: 'text' });
+        await text.engine.run();
+        expect(text.calls[0].messages.slice(-1)[0].content).not.toContain('主角在输出里写成');
+        expect(text.engine.renderFloors()[0].mes).toContain('{{user}}推门而入');
     });
 
     it('每层可以提前写专属提示词，跑到这层时放在提示词最后', async () => {
@@ -940,7 +957,7 @@ describe('翻译模式', () => {
         expect(C.detectForeign('第一章 雨夜\n“你来了。”路长远推门而入。'.repeat(20))).toBe(false);
         const prompts = [];
         const engine = C.createEngine({
-            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 0, titleMode: 'original', tablesEnabled: false },
+            settings: { aliasReplaceBy: 'text', layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 0, titleMode: 'original', tablesEnabled: false },
             seedGlossary: [{ source: '雨の夜', target: '雨夜' }],
             callModel: async (messages, info) => {
                 const p = messages[messages.length - 1].content;
@@ -976,7 +993,7 @@ describe('翻译模式', () => {
         });
         const pad = '雨一直下个不停。'.repeat(40);
         const engine = C.createEngine({
-            settings: { layerChars: 500, reviewMode: 'off', retries: 0, prevTailChars: 50 },
+            settings: { aliasReplaceBy: 'text', layerChars: 500, reviewMode: 'off', retries: 0, prevTailChars: 50 },
             callModel: async (messages, info) =>
                 `<bt>雨夜</bt>\n<摘要>x</摘要>\n<正文>\n${pad}\n<状态栏>\n心情：好\n</状态栏>\n结尾这一句。\n<Calculated_data>次数: ${info.layer + 1}</Calculated_data>\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "e${info.layer}"}}]}</表格>`,
         });
@@ -1131,7 +1148,7 @@ describe('酒馆预设条目', () => {
         ]);
         let seen;
         const engine = C.createEngine({
-            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false },
+            settings: { aliasReplaceBy: 'text', layerChars: 500, reviewMode: 'off', tablesEnabled: false },
             preset,
             callModel: async (messages) => {
                 seen = messages;
@@ -1149,7 +1166,7 @@ describe('没填主角原名', () => {
     it('AI 在第一层认出主角，后面的层和渲染都用它', async () => {
         const prompts = [];
         const engine = C.createEngine({
-            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false, retries: 0 },
+            settings: { aliasReplaceBy: 'text', layerChars: 500, reviewMode: 'off', tablesEnabled: false, retries: 0 },
             callModel: async (messages, info) => {
                 prompts.push(messages.map((m) => m.content).join('\n'));
                 return reply({ title: '雨夜' }) + (info.layer === 0 ? '\n<主角>路长远</主角>' : '\n<主角>夏怜雪</主角>');
@@ -1174,7 +1191,7 @@ describe('每层摘要和剧情条目', () => {
     it('摘要写法可以改，剧情条目的位置、深度、顺序按设置导出', async () => {
         let prompt;
         const engine = C.createEngine({
-            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false, summaryGuide: '按「时间｜地点｜人物｜事件」写，50 字内', plotPosition: '4', plotDepth: 2, plotOrder: 300 },
+            settings: { aliasReplaceBy: 'text', layerChars: 500, reviewMode: 'off', tablesEnabled: false, summaryGuide: '按「时间｜地点｜人物｜事件」写，50 字内', plotPosition: '4', plotDepth: 2, plotOrder: 300 },
             callModel: async (messages) => {
                 prompt = messages.map((m) => m.content).join('\n');
                 return reply({ title: '雨夜', summary: '夜｜古庙｜路长远｜避雨' });
@@ -1205,7 +1222,7 @@ describe('酒馆世界书当作输出要求', () => {
         expect(rules).toBe('### 《文风》\n【第一条】\n第三人称\n\n【第二条】\n多写心理');
         let seen;
         const engine = C.createEngine({
-            settings: { layerChars: 500, reviewMode: 'off', tablesEnabled: false },
+            settings: { aliasReplaceBy: 'text', layerChars: 500, reviewMode: 'off', tablesEnabled: false },
             outputRules: rules,
             callModel: async (messages) => {
                 seen = messages;

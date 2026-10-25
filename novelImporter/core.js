@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.40';
+    const VERSION = '1.4.41';
 
     // ============================================
     // 默认配置
@@ -179,6 +179,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         aliasBlacklist: [],
         aliasMode: 'user', // user：{{user}}；persona：酒馆当前 user 名字；custom：自定义
         aliasTarget: 'fary',
+        aliasReplaceBy: 'ai', // ai：让 AI 输出时按语境把主角写成 {{user}}；text：导出时按已知称呼直接替换
         personaName: '',
         useUserMacro: false,
 
@@ -901,7 +902,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     function buildGlossarySection(s, state, layerText) {
         const hits = selectGlossary(state.glossary, layerText, s.glossaryMax);
         const table = hits.length
-            ? `## 专有名词对照表（必须严格遵守，不得改译）\n${hits.map((it) => `- ${it.source} → ${it.target}${it.note ? `（${it.note}）` : ''}`).join('\n')}\n\n`
+            ? `## 专有名词对照表（必须严格遵守，不得改译${aiReplaceLines(s).length ? '；和「名称和称呼替换」冲突时以替换为准' : ''}）\n${hits.map((it) => `- ${it.source} → ${it.target}${it.note ? `（${it.note}）` : ''}`).join('\n')}\n\n`
             : '';
         return `${table}## 新术语
 本层出现了上表没有的人名、地名、组织名、招式、特殊称谓时，定一个中文译名，写进 <新术语>，一行一条：原文 → 译名（可选说明）。没有就写「无」。`;
@@ -954,8 +955,6 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (div) parts.push(div);
         const alias = buildAliasSection(s, state);
         if (alias) parts.push(alias);
-        const wr = buildWordReplaceSection(s, tr);
-        if (wr) parts.push(wr);
         if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, state, layerText));
         if (s.worldbookEnabled) {
             parts.push(buildWorldbookSection(s) + (tr ? '\n- 条目名和内容用中文译名；"关键词" 里同时写中文译名和原文写法（方便后面的层按原文找到这个条目）' : ''));
@@ -986,6 +985,12 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
         if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
         if (!protagonistOf(s, state)) format += '\n<主角>主角的名字，看不出就留空</主角>';
+        // 放在世界书、术语表、前情后面，免得被前面的旧写法盖过去
+        // 放在世界书、术语表、前情后面，免得被前面的旧写法盖过去
+        const un = buildUserNameSection(s, state, tr);
+        if (un) parts.push(un);
+        const wr = buildWordReplaceSection(s, tr);
+        if (wr) parts.push(wr);
         if (extra.feedback && extra.previousRaw) parts.push(`## 你上一次的输出（用户不满意，要按最后的修改要求重做）\n<上一次输出>\n${extra.previousRaw}\n</上一次输出>`);
         // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
@@ -993,7 +998,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
         parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + String(s.jsonReminder ?? JSON_REMINDER).trim());
         const wrLines = aiReplaceLines(s);
-        if (wrLines.length) parts.push(`别忘了按「名称和称呼替换」按语境换掉：${wrLines.join('；')}`);
+        const target = aliasTargetOf(s);
+        const reminders = [];
+        if (aiUserName(s)) reminders.push(`指主角的名字和称呼一律写成 ${target}`);
+        if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
+        if (reminders.length) parts.push(`再次提醒（硬性要求，按语境做，即使原文、术语表、世界书还是旧写法也要换）：${reminders.join('。')}`);
         // 修改要求放在最后：前面有上一次的输出和整层原文，放中间 AI 很容易看漏
         if ((layer.note || '').trim()) parts.push(`## 这一层的额外要求（用户提前为第 ${layer.index + 1} 层写的，必须做到；其他照上面的要求和格式）\n${layer.note.trim()}`);
         if (extra.feedback) parts.push(`## 这次重做的修改要求（最优先，必须做到；其他照上面的要求和格式）\n${extra.feedback}`);
@@ -1604,15 +1613,36 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             });
     }
 
+    /** 主角写成 {{user}} 交给 AI 做（默认）；text 时导出按已知称呼直接替换 */
+    function aiUserName(s) {
+        return (s.aliasReplaceBy || 'ai') === 'ai';
+    }
+
+    function buildUserNameSection(s, state, tr) {
+        if (!aiUserName(s)) return '';
+        const target = aliasTargetOf(s);
+        const name = protagonistOf(s, state);
+        const who = name ? `主角「${name}」（已知称呼：${uniq([name, ...((state && state.aliases) || [])]).filter((a) => a !== target).join('、')}）` : '主角（按上面「主角」一节认出来的那个人）';
+        return `## 主角在输出里写成 ${target}（用户的硬性要求，必须执行）
+- ${who}在${tr ? '译文' : '你写的补丁、补充内容'}、标题、摘要、世界书、表格里，凡是指主角的名字、姓、名、单字昵称、外号、尊称，一律写成 ${target}
+- 称呼带后缀、敬称时保留后缀，只把名字部分换掉：例如「真君」「真くん」→「${target}君」，「春日同学」→「${target}同学」
+- 按语境判断：只换真正指主角的地方；别的角色恰好用同一个字、同一个名字时（例如另一个人也叫「真」），那个人不换，照常写他的名字
+- 不要以「原文就是这个名字」「保持原文设定」为理由不换；第一人称的「我」不用换
+${tr ? '' : `- 原文里指主角的名字和称呼，用「=」补丁换成 ${target}：锚点从原文复制包含名字的一小段，替换内容写换好之后的这段；一段里出现几次就写几条，锚点互不重叠
+`}- <称呼> 里照常写原文里指主角的称呼（原来的写法），<主角> 里写主角原来的名字`;
+    }
+
     function buildWordReplaceSection(s, tr) {
         const lines = aiReplaceLines(s);
         if (!lines.length) return '';
-        return `## 名称和称呼替换（正文、标题、摘要、世界书、表格都要做到，和术语表、世界书里已有的写法冲突时以这里为准）
-用户要求把左边的词换成右边的（/…/ 是正则写法）：
+        return `## 名称和称呼替换（用户的硬性要求，必须执行）
+用户要求把左边的写法换成右边的（/…/ 是正则写法）：
 ${lines.map((l) => '- ' + l).join('\n')}
-- 按语境替换：只换真正指这个人、这个东西的地方；原词只是别的词的一部分，或者意思不一样时不要换
-- 换名字后，别人对他的称呼（单字、昵称、尊称等）也按新名字自然地改过来
-${tr ? '- 译文里直接用新的写法' : '- 原文里出现要换的词的地方，用「=」补丁改：锚点从原文复制包含原词的一小段，替换内容写换好之后的这段；一段里出现几次就写几条，锚点互不重叠；补充内容里直接用新的写法'}`;
+- 这是用户有意的改动，不是翻译或原文问题：不要以「原文就是这个名字」「保持原文设定」「和别的角色同名」为理由不换
+- 优先级高于原文写法、术语表、已有世界书条目和前面的层：那些地方还是旧写法时，本层一律改用右边的新写法（世界书、表格里也写新写法）
+- 按语境替换：只换真正指规则里那个人、那个东西的地方；原文里别的角色恰好用同一个字或同一个名字时，那个角色不换；原词只是别的词的一部分时也不换
+- 换名字后，别人对他的称呼（单字、昵称、尊称、敬称等）也按新名字自然地改过来
+${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现在译文里' : '- 原文里出现要换的词的地方，用「=」补丁改：锚点从原文复制包含原词的一小段，替换内容写换好之后的这段；一段里出现几次就写几条，锚点互不重叠；补充内容里直接用新的写法'}`;
     }
 
     /**
@@ -2811,9 +2841,14 @@ ${blocks}`;
             return outText(bodyParas(i, paras).join('\n'), st);
         }
 
+        /** 导出时按文字替换的主角称呼；交给 AI 写 {{user}} 时不再硬换，免得别人同名、同字被误换 */
+        function textAliases(st) {
+            return aiUserName(settings) ? [] : st.aliases;
+        }
+
         /** 导出前的最后一步：主角称呼替换 + 用户的词语替换 */
         function outText(s, st) {
-            return applyWordReplace(applyAliases(s, st.aliases, aliasTargetOf(settings)), textReplaceRules(settings));
+            return applyWordReplace(applyAliases(s, textAliases(st), aliasTargetOf(settings)), textReplaceRules(settings));
         }
 
         /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
@@ -2872,7 +2907,7 @@ ${blocks}`;
                 : [];
             return worldbookToST(st.worldbook, {
                 categories: settings.worldbookCategories,
-                aliases: st.aliases,
+                aliases: textAliases(st),
                 target,
                 replace: textReplaceRules(settings),
                 plotEntries: plot,
@@ -2897,6 +2932,7 @@ ${blocks}`;
             const name = protagonistOf(settings, st);
             let hit = Object.entries(chars).find(([, e]) => e.定位 === '主角');
             if (!hit && name) hit = Object.entries(chars).find(([n, e]) => n === name || (e.关键词 || []).includes(name));
+            if (!hit) hit = Object.entries(chars).find(([n, e]) => n === target || (e.关键词 || []).includes(target));
             if (!hit) return { name: target, description: '' };
             return { name: target, description: outText(hit[1].内容, st) };
         }
@@ -2913,7 +2949,7 @@ ${blocks}`;
         function buildCardInfoRequest() {
             const st = finalState();
             const target = aliasTargetOf(settings);
-            const conv = (x) => applyAliases(x, st.aliases, target);
+            const conv = (x) => applyAliases(x, textAliases(st), target);
             const sums = st.summaries.map((x) => `- 第${x.layer + 1}层 ${conv(x.title)}：${conv(x.summary)}`).join('\n');
             const heroines = listHeroines().map(conv).join('、') || '（无）';
             const prompt = `下面是一部小说已导入部分的分层摘要。主角在聊天里叫「${target}」。请写角色卡信息：
