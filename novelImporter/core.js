@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.42';
+    const VERSION = '1.4.43';
 
     // ============================================
     // 默认配置
@@ -698,7 +698,7 @@ P段号 |  | ++新段落          在该段之后另起一段
 从本层正文提取或更新世界书条目，只允许这些分类：${cats.map((c) => c.name).join('、')}
 ${guide}
 - 条目名用原文里的正式名称；关键词是原文里实际出现的名称、别称
-- 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整内容**；没有新信息就不要输出
+- 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整内容**：旧内容全部保留（可以改写整合），再加上新信息，会整条替换旧内容；不要只写追加的部分；没有新信息就不要输出
 - 只写原文明确写出的信息，不要编造
 ${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? custom + '\n' : ''}格式：{"角色": {"条目名": {"关键词": ["名称", "别称"], "定位": "女主", "内容": "markdown 文本"}}, "地点": {"条目名": {"关键词": [], "内容": "markdown 文本"}}}`;
     }
@@ -1516,7 +1516,10 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 const e = out[category][existing];
                 e.关键词 = uniq([...(e.关键词 || []), name, ...keys]);
                 if (role) e.定位 = role;
-                if (provided.has(`${category}/${existing}`)) {
+                // 旧内容发给过 AI，按理回的是改好的完整版，整条替换；
+                // 但 AI 常常只写「追加」那一段，比旧内容短一大截时当补充接在后面，免得旧信息丢掉
+                const partial = content.length < (e.内容 || '').length * 0.6 || /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(content);
+                if (provided.has(`${category}/${existing}`) && !partial) {
                     e.内容 = content;
                     log.push({ type: 'replace', category, name: existing });
                 } else if (!e.内容.includes(content)) {
