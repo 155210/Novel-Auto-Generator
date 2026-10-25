@@ -811,17 +811,23 @@
 
     async function genCardInfo() {
         if (!State.engine) return;
+        if (State.engine.running) return toast('正在处理中，先暂停再生成简介', 'warning');
         log('正在生成角色卡简介...');
+        // 点过停止后这个标记还留着，不清掉请求一发就会被当成已停止
+        State.stopped = false;
         try {
-            const info = await State.engine.generateCardInfo();
+            const job = State.engine.generateCardInfo();
+            renderButtons();
+            const info = await job;
             State.meta.description = info.description;
             State.meta.scenario = info.scenario;
             saveProgress();
             renderExport();
             log('简介已生成');
         } catch (e) {
-            log(`生成简介失败：${e.message}`);
+            log(e.message === 'ABORTED' || State.stopped ? '已停止生成简介' : `生成简介失败：${e.message}`);
         }
+        renderButtons();
     }
 
     async function importToTavern() {

@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.46';
+    const VERSION = '1.4.47';
 
     // ============================================
     // 默认配置
@@ -2988,23 +2988,30 @@ ${blocks}`;
         }
 
         /** 角色卡简介：所有层跑完后再调一次 AI，用各层摘要生成 */
-        function buildCardInfoRequest() {
+        /** opts.usePreset：套酒馆预设（默认不套：预设多是角色扮演用的，套上 AI 容易接着故事往下写） */
+        function buildCardInfoRequest(opts = {}) {
             const st = finalState();
             const target = aliasTargetOf(settings);
             const conv = (x) => applyAliases(x, textAliases(st), target);
             const sums = st.summaries.map((x) => `- 第${x.layer + 1}层 ${conv(x.title)}：${conv(x.summary)}`).join('\n');
             const heroines = listHeroines().map(conv).join('、') || '（无）';
-            const prompt = `下面是一部小说已导入部分的分层摘要。主角在聊天里叫「${target}」。请写角色卡信息：
-<简介>200 到 400 字的作品简介：世界观、主角处境、主要人物（${heroines}），不剧透结局</简介>
-<场景>一句话说明聊天的场景：这是按原著逐层导入的小说正文，${target} 是主角</场景>
+            const prompt = `你是资料整理助手。下面是一部小说已导入部分的分层摘要，主角在聊天里叫「${target}」。任务是给这部小说写角色卡信息，不是续写小说：不要接着故事往下写，不要写正文、对话。
 
 ## 分层摘要
-${sums}`;
-            return { prompt, messages: buildMessages(prompt) };
+${sums}
+
+## 输出格式（只输出这两段，别的什么都不要写）
+<简介>200 到 400 字的作品简介：世界观、主角处境、主要人物（${heroines}），不剧透结局</简介>
+<场景>一句话说明聊天的场景：这是按原著逐层导入的小说正文，${target} 是主角</场景>`;
+            return { prompt, messages: opts.usePreset ? buildMessages(prompt) : [{ role: 'user', content: prompt }] };
         }
 
-        async function generateCardInfo() {
-            const req = buildCardInfoRequest();
+        async function generateCardInfo(opts = {}) {
+            return runSingle(() => generateCardInfoInner(opts));
+        }
+
+        async function generateCardInfoInner(opts) {
+            const req = buildCardInfoRequest(opts);
             const raw = addUsage(null, req.messages, await cfg.callModel(req.messages, { layer: -1, attempt: 0, prompt: req.prompt, purpose: 'card' }));
             E.cardInfo = { description: extractTag(raw, '简介').content, scenario: extractTag(raw, '场景').content };
             return E.cardInfo;
