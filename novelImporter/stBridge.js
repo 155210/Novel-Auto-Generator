@@ -130,33 +130,92 @@
     // 记忆表格
     // ============================================
 
-    function memoryPlugin() {
-        const p = root.stMemoryEnhancement;
-        return p && (typeof p.ext_getAllTables === 'function' || typeof p.ext_exportAllTablesAsJson === 'function') ? p : null;
+    /**
+     * 记忆表格插件有两个版本：原版（st-memory-enhancement）和 v2（st-memory-enhancement-v2），可以同时装。
+     * 两者的设置、模板、楼层去重标记存在不同的键下，这里按「开着哪个」自动选：
+     * 只开一个就用那个；两个都开时用 v2，重建表格期间临时关掉原版，免得两边各执行一遍。
+     * v2 挂在 window.stMemoryEnhancementV2 上（老版本 v2 只挂 window.stMemoryEnhancement，带 isV2 标记）。
+     */
+    const MEMORY_PROFILES = {
+        original: { id: 'original', label: '记忆表格（原版）', settings: 'muyoo_dataTable', templates: 'table_database_templates', matches: 'tableEditMatches', extFallback: true },
+        v2: { id: 'v2', label: '记忆表格 v2', settings: 'muyoo_dataTable_v2', templates: 'table_database_templates_v2', matches: 'tableEditMatches_v2', extFallback: false },
+    };
+
+    const isTableApi = (p) => !!p && (typeof p.ext_getAllTables === 'function' || typeof p.ext_exportAllTablesAsJson === 'function');
+
+    /** 已加载的插件：[{ ...profile, api }]，v2 在前 */
+    function memoryPlugins() {
+        const out = [];
+        const legacy = root.stMemoryEnhancement;
+        const v2 = isTableApi(root.stMemoryEnhancementV2) ? root.stMemoryEnhancementV2 : isTableApi(legacy) && legacy.isV2 ? legacy : null;
+        const original = isTableApi(legacy) && !legacy.isV2 ? legacy : null;
+        if (v2) {
+            const keys = v2.storageKeys || {};
+            out.push({
+                ...MEMORY_PROFILES.v2,
+                settings: keys.settings || MEMORY_PROFILES.v2.settings,
+                templates: keys.templates || MEMORY_PROFILES.v2.templates,
+                matches: keys.tableEditMatches || MEMORY_PROFILES.v2.matches,
+                api: v2,
+            });
+        }
+        if (original) out.push({ ...MEMORY_PROFILES.original, api: original });
+        return out;
     }
 
-    /**
-     * 插件读设置的顺序：先 power_user.muyoo_dataTable（新版存这里），再 extension_settings.muyoo_dataTable（老版本），
-     * 都没有才用插件默认值。改设置也写到 power_user 那份，插件才认。
-     */
-    function memorySettings() {
+    function settingsOf(profile) {
+        if (!profile) return null;
         const c = ctx();
-        const pu = c.powerUserSettings && c.powerUserSettings.muyoo_dataTable;
-        const ext = (c.extensionSettings || {}).muyoo_dataTable;
+        const pu = c.powerUserSettings && c.powerUserSettings[profile.settings];
+        const ext = profile.extFallback ? (c.extensionSettings || {})[profile.settings] : null;
         if (!pu && !ext) return null;
         return { ...(ext || {}), ...(pu || {}) };
     }
 
-    function setMemorySetting(key, value) {
+    const isEnabled = (profile) => (settingsOf(profile) || {}).isExtensionAble !== false;
+
+    /**
+     * 现在用哪个表格插件：开着的里面优先 v2；都关着时也按 v2 优先返回（让调用方报「插件处于关闭状态」）
+     * @returns {{ id, label, settings, templates, matches, api, others: object[] } | null} others 是另外开着的版本
+     */
+    function memoryProfile() {
+        const all = memoryPlugins();
+        if (!all.length) return null;
+        const enabled = all.filter(isEnabled);
+        const chosen = enabled[0] || all[0];
+        return { ...chosen, others: enabled.filter((p) => p.id !== chosen.id) };
+    }
+
+    /** 给界面看：{ id, label, both } 或 null */
+    function memoryMode() {
+        const p = memoryProfile();
+        return p ? { id: p.id, label: p.label, both: p.others.length > 0 } : null;
+    }
+
+    function memoryPlugin() {
+        const p = memoryProfile();
+        return p ? p.api : null;
+    }
+
+    /**
+     * 插件读设置的顺序：先 power_user 下的设置（新版存这里），原版再看 extension_settings（老版本），
+     * 都没有才用插件默认值。改设置也写到 power_user 那份，插件才认。
+     */
+    function memorySettings(profile = memoryProfile()) {
+        return settingsOf(profile);
+    }
+
+    function setMemorySetting(key, value, profile = memoryProfile()) {
+        if (!profile) return;
         const c = ctx();
         const pu = c.powerUserSettings;
         if (pu) {
-            if (!pu.muyoo_dataTable) pu.muyoo_dataTable = {};
+            if (!pu[profile.settings]) pu[profile.settings] = {};
             // 原来没设过的改回去时直接删掉，插件才会接着用默认值
-            if (value === undefined) delete pu.muyoo_dataTable[key];
-            else pu.muyoo_dataTable[key] = value;
+            if (value === undefined) delete pu[profile.settings][key];
+            else pu[profile.settings][key] = value;
         }
-        const ext = (c.extensionSettings || {}).muyoo_dataTable;
+        const ext = profile.extFallback ? (c.extensionSettings || {})[profile.settings] : null;
         if (ext && key in ext && value !== undefined) ext[key] = value;
     }
 
@@ -181,7 +240,7 @@
 
     /**
      * 插件里每张表的填写说明（note / 初始化、插入、更新、删除的触发条件）。
-     * 新版插件存在 power_user.table_database_templates[].cellHistory 的 sheet_origin 里，
+     * 新版插件存在 power_user.table_database_templates[].cellHistory 的 sheet_origin 里（v2 是 table_database_templates_v2），
      * 旧版存在 extension_settings.muyoo_dataTable.tableStructure 里。按表名返回。
      */
     function readPluginTemplateNotes() {
@@ -200,7 +259,8 @@
             /* 没有旧版设置 */
         }
         try {
-            const tpls = (ctx().powerUserSettings || {}).table_database_templates;
+            const profile = memoryProfile();
+            const tpls = (ctx().powerUserSettings || {})[profile ? profile.templates : 'table_database_templates'];
             if (Array.isArray(tpls)) {
                 for (const t of tpls) {
                     const origin = (t && Array.isArray(t.cellHistory) ? t.cellHistory : []).find((h) => h && h.type === 'sheet_origin');
@@ -282,7 +342,7 @@
     /** 模板表名、列数和插件里的是否一致；不一致时行号会错位 */
     function checkTemplate(expected) {
         const live = readPluginTables();
-        if (!live) return { ok: false, reason: '没有检测到记忆表格插件（st-memory-enhancement）' };
+        if (!live) return { ok: false, reason: '没有检测到记忆表格插件（原版或 v2）' };
         if (!live.length) return { ok: true, unknown: true };
         const problems = [];
         if (live.length !== expected.length) problems.push(`插件里启用了 ${live.length} 张表，模板里是 ${expected.length} 张`);
@@ -339,19 +399,24 @@
      */
     async function rebuildTables(opts = {}) {
         const c = ctx();
-        const ms = memorySettings();
-        if (!memoryPlugin()) throw new Error('没有检测到记忆表格插件（st-memory-enhancement），无法重建表格');
-        if (ms && ms.isExtensionAble === false) throw new Error('记忆表格插件处于关闭状态，请先在插件设置里开启');
-        // 分步填表模式下插件会忽略消息编辑事件，重建期间临时关掉，结束后恢复
-        const restore = {};
-        if (ms) {
-            for (const [k, v] of [['step_by_step', false], ['isAiWriteTable', true]]) {
-                if (ms[k] !== v) {
-                    restore[k] = ms[k];
-                    setMemorySetting(k, v);
-                }
-            }
-        }
+        const profile = memoryProfile();
+        if (!profile) throw new Error('没有检测到记忆表格插件（原版或 v2），无法重建表格');
+        const ms = memorySettings(profile);
+        if (ms && ms.isExtensionAble === false) throw new Error(`${profile.label}处于关闭状态，请先在插件设置里开启`);
+        // 分步填表模式下插件会忽略消息编辑事件，重建期间临时关掉，结束后恢复；
+        // 另一个版本也开着时临时关掉它，免得两边各执行一遍（原版还会白存一份每层快照）
+        const restore = [];
+        const change = (p, k, v) => {
+            const cur = (memorySettings(p) || {})[k];
+            if (cur === v) return;
+            const had = Object.prototype.hasOwnProperty.call((c.powerUserSettings || {})[p.settings] || {}, k);
+            restore.push([p, k, cur, had]);
+            setMemorySetting(k, v, p);
+        };
+        change(profile, 'step_by_step', false);
+        change(profile, 'isAiWriteTable', true);
+        for (const other of profile.others) change(other, 'isExtensionAble', false);
+        if (opts.onMode) opts.onMode({ id: profile.id, label: profile.label, paused: profile.others.map((p) => p.label) });
         // 插件每执行一层都会 console.log 整个聊天和全部表格；开着开发者工具时这些对象不会被回收，
         // 上千层时内存一路涨到页面崩溃。重建期间先把普通日志静音，结束后恢复
         const quiet = opts.quietConsole !== false && root.console;
@@ -363,8 +428,9 @@
             for (let i = 0; i < total; i++) {
                 if (opts.shouldStop && opts.shouldStop()) throw new Error('已停止');
                 if (chat[i].is_user) continue;
-                // 清掉插件的去重标记，确保这一层会被重新执行
+                // 清掉插件的去重标记（原版和 v2 的都清），确保这一层会被重新执行
                 delete chat[i].tableEditMatches;
+                delete chat[i][profile.matches];
                 await c.eventSource.emit(c.eventTypes.MESSAGE_EDITED, i);
                 if (opts.onProgress) opts.onProgress(i + 1, total);
                 if (i % 20 === 19) await sleep(0);
@@ -372,8 +438,13 @@
             await c.saveChat();
         } finally {
             if (saved) Object.assign(root.console, saved);
-            for (const [k, v] of Object.entries(restore)) setMemorySetting(k, v);
-            if (Object.keys(restore).length && typeof c.saveSettingsDebounced === 'function') c.saveSettingsDebounced();
+            for (const [p, k, v, had] of restore.reverse()) {
+                // 原来 power_user 里没有这项的删掉，插件接着用默认值或老版本 extension_settings 里的值
+                setMemorySetting(k, had ? v : undefined, p);
+                const ext = p.extFallback ? (c.extensionSettings || {})[p.settings] : null;
+                if (!had && ext && k in ext) ext[k] = v;
+            }
+            if (restore.length && typeof c.saveSettingsDebounced === 'function') c.saveSettingsDebounced();
         }
         const live = readPluginTables();
         const diffs = opts.expected ? compareTables(opts.expected, live) : [];
@@ -447,7 +518,7 @@
             step('重建记忆表格');
             const tpl = checkTemplate(p.expectedTables);
             if (!tpl.ok && !tpl.unknown) throw new Error('记忆表格模板对不上：' + (tpl.reason || tpl.problems.join('；')));
-            tables = await rebuildTables({ expected: p.expectedTables, onProgress: p.onProgress, shouldStop: p.shouldStop });
+            tables = await rebuildTables({ expected: p.expectedTables, onProgress: p.onProgress, onMode: p.onMode, shouldStop: p.shouldStop });
         }
         return { avatar, fileName, tables };
     }
@@ -471,6 +542,7 @@
         writePersonaDescription,
         currentUserName,
         memorySettings,
+        memoryMode,
         importAll,
     };
 })(typeof window !== 'undefined' ? window : globalThis);
