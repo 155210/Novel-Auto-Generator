@@ -948,6 +948,7 @@
                     showResult('', `正在导入：${s}`);
                 },
                 onProgress: (i, n) => setStatus(`重建表格 ${i}/${n}`),
+                onMode: logMemoryMode,
                 shouldStop: () => State.stopped,
             });
             State.meta.avatar = res.avatar;
@@ -972,11 +973,16 @@
         }
     }
 
+    /** 重建时用的是哪个记忆表格插件；另一个版本也开着时会临时关掉 */
+    function logMemoryMode(m) {
+        log(`重建表格用的是${m.label}${m.paused.length ? `；${m.paused.join('、')}也开着，重建期间临时关掉，结束后恢复` : ''}`);
+    }
+
     async function rebuildOnly() {
         try {
             const out = buildOutputs();
             log('开始在当前聊天重建表格...');
-            const r = await ST.rebuildTables({ expected: out.tables, onProgress: (i, n) => setStatus(`重建表格 ${i}/${n}`) });
+            const r = await ST.rebuildTables({ expected: out.tables, onProgress: (i, n) => setStatus(`重建表格 ${i}/${n}`), onMode: logMemoryMode });
             log(r.ok ? '记忆表格核对通过' : `⚠️ 不一致：${r.diffs.map((d) => `${d.table}：${d.reason}`).join('；')}`);
         } catch (e) {
             log(`重建失败：${e.message}`);
@@ -1312,7 +1318,8 @@
         if (!live || !live.length) return toast('没读到记忆插件的表格：请先打开一个有表格的聊天', 'warning');
         const notes = ST.readPluginTemplateNotes();
         const list = live.map((t) => ({ tableName: t.name, columns: t.data[0] || [], ...(notes[t.name] || {}) }));
-        applyTemplate(C.parseTableTemplate(list), ST.readMessageTemplate(), '已从记忆插件读取');
+        const mode = ST.memoryMode();
+        applyTemplate(C.parseTableTemplate(list), ST.readMessageTemplate(), `已从${mode ? mode.label : '记忆插件'}读取`);
     }
 
     async function onWorldbookFile(file) {

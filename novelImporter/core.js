@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.7';
+    const VERSION = '1.5.8';
 
     // ============================================
     // 默认配置
