@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.50';
+    const VERSION = '1.4.51';
 
     // ============================================
     // 默认配置
@@ -133,7 +133,7 @@ P段号 | 锚点 | =替换内容      把锚点文字整体替换成替换内容
 P段号 |  | +补充内容         在该段末尾追加
 P段号 |  | ++新段落          在该段之后另起一段
 </补丁>
-<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>
+<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false, "事实": [], "作废": []}</改写判定>
 <称呼>本层新出现的、指代主角的称呼，用 / 分隔；没有就留空</称呼>
 <世界书>JSON，没有新内容就输出 {}</世界书>
 <表格>JSON，没有变化就输出 {}</表格>`;
@@ -768,6 +768,26 @@ ${tablesForPrompt(state, layerText, settings)}
 格式：{"表名": [{"操作": "更新或插入", "主键": "第一列的值", "数据": {"列名": "值"}}, {"操作": "插入", "数据": {"列名": "值"}}, {"操作": "删除", "主键": "第一列的值"}]}`;
     }
 
+    /** <改写判定> 里的事实列表：数组或换行分隔的字符串都收 */
+    function factList(v) {
+        const arr = Array.isArray(v) ? v : typeof v === 'string' ? v.split(/\n+/) : [];
+        return arr.map((x) => String(x ?? '').replace(/^[-•\s]+/, '').trim()).filter(Boolean);
+    }
+
+    /** 把一层的事实增删合进账本。removed：用户删掉的原句，AI 再报也不收 */
+    function mergeFacts(facts, { add = [], drop = [], layer = -1, removed = null, manual = false } = {}) {
+        const norm = (t) => String(t).replace(/\s+/g, '');
+        const dropSet = new Set(drop.map(norm));
+        const out = (facts || []).filter((f) => !dropSet.has(norm(f.text)));
+        for (const text of add) {
+            if (removed && removed.has(text)) continue;
+            const i = out.findIndex((f) => norm(f.text) === norm(text));
+            if (i >= 0) out.splice(i, 1);
+            out.push({ text, layer, manual });
+        }
+        return out;
+    }
+
     function buildDivergenceSection(settings, state, translate = false) {
         if (!settings.divergenceEnabled) return '';
         const div = state.divergence || {};
@@ -781,9 +801,16 @@ ${tablesForPrompt(state, layerText, settings)}
 ${settings.divergenceRules || DEFAULT_DIVERGENCE_RULES}
 改写方向：${settings.divergenceDirection || DEFAULT_DIVERGENCE_DIRECTION}
 ${how}`;
-        if (!div.active) return base;
+        const factLine = `- 触发或处于改写状态时，在 <改写判定> 里写 "事实": [本层改写后新成立、和原文不一样、后面剧情要一直遵守的事实，一条一句，写清人物和结果，比如 "林晚没有被送走，仍留在宗门"]；之前的事实不再成立时，把原句写进 "作废": [...]；没有就写空数组`;
+        // 账本全部带上，不截断；AI 没报事实（旧任务、自定义输出格式）时退回用每层的改动说明
+        const facts = (div.facts || []).length ? div.facts : (div.notes || []).map((n) => ({ text: `第 ${n.layer + 1} 层的改动：${n.note}` }));
+        const ledger = facts.length
+            ? `\n\n## 和原文不同的既成事实（长期有效，接回原文后也要遵守）\n${facts.map((f) => `- ${f.text}`).join('\n')}\n- 这些是之前改写后已经成立的事实，和原文不一样。本层原文如果和其中任何一条冲突（写到已经被改掉的事件、人物去向、关系），也算触发剧情改写，"规则" 写「与既成事实冲突」，只改冲突的部分，让剧情和这些事实一致`
+            : '';
+        if (!div.active) return `${base}\n${factLine}${ledger}`;
         const notes = (div.notes || []).slice(-8).map((n) => `- 第 ${n.layer + 1} 层：${n.note}`).join('\n');
         return `${base}
+${factLine}${ledger}
 
 ## 当前处于剧情改写状态（从第 ${div.startLayer + 1} 层开始）
 之前的改动记录：
@@ -1220,7 +1247,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             if (!rewritten.found && !patch.closed) errors.push('缺少 <补丁>（或被截断）');
         }
 
-        let divergence = { triggered: false, rule: '', note: '', resume: false };
+        let divergence = { triggered: false, rule: '', note: '', resume: false, facts: [], dropFacts: [] };
         if (judge.closed && judge.content) {
             try {
                 const j = parseLooseJson(judge.content);
@@ -1229,6 +1256,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                     rule: String(j.规则 || j.rule || ''),
                     note: String(j.说明 || j.note || ''),
                     resume: j.回归原文 === true || j.resume === true,
+                    facts: factList(j.事实 ?? j.facts),
+                    dropFacts: factList(j.作废 ?? j.dropFacts),
                 };
             } catch (e) {
                 if (opts.lenient) {
@@ -2198,11 +2227,18 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 }),
                 worldbook: clone(cfg.seedWorldbook || {}),
                 tables: settings.tablesEnabled && cfg.tableTemplate ? createTableState(cfg.tableTemplate) : null,
-                divergence: { active: false, startLayer: -1, notes: [] },
+                divergence: { active: false, startLayer: -1, notes: [], facts: manualFactsAt(0, []) },
                 summaries: [],
                 glossary: normalizeGlossary(cfg.seedGlossary),
                 protagonist: '', // 没填主角原名时，AI 认出来的主角
             };
+        }
+
+        /** 用户在账本里手动加的事实：from 是从第几层（0 开始）起生效，到那层之前合进账本 */
+        function manualFactsAt(from, facts) {
+            const list = (cfg.ledgerManual || []).filter((m) => m && Number(m.from) === from && String(m.text || '').trim());
+            if (!list.length) return facts;
+            return mergeFacts(facts, { add: list.map((m) => String(m.text).trim()), layer: from - 1, manual: true });
         }
 
         /** 用户在术语表里删掉的词，AI 之后再报也不收 */
@@ -2225,8 +2261,9 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             const sig = JSON.stringify(settings) + '|' + E.layers.length;
             const gloss = cfg.seedGlossary;
             const removed = cfg.glossaryRemoved;
-            if (replayCache.sig !== sig || replayCache.tpl !== cfg.tableTemplate || replayCache.seed !== cfg.seedWorldbook || replayCache.gloss !== gloss || replayCache.removed !== removed) {
-                Object.assign(replayCache, { sig, tpl: cfg.tableTemplate, seed: cfg.seedWorldbook, gloss, removed, states: [], refs: [] });
+            const ledger = [cfg.ledgerManual, cfg.ledgerRemoved];
+            if (replayCache.sig !== sig || replayCache.tpl !== cfg.tableTemplate || replayCache.seed !== cfg.seedWorldbook || replayCache.gloss !== gloss || replayCache.removed !== removed || replayCache.ledger?.[0] !== ledger[0] || replayCache.ledger?.[1] !== ledger[1]) {
+                Object.assign(replayCache, { sig, tpl: cfg.tableTemplate, seed: cfg.seedWorldbook, gloss, removed, ledger, states: [], refs: [] });
             }
             let k = 0;
             const max = Math.min(upTo, replayCache.states.length - 1);
@@ -2304,6 +2341,14 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 divergenceStart = true;
             }
             if (useRewrite) d.notes.push({ layer: i, note: p.divergence.note || p.divergence.rule || '改写' });
+            // 事实账本：只收真正改写了的层报的事实；作废的随时可以删。接回原文后账本照样留着
+            d.facts = mergeFacts(d.facts || [], {
+                add: useRewrite ? p.divergence.facts || [] : [],
+                drop: p.divergence.dropFacts || [],
+                layer: i,
+                removed: new Set(cfg.ledgerRemoved || []),
+            });
+            d.facts = manualFactsAt(i + 1, d.facts);
             const inDivergence = d.active;
             if (d.active && p.divergence.resume && !divergenceStart) {
                 d.active = false;
@@ -2654,7 +2699,7 @@ ${blocks}`;
             if (old) parts.push(old);
             if ((extraPrompt || '').trim()) parts.push(`## 用户的补充要求（优先遵守）\n${extraPrompt.trim()}`);
             parts.push(`## 本层定稿正文\n<原文>\n${body}\n</原文>`);
-            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>\n\n${String(s.jsonReminder ?? JSON_REMINDER).trim()}`);
+            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false, "事实": [], "作废": []}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>\n\n${String(s.jsonReminder ?? JSON_REMINDER).trim()}`);
             return parts.join('\n\n');
         }
 
@@ -3404,6 +3449,8 @@ ${sums}
         condenseMessageTemplate,
         normalizeGlossary,
         mergeGlossary,
+        factList,
+        mergeFacts,
         parseGlossaryLines,
         selectGlossary,
         buildOutputRules,

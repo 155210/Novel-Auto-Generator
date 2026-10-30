@@ -32,6 +32,8 @@
         seedWorldbook: null,
         seedGlossary: null, // [{source, target, note}]
         glossaryRemoved: [], // 用户在术语表里删掉的原文，AI 之后再报也不收
+        ledgerManual: [], // 用户手动加或改过的既成事实：[{from（从第几层起，0 开始）, text}]
+        ledgerRemoved: [], // 用户删掉或改掉的 AI 事实原句，AI 之后再报也不收
         stWorlds: null, // 酒馆里开着的世界书：[{name, source, count, chars, rules}]，开始处理时重读
         outputRules: '', // 勾选的那几本拼成的输出要求
         images: [], // EPUB 插图：[{id, name, mime, data(base64)}]，正文里是〔插图id〕
@@ -636,6 +638,8 @@
             seedWorldbook: State.seedWorldbook,
             seedGlossary: State.seedGlossary,
             glossaryRemoved: State.glossaryRemoved,
+            ledgerManual: State.ledgerManual,
+            ledgerRemoved: State.ledgerRemoved,
             images: State.images,
             imagePaths: State.imagePaths,
             meta: State.meta,
@@ -657,6 +661,8 @@
         State.seedWorldbook = snap.seedWorldbook || null;
         State.seedGlossary = snap.seedGlossary || null;
         State.glossaryRemoved = Array.isArray(snap.glossaryRemoved) ? snap.glossaryRemoved : [];
+        State.ledgerManual = Array.isArray(snap.ledgerManual) ? snap.ledgerManual : [];
+        State.ledgerRemoved = Array.isArray(snap.ledgerRemoved) ? snap.ledgerRemoved : [];
         State.images = snap.images || [];
         State.imagePaths = snap.imagePaths || null;
         State.meta = { ...State.meta, ...(snap.meta || {}) };
@@ -687,6 +693,13 @@
             },
             get glossaryRemoved() {
                 return State.glossaryRemoved;
+            },
+            // 既成事实账本在面板里随时能改，引擎每次取最新的
+            get ledgerManual() {
+                return State.ledgerManual;
+            },
+            get ledgerRemoved() {
+                return State.ledgerRemoved;
             },
             get outputRules() {
                 return State.settings.stWorldEnabled ? State.outputRules : '';
@@ -2053,6 +2066,115 @@
         </div></div>`;
     }
 
+    // ============================================
+    // 和原文不同的事实（剧情改写的账本）：看、改、删、加
+    // ============================================
+
+    const ledgerUi = { list: [], opened: [] };
+
+    /** 账本的行：AI 在改写层报的事实（来自已处理的层）+ 用户手动加的（含还没生效的） */
+    function currentLedgerRows() {
+        const e = State.engine;
+        let ai = [];
+        try {
+            if (e && e.layers.length) ai = ((e.finalState().divergence || {}).facts || []).filter((f) => !f.manual);
+        } catch (err) {
+            /* 还没分层 */
+        }
+        return [
+            ...ai.map((f) => ({ text: f.text, from: f.layer + 1, ai: true, orig: f.text })),
+            ...(State.ledgerManual || []).map((m) => ({ text: m.text, from: Number(m.from) || 0, ai: false })),
+        ];
+    }
+
+    function nextLayerIndex() {
+        const e = State.engine;
+        if (!e) return 0;
+        let n = 0;
+        while (n < e.results.length && e.results[n] && e.results[n].status === 'done') n++;
+        return n;
+    }
+
+    function openLedger() {
+        ledgerUi.list = currentLedgerRows();
+        ledgerUi.opened = ledgerUi.list.filter((r) => r.ai).map((r) => r.orig);
+        renderLedgerEdit();
+        $('nim-lg').hidden = false;
+    }
+
+    function renderLedgerEdit() {
+        $('nim-lg-count').textContent = `共 ${ledgerUi.list.length} 条`;
+        $('nim-lg-list').innerHTML = ledgerUi.list.length
+            ? ledgerUi.list
+                  .map(
+                      (r, i) => `<li class="nim-lg-row">
+                <textarea class="nim-input" rows="2" data-lg="${i}" data-f="text" placeholder="比如：林晚没有被送走，仍留在宗门">${esc(r.text)}</textarea>
+                <div class="nim-row">
+                  <span class="nim-muted">${r.ai ? `AI 在第 ${r.from} 层记下，第 ${r.from + 1} 层起生效` : '手动 · 从第'}</span>
+                  ${r.ai ? '' : `<input class="nim-input nim-lg-from" type="number" min="1" data-lg="${i}" data-f="from" value="${r.from + 1}"><span class="nim-muted">层起生效</span>`}
+                  <span class="nim-grow-sp"></span>
+                  <button class="nim-icon-btn sm" data-lg-del="${i}" title="删除">✕</button>
+                </div>
+              </li>`,
+                  )
+                  .join('')
+            : `<li class="nim-empty">还没有事实。剧情改写的层会让 AI 记下和原文不同的事实，也可以手动添加。</li>`;
+    }
+
+    /** 保存：AI 的事实删掉或改过的，原句记进 ledgerRemoved（之后 AI 再报也不收），改过的变成手动事实 */
+    function saveLedgerEdit() {
+        const rows = ledgerUi.list.map((r) => ({ ...r, text: String(r.text || '').trim() })).filter((r) => r.text);
+        const keptAi = new Set(rows.filter((r) => r.ai && r.text === r.orig).map((r) => r.orig));
+        const gone = ledgerUi.opened.filter((t) => !keptAi.has(t));
+        const manual = rows
+            .filter((r) => !r.ai || r.text !== r.orig)
+            .map((r) => ({ from: Math.max(0, r.ai ? r.from : Number(r.from) || 0), text: r.text }));
+        State.ledgerRemoved = [...new Set([...(State.ledgerRemoved || []).filter((t) => !keptAi.has(t)), ...gone])];
+        State.ledgerManual = manual;
+        $('nim-lg').hidden = true;
+        log(`事实账本已保存：${rows.length} 条${gone.length ? `，删掉或改掉 AI 记的 ${gone.length} 条` : ''}`);
+        toast('事实账本已保存，后面的层按新的来', 'success');
+        saveProgress();
+        renderAll();
+    }
+
+    function bindLedgerEdit() {
+        const box = $('nim-lg');
+        box.addEventListener('input', (ev) => {
+            const i = ev.target.dataset.lg;
+            if (i === undefined || !ledgerUi.list[i]) return;
+            // 界面上的层号从 1 开始，存的从 0 开始
+            if (ev.target.dataset.f === 'from') ledgerUi.list[i].from = Math.max(0, (parseInt(ev.target.value, 10) || 1) - 1);
+            else ledgerUi.list[i].text = ev.target.value;
+        });
+        box.addEventListener('click', (ev) => {
+            const b = ev.target.closest('button');
+            if (ev.target === box) return ($('nim-lg').hidden = true);
+            if (!b) return;
+            if (b.dataset.lgDel !== undefined) {
+                ledgerUi.list.splice(Number(b.dataset.lgDel), 1);
+                renderLedgerEdit();
+            } else if (b.dataset.lg === 'add') {
+                ledgerUi.list.unshift({ text: '', from: nextLayerIndex(), ai: false });
+                renderLedgerEdit();
+                box.querySelector('[data-lg="0"][data-f="text"]')?.focus({ preventScroll: true });
+            } else if (b.dataset.lg === 'save') saveLedgerEdit();
+            else if (b.dataset.lg === 'cancel') $('nim-lg').hidden = true;
+        });
+    }
+
+    function ledgerHtml() {
+        return `<div id="nim-lg" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="和原文不同的事实">
+          <div class="nim-sheet-head"><b>和原文不同的事实 <span id="nim-lg-count" class="nim-muted"></span></b><button class="nim-icon-btn" data-lg="cancel" title="关闭">✕</button></div>
+          <div class="nim-sheet-body">
+            <div class="nim-muted">剧情改写后成立的、和原文不一样的事实。每层都会全部发给 AI，接回原文后也照样遵守；后面原文和这些事实冲突时，那一层会自动改写。这里改的优先于 AI 记的，删掉的 AI 再报也不收。已经处理好的层不会变，后面的层按新的来。</div>
+            <div class="nim-row"><button class="nim-btn sm" data-lg="add">添加事实</button></div>
+            <ul id="nim-lg-list" class="nim-gl-list"></ul>
+          </div>
+          <div class="nim-sheet-foot"><span class="nim-grow-sp"></span><button class="nim-btn" data-lg="cancel">取消</button><button class="nim-btn primary" data-lg="save">保存</button></div>
+        </div></div>`;
+    }
+
     const wrUi = { text: '', total: 0, summary: '' };
 
     /** 词语替换写进已生成的层之前，先列出每条规则换了几处、在哪一层哪一块，带前后文 */
@@ -2667,6 +2789,8 @@
         setRes('nim-res-wb', wbN, wbN ? `${wbN} 条` : '可选，从头建');
         const gNow = e ? (e.finalState().glossary || []).length : 0;
         const gSeed = (State.seedGlossary || []).length;
+        const facts = currentLedgerRows();
+        setRes('nim-res-ledger', facts.length, facts.length ? `${facts.length} 条${State.ledgerManual.length ? `，手动 ${State.ledgerManual.length} 条` : ''}` : '剧情改写后自动记录，也可以手动加');
         setRes('nim-res-gloss', gSeed || gNow, gNow || gSeed ? `${gSeed} 条初始${gNow > gSeed ? `，已积累到 ${gNow} 条` : ''}` : st && st.translate ? '会边翻译边积累' : '翻译外文小说时用');
     }
 
@@ -2745,6 +2869,7 @@
             '术语表',
             `<button id="nim-gloss-edit" class="nim-btn sm">查看和编辑</button><button id="nim-gloss-nt" class="nim-btn sm">从小说翻译读取</button><label class="nim-btn sm">导入<input type="file" id="nim-gloss-file" accept=".json,.txt" hidden></label><button id="nim-gloss-clear" class="nim-btn ghost sm">清除</button>`,
         )}
+        ${res('nim-res-ledger', '📝', '和原文不同的事实', `<button id="nim-ledger-edit" class="nim-btn sm">查看和编辑</button>`)}
       </div>
       ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog" class="nim-btn">查看清掉的内容</button></div>`)}
     </section>
@@ -2763,7 +2888,7 @@
       )}
       ${card('preset', '酒馆预设', '导入后每个条目可以开关、拖动排序、编辑', presetHtml())}
       ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
-      ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite'))}
+      ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite') + '<div class="nim-row"><button id="nim-ledger-edit2" class="nim-btn sm">查看和编辑「和原文不同的事实」</button></div>')}
       ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
       ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
       ${card('wb', '世界书', '提取分类（和 TXT转世界书 一样）、额外要求', categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
@@ -2849,6 +2974,7 @@
   ${cleanLogHtml()}
   ${replacePreviewHtml()}
   ${glossaryHtml()}
+  ${ledgerHtml()}
 </div></div>`;
     }
 
@@ -3033,6 +3159,9 @@ select.nim-input{appearance:auto;}
 .nim-gl-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
 .nim-gl-row{display:grid;grid-template-columns:1fr auto 1fr auto;gap:6px;align-items:center;padding:8px;border-radius:10px;background:var(--surface);border:1px solid var(--line);}
 .nim-gl-row .nim-gl-note{grid-column:1/-1;font-size:12px;}
+.nim-lg-row{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:10px;background:var(--surface);border:1px solid var(--line);}
+.nim-lg-row textarea{resize:vertical;min-height:2.6em;}
+.nim-lg-from{width:4.5em;}
 .nim-gl-arrow{color:var(--muted);}
 .nim-gl-pager{justify-content:center;align-items:center;}
 .nim-wb-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;}
@@ -3191,6 +3320,9 @@ select.nim-input{appearance:auto;}
         on('nim-gloss-edit', 'click', openGlossary);
         on('nim-gloss-edit2', 'click', openGlossary);
         bindGlossaryEdit();
+        on('nim-ledger-edit', 'click', openLedger);
+        on('nim-ledger-edit2', 'click', openLedger);
+        bindLedgerEdit();
         on('nim-gloss-clear', 'click', () => setSeedGlossary([], '已清除初始术语表'));
         on('nim-clear-wb', 'click', () => {
             State.seedWorldbook = null;
