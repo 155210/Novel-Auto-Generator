@@ -968,6 +968,66 @@ describe('运行引擎', () => {
         expect(req.prompt).toContain('没有送出去');
     });
 
+    it('事实账本：改写层记下的事实全部带上，接回原文后照样带，作废的去掉', async () => {
+        const { engine } = makeEngine((layer) => {
+            if (layer === 0) return reply({ title: 'a', rewritten: 'x', judge: { 触发: true, 规则: '送女', 说明: '没送', 事实: ['裘月寒没有被送走', '路长远拿到了玉佩'] } });
+            if (layer === 1) return reply({ title: 'b', rewritten: 'y', judge: { 触发: false, 说明: '接回', 回归原文: true, 事实: ['裘月寒留在宗门'], 作废: ['路长远拿到了玉佩'] } });
+            return normal(layer);
+        });
+        await engine.run();
+        const st = engine.finalState();
+        expect(st.divergence.active).toBe(false);
+        expect(st.divergence.facts.map((f) => f.text)).toEqual(['裘月寒没有被送走', '裘月寒留在宗门']);
+        // 第 3 层已经接回原文，提示词里仍然带着账本
+        const req = engine.buildRequestFor(2);
+        expect(req.prompt).toContain('和原文不同的既成事实');
+        expect(req.prompt).toContain('裘月寒留在宗门');
+        expect(req.prompt).not.toContain('路长远拿到了玉佩');
+        expect(req.prompt).toContain('与既成事实冲突');
+    });
+
+    it('事实账本：超过 8 条也全部带上，不截断', async () => {
+        const facts = Array.from({ length: 12 }, (_, k) => `事实${k + 1}`);
+        const { engine } = makeEngine((layer) =>
+            layer === 0 ? reply({ title: 'a', rewritten: 'x', judge: { 触发: true, 规则: '送女', 说明: '改', 事实: facts } }) : normal(layer),
+        );
+        await engine.run();
+        const req = engine.buildRequestFor(1);
+        for (const f of facts) expect(req.prompt).toContain(`- ${f}\n`);
+    });
+
+    it('事实账本：手动加的从指定层起生效，删掉的 AI 事实不再收', async () => {
+        const cfg = { ledgerManual: [{ from: 2, text: '用户加的事实' }], ledgerRemoved: ['裘月寒没有被送走'] };
+        const engine = C.createEngine({
+            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1, aliasReplaceBy: 'text' },
+            tableTemplate: TEMPLATE,
+            get ledgerManual() {
+                return cfg.ledgerManual;
+            },
+            get ledgerRemoved() {
+                return cfg.ledgerRemoved;
+            },
+            callModel: async (messages, info) =>
+                info.layer === 0 ? reply({ title: 'a', rewritten: 'x', judge: { 触发: true, 规则: '送女', 说明: '改', 事实: ['裘月寒没有被送走', '另一条'] } }) : normal(info.layer),
+        });
+        engine.prepare(NOVEL);
+        await engine.run();
+        expect(engine.buildRequestFor(1).prompt).not.toContain('用户加的事实');
+        const p2 = engine.buildRequestFor(2).prompt;
+        expect(p2).toContain('用户加的事实');
+        expect(p2).toContain('另一条');
+        expect(p2).not.toContain('裘月寒没有被送走');
+        // 改了账本（换新数组），回放重算
+        cfg.ledgerManual = [];
+        expect(engine.buildRequestFor(2).prompt).not.toContain('用户加的事实');
+    });
+
+    it('factList 收数组或换行字符串', () => {
+        expect(C.factList(['a', ' - b ', ''])).toEqual(['a', 'b']);
+        expect(C.factList('x\ny')).toEqual(['x', 'y']);
+        expect(C.factList(null)).toEqual([]);
+    });
+
     it('审阅：停在这一层，不通过就带意见重做', async () => {
         const { engine, calls } = makeEngine((layer, prompt) => {
             if (prompt.includes('修改要求（最优先')) return reply({ title: '重做', summary: '按意见改了' });
