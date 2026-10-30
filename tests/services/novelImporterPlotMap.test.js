@@ -208,3 +208,20 @@ describe('剧情地图：搜原文和空章', () => {
         expect(r[0]).toEqual({ title: '第二章 坏章', layer: 1, before: '第一章 雨夜\n正文', after: '本章未完，请到某某网站阅读', next: '第三章 分别' });
     });
 });
+
+describe('剧情地图：雷点判断', () => {
+    it('提示词带主角和判断标准；涉及主角自己的毒点丢掉', () => {
+        const p = M.buildScanPrompt({ index: 0, paras: [{ text: '正文' }] }, { protagonist: '祁铭', judgeNotes: C.TOXIC_JUDGE_NOTES });
+        expect(p).toContain('本书主角是「祁铭」');
+        expect(p).toContain('主角本人和她亲热');
+        const r = M.parseScanResponse('{"毒点":[{"雷点":"NTR","涉及":"祁铭","证据":"x"},{"雷点":"NTR","涉及":"王二","证据":"y"}]}', C.parseLooseJson, { protagonist: '祁铭' });
+        expect(r.toxic.map((t) => t.who)).toEqual(['王二']);
+    });
+
+    it('剧情改写规则也带判断标准', () => {
+        const { engine } = makeEngine(() => reply({}), {}, { divergenceEnabled: true, protagonistName: '路长远' });
+        const p = engine.buildRequestFor(0).prompt;
+        expect(p).toContain('主角本人和她亲热');
+        expect(p).toContain('本书主角是「路长远」');
+    });
+});
