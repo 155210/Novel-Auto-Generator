@@ -17,6 +17,7 @@
     const API_DEFAULTS = {
         // 剧情地图：预扫描用的模型（留空用主 API）、并发、单价、雷点、指令模板
         mapScanModel: '',
+        mapScanExtra: '', // 扫描时的额外要求
         // 「拉取模型列表」拉到的模型存下来，主模型和剧情地图的模型都从这里选
         apiModels: [],
         mapScanEndpoint: '',
@@ -1445,6 +1446,7 @@
         presetUi.selected.clear();
         renderPreset();
         log(`预设切换到「${State.settings.preset.name || '插件默认'}」`);
+        if ($('nim-preset-fold')) $('nim-preset-fold').open = false;
         toast(`已切换到「${State.settings.preset.name || '插件默认'}」，后面的层按它发`, 'success');
     }
 
@@ -1992,15 +1994,17 @@
 
     function presetHtml() {
         return `<div id="nim-preset">
+          <div class="nim-sub">预设方案（按模型切换）</div>
+          <div class="nim-row"><select id="nim-preset-lib" class="nim-input nim-grow"></select><button id="nim-preset-use" class="nim-btn sm">切换到这个</button></div>
+          <div class="nim-muted">导入的预设会自动存成方案。「插件默认」是本模块自带的预设，随时能切回。切换后，还没处理的层按新预设发。</div>
           <div class="nim-pr-bar"><div id="nim-preset-name" class="nim-pr-title"></div><label class="nim-btn primary sm">导入预设<input type="file" id="nim-preset-file" accept=".json,application/json" hidden></label></div>
+          <details class="nim-fold nim-subfold" id="nim-preset-fold"><summary>预设条目（点开编辑）</summary>
           <div class="nim-muted">支持酒馆导出的聊天补全预设 JSON，顺序和开关和酒馆里一样。角色卡、世界书、示例对话等占位条目不导入；📌 是每层的提示词（小说正文和任务），相当于预设里「聊天记录」的位置。按住左边的抓手上下拖动调整顺序，点条目名编辑。</div>
           <ul id="nim-preset-list" class="nim-pr-list"></ul>
           <div id="nim-preset-actions" class="nim-row"></div>
-          <div class="nim-sub">预设方案（按模型切换）</div>
-          <div class="nim-row"><select id="nim-preset-lib" class="nim-input nim-grow"></select><button id="nim-preset-use" class="nim-btn sm">切换到这个</button></div>
-          <div class="nim-row"><input id="nim-preset-name-input" class="nim-input nim-grow" placeholder="方案名，比如「Claude 用」「Gemini 用」"><button id="nim-preset-save" class="nim-btn sm">把当前预设存成方案</button><button id="nim-preset-libdel" class="nim-btn sm danger-ghost">删掉选中的方案</button></div>
-          <div class="nim-muted">导入的预设会自动存成方案。「插件默认」是本模块自带的预设，随时能切回。切换后，还没处理的层按新预设发。</div>
           <label class="nim-check"><input type="checkbox" id="nim-preset-squash"><span class="nim-switch"></span><span>合并相邻的系统消息<span class="nim-hint">和酒馆的「压缩系统消息」一样</span></span></label>
+          </details>
+          <div class="nim-row"><input id="nim-preset-name-input" class="nim-input nim-grow" placeholder="方案名，比如「Claude 用」「Gemini 用」"><button id="nim-preset-save" class="nim-btn sm">把当前预设存成方案</button><button id="nim-preset-libdel" class="nim-btn sm danger-ghost">删掉选中的方案</button></div>
         </div>`;
     }
 
@@ -2409,6 +2413,7 @@
         if (lp.resume) out.push('<span class="nim-tag violet">接回</span>');
         if (lp.skip) out.push('<span class="nim-tag">跳过</span>');
         if (lp.scanError) out.push('<span class="nim-tag red">上次扫描失败</span>');
+        if (PM.scanNotChinese(lp.scan)) out.push('<span class="nim-tag orange">总结没翻成中文</span>');
         if (lp.scan && lp.scan.toxic.length) out.push(`<span class="nim-tag red">雷点 ${esc(lp.scan.toxic.map((t) => t.rule).join('、'))}</span>`);
         if (row && row.hot) out.push(`<span class="nim-tag red">关键词 ${row.keywordTotal}</span>`);
         if (conflicts[i]) out.push('<span class="nim-tag orange">可能和事实冲突</span>');
@@ -2828,7 +2833,7 @@
         const e = mapEngine();
         if (!e) return toast('先选一本小说', 'warning');
         if (mapUi.scan) return toast('正在扫描', 'info');
-        const targets = single !== null ? [e.layers[single]] : scanTargets(onlyMissing);
+        const targets = Array.isArray(single) ? single.map((i) => e.layers[i]).filter(Boolean) : single !== null ? [e.layers[single]] : scanTargets(onlyMissing);
         if (!targets.length) return toast('这个范围里的层都扫过了', 'info');
         const ctl = new AbortController();
         mapUi.scan = { ctl, done: 0, total: targets.length, failed: 0, tokens: 0 };
@@ -2850,7 +2855,7 @@
             Math.max(1, Math.min(8, Number(State.settings.mapConcurrency) || 3)),
             async (l) => {
                 const prev = PM.layerPlan(State.plan, l.index - 1).scan;
-                const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '', protagonist, judgeNotes: C.TOXIC_JUDGE_NOTES });
+                const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '', protagonist, judgeNotes: C.TOXIC_JUDGE_NOTES, extra: State.settings.mapScanExtra || '' });
                 const key = `第 ${l.index + 1} 层`;
                 const attempt = async (maxTokens) => {
                     const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
@@ -2892,13 +2897,27 @@
         const added = addNamesFromScan();
         renderScanState();
         renderMap();
-        toast(`${added ? `人物名单加了 ${added} 个人。` : ''}扫描完成 ${sc.done - sc.failed} 层${sc.failed ? `，失败 ${sc.failed} 层（日志里有原因）` : ''}${sc.tokens ? `，用了约 ${fmtNum(sc.tokens)} token` : ''}`, sc.failed ? 'warning' : 'success');
+        const foreign = notChineseLayers().length;
+        toast(`${added ? `人物名单加了 ${added} 个人。` : ''}${foreign ? `有 ${foreign} 层总结没翻成中文，可以点「重扫没翻成中文的层」。` : ''}扫描完成 ${sc.done - sc.failed} 层${sc.failed ? `，失败 ${sc.failed} 层（日志里有原因）` : ''}${sc.tokens ? `，用了约 ${fmtNum(sc.tokens)} token` : ''}`, sc.failed ? 'warning' : 'success');
+    }
+
+    /** 扫描总结还是日文、韩文的层 */
+    function notChineseLayers() {
+        const e = State.engine;
+        if (!e) return [];
+        return e.layers.map((l) => l.index).filter((i) => PM.scanNotChinese(PM.layerPlan(State.plan, i).scan));
     }
 
     function renderScanState() {
         const el = $('nim-map-scanstate');
         if (!el) return;
         const sc = mapUi.scan;
+        const ja = $('nim-map-rescan-ja');
+        if (ja) {
+            const n = sc || mapUi.busy ? 0 : notChineseLayers().length;
+            ja.hidden = !n;
+            ja.textContent = `重扫没翻成中文的 ${n} 层`;
+        }
         const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
         el.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? `，失败 ${sc.failed}` : ''}` : busy;
         $('nim-map-scanstop').hidden = !sc && !mapUi.busy;
@@ -3163,6 +3182,10 @@
         on('nim-map-est-btn', 'click', showScanEstimate);
         on('nim-map-scan', 'click', () => runScan(true));
         on('nim-map-rescan', 'click', () => runScan(false));
+        on('nim-map-rescan-ja', 'click', () => {
+            const list = notChineseLayers();
+            if (list.length) runScan(false, list);
+        });
         on('nim-map-scanstop', 'click', stopMapWork);
         on('nim-foot-scan', 'click', () => runScan(true));
         on('nim-foot-rescan', 'click', () => {
@@ -3254,6 +3277,11 @@
            <div class="nim-tools-head"><div><div class="nim-card-title">预扫描与 AI</div><div class="nim-card-desc">便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点</div></div><button class="nim-btn ghost sm" data-goto="nim-sec-mapcfg">模型和雷点设置</button></div>
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
            <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过或失败的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
+           <div class="nim-row"><button id="nim-map-rescan-ja" class="nim-btn sm" hidden></button></div>
+           <details class="nim-fold nim-subfold"><summary>扫描时额外要求（可选）</summary>
+             <textarea class="nim-input nim-textarea" rows="3" data-map-set="mapScanExtra" placeholder="比如：原文是日文，摘要和人名一律翻成中文；人物名单里不要写路人"></textarea>
+             <div class="nim-hint">写了之后每次扫描、重扫都会带上。</div>
+           </details>
            <div id="nim-map-scanstate" class="nim-muted"></div>
            <div id="nim-map-est" class="nim-muted"></div>
            <details class="nim-fold" id="nim-map-live-box"><summary>实时输出</summary><div id="nim-map-live" class="nim-map-live"></div></details>

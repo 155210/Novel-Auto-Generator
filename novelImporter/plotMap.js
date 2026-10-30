@@ -301,13 +301,26 @@
             opts.prevOneLine ? `## 上一层剧情\n${opts.prevOneLine}` : '',
             names ? `## 已知人物（同一人的不同叫法用 / 分隔，统一用第一个名字）\n${names}` : '',
             `## 读者的雷点（本层出现就写进 毒点，附原文证据）\n${opts.toxicRules || DEFAULT_TOXIC}${opts.judgeNotes ? `\n${opts.judgeNotes}` : ''}${opts.protagonist ? `\n- 本书主角是「${opts.protagonist}」` : '\n- 主角是全书的视角人物、戏份最多的那个人（第一人称小说里就是「我」，写出「我」的名字）；先判断出主角，写进 "主角"，再按主角判断雷点'}\n- 每条毒点写清 "涉及"：除主角以外做这件事的那个人；写不出这个人就不要算`,
+            opts.extra && String(opts.extra).trim() ? `## 额外要求\n${String(opts.extra).trim()}` : '',
             `## 原文\n<原文>\n${text}\n</原文>`,
             `## 输出格式（只输出这个 JSON，别的什么都不要写）
 {"一句话": "30 字以内概括本层主线", "摘要": "100 到 200 字，谁做了什么、结果如何", "人物": ["本层出场的主要人物，用规范名"], "关系": [{"甲": "人名", "乙": "人名", "变化": "比如 结拜、翻脸、订婚、表白"}], "毒点": [{"雷点": "命中的雷点", "涉及": "主角以外的那个人", "证据": "原文里的一句话"}], "标签": ["从 战斗 感情 日常 修炼 阴谋 转折 高潮 水章 里选，最多 3 个"], "主角": "主角的名字（看不出写空字符串）"}
-键和字符串一律用英文双引号，没有的写空数组。`,
+键和字符串一律用英文双引号，没有的写空数组。
+所有内容用简体中文写：原文是日文、英文等外文也要翻成中文，人名用中文写法，不要照抄外文。`,
         ]
             .filter(Boolean)
             .join('\n\n');
+    }
+
+    /** 扫描结果的一句话和摘要还是日文（假名多）/ 韩文，说明 AI 没翻成中文 */
+    function scanNotChinese(scan) {
+        if (!scan) return false;
+        const t = `${scan.oneLine || ''}${scan.summary || ''}`;
+        // 平假名中文里几乎不出现；片假名可能是中文摘要里引用的外来词，按占比算
+        const hira = (t.match(/[\u3041-\u309f]/g) || []).length;
+        const kata = (t.match(/[\u30a1-\u30ff]/g) || []).length;
+        const hangul = (t.match(/[\uac00-\ud7af]/g) || []).length;
+        return hira >= 4 || kata >= Math.max(8, t.length * 0.3) || hangul >= 5;
     }
 
     function parseLooseJsonObject(raw, parseLooseJson) {
@@ -606,6 +619,7 @@ ${after || '（到结尾）'}
         hashText,
         buildScanPrompt,
         parseScanResponse,
+        scanNotChinese,
         estimateScanCost,
         runPool,
         mapLines,
