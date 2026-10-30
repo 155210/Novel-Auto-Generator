@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.8';
+    const VERSION = '1.5.9';
 
     // ============================================
     // 默认配置
@@ -55,6 +55,13 @@
 
     const DEFAULT_DIVERGENCE_RULES = `- 出现主角把自己的女人送给别人（送女）的情节
 - 出现主角的女人被他人染指、背叛主角（NTR、绿帽）的情节`;
+
+    // 送女 / NTR 类规则最容易误判（把主角自己的亲热戏当成 NTR），判断时统一带上这几条
+    const TOXIC_JUDGE_NOTES = `判断时注意（宁可漏判，不要误判）：
+- 「主角的女人」指主角的妻子、女友、后宫，或已经和主角确定关系的女性
+- 主角本人和她亲热、做爱、调情一律不算；必须是主角以外的人和她发生亲密行为或性关系，或者她主动背叛主角投向别人，才算
+- 只是被别人搭讪、调戏、意淫、言语骚扰，或者企图未遂、被阻止的，不算
+- 拿不准是不是主角、是不是「主角的女人」时，不算`;
 
     const DEFAULT_DIVERGENCE_DIRECTION = `把相关情节改成没有发生：保持其他角色的性格和动机不变，后续剧情顺着这个改动自然发展，直到能重新接回原文为止。`;
 
@@ -805,6 +812,7 @@ ${tablesForPrompt(state, layerText, settings)}
         const base = `## 剧情改写规则（强规则）
 当本层原文出现下列情节时，触发剧情改写：
 ${settings.divergenceRules || DEFAULT_DIVERGENCE_RULES}
+${TOXIC_JUDGE_NOTES}${protagonistOf(settings, state) ? `\n- 本书主角是「${protagonistOf(settings, state)}」` : ''}
 改写方向：${settings.divergenceDirection || DEFAULT_DIVERGENCE_DIRECTION}
 ${how}`;
         const factLine = `- 触发或处于改写状态时，在 <改写判定> 里写 "事实": [本层改写后新成立、和原文不一样、后面剧情要一直遵守的事实，一条一句，写清人物和结果，比如 "林晚没有被送走，仍留在宗门"]；之前的事实不再成立时，把原句写进 "作废": [...]；没有就写空数组`;
@@ -3556,6 +3564,7 @@ ${sums}
         outputRuleItems,
         stripEchoedSource,
         protagonistOf,
+        TOXIC_JUDGE_NOTES,
         aliasTargetOf,
         cleanCell,
         estimateTokens,
