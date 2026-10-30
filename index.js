@@ -171,6 +171,7 @@ function bindEvents() {
                 toastr.info('正在加载小说导入改写模块...');
                 if (typeof window.EpubToTxt === 'undefined') await loadScript('epubToTxt.js').catch(() => {});
                 await loadScript('novelImporter/core.js');
+                await loadScript('novelImporter/plotMap.js');
                 await loadScript('novelImporter/stBridge.js');
                 await loadScript('novelImporter/ui.js');
             } catch (e) {

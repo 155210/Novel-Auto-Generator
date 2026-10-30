@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.4.51';
+    const VERSION = '1.5.0';
 
     // ============================================
     // 默认配置
@@ -172,6 +172,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         divergenceEnabled: true,
         divergenceRules: DEFAULT_DIVERGENCE_RULES,
         divergenceDirection: DEFAULT_DIVERGENCE_DIRECTION,
+        recapLayers: 2, // 前情提要带最近几层的摘要；剧情改写中额外带上从改写起点开始的（最多 10 层）
 
         // 称呼
         protagonistName: '',
@@ -781,8 +782,8 @@ ${tablesForPrompt(state, layerText, settings)}
         const out = (facts || []).filter((f) => !dropSet.has(norm(f.text)));
         for (const text of add) {
             if (removed && removed.has(text)) continue;
-            const i = out.findIndex((f) => norm(f.text) === norm(text));
-            if (i >= 0) out.splice(i, 1);
+            // 已经有了就留着原来的（记下它的层号不变）
+            if (out.some((f) => norm(f.text) === norm(text))) continue;
             out.push({ text, layer, manual });
         }
         return out;
@@ -963,6 +964,31 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         );
     }
 
+    /** 前情提要：最近 recapLayers 层；剧情改写中把改写起点以来的层也带上（最多 10 层），新剧情接得上 */
+    function recapOf(state, s) {
+        const all = state.summaries || [];
+        const n = Math.max(0, Number(s.recapLayers ?? 2));
+        const div = state.divergence || {};
+        const from = div.active && div.startLayer >= 0 ? all.findIndex((x) => x.layer >= div.startLayer) : -1;
+        const start = Math.max(0, Math.min(all.length - n, from >= 0 ? Math.max(from, all.length - 10) : all.length));
+        return all.slice(start).filter((x) => x.summary);
+    }
+
+    /** 用户在剧情地图里给这一层定的改写安排（指令、新大纲、插入、压缩、接回） */
+    function buildUserPlanSection(up, translate = false) {
+        const lines = [];
+        if (up.instruction) lines.push(`- 改写指令：${up.instruction}`);
+        if (up.outline) lines.push(`- 按这份新大纲写本层（大纲是用户定的，情节以它为准，细节和文风贴合原文）：\n${up.outline}`);
+        if (up.condense) lines.push('- 这层是水章：把本层压缩到原来三成左右的篇幅，只保留推动剧情和后文要用到的信息');
+        if (up.insert) lines.push(`- 在本层原有剧情之后，续写一段新剧情（写进本层正文的结尾，用 ⟪ ⟫ 包起来）：${up.insert}`);
+        if (up.resume) lines.push('- 本层要接回原文：本层结束时剧情要和原文对齐，<改写判定> 里写 "回归原文": true');
+        if (!lines.length) return '';
+        const how = translate
+            ? `- 这些要求在译文里直接做到；<改写判定> 写 "触发": true，"规则" 写「用户指令」`
+            : `- 本层按触发剧情改写处理：<改写判定> 写 "触发": true，"规则" 写「用户指令」，不输出 <补丁>，改为输出 <改写正文>本层完整的改写后正文</改写正文>，和原文不同的部分用 ⟪ 和 ⟫ 包起来`;
+        return `## 用户给这一层的改写安排（最优先，必须做到）\n${lines.join('\n')}\n${how}\n- 改写后新成立、和原文不一样的事实写进 <改写判定> 的 "事实"`;
+    }
+
     function buildLayerPrompt(layer, settings, state, extra = {}) {
         const s = { ...DEFAULT_SETTINGS, ...settings };
         const layerText = layer.paras.map((p) => p.text).join('\n');
@@ -1003,8 +1029,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                     extra.eventRows.map((r, i) => `${i + 1}. ${r.join(' / ')}`).join('\n'),
             );
         }
-        const prevSummary = (state.summaries || []).slice(-2).map((x) => `- ${x.title}：${x.summary}`).join('\n');
-        if (prevSummary) parts.push(`## 前情提要\n${prevSummary}`);
+        if (extra.userPlan) parts.push(buildUserPlanSection(extra.userPlan, tr));
+        const prevSummary = recapOf(state, s)
+            .map((x) => `- 第 ${x.layer + 1} 层 ${x.title}：${x.summary}`)
+            .join('\n');
+        if (prevSummary) parts.push(`## 前情提要（改写后的新剧情，接着这个写）\n${prevSummary}`);
         if (extra.prevTail) parts.push(`## 上一层正文的结尾（只用来承接，让本层开头衔接自然；不要重复输出这段）\n<上一层结尾>\n${extra.prevTail}\n</上一层结尾>`);
         if (extra.prevTail && extra.prevSourceTail)
             parts.push(
@@ -2234,6 +2263,22 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             };
         }
 
+        /** 剧情地图里这一层的安排；没有任何改写要求时返回 null */
+        function userPlanOf(i) {
+            const p = typeof cfg.planFor === 'function' ? cfg.planFor(i) : null;
+            if (!p) return null;
+            const up = {
+                instruction: String(p.instruction || '').trim(),
+                outline: String(p.outline || '').trim(),
+                insert: String(p.insert || '').trim(),
+                condense: !!p.condense,
+                resume: !!p.resume,
+                skip: !!p.skip,
+            };
+            return up.instruction || up.outline || up.insert || up.condense || up.resume || up.skip ? up : null;
+        }
+        const planRewrites = (up) => !!(up && (up.instruction || up.outline || up.insert || up.condense));
+
         /** 用户在账本里手动加的事实：from 是从第几层（0 开始）起生效，到那层之前合进账本 */
         function manualFactsAt(from, facts) {
             const list = (cfg.ledgerManual || []).filter((m) => m && Number(m.from) === from && String(m.text || '').trim());
@@ -2334,8 +2379,8 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             }
             const d = next.divergence;
             let divergenceStart = false;
-            const useRewrite = !!p.rewrittenText && (d.active || p.divergence.triggered);
-            if (!d.active && p.divergence.triggered) {
+            const useRewrite = !!p.rewrittenText && (d.active || p.divergence.triggered || !!r.planRewrite);
+            if (!d.active && (p.divergence.triggered || (r.planRewrite && useRewrite))) {
                 d.active = true;
                 d.startLayer = i;
                 divergenceStart = true;
@@ -2353,6 +2398,8 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             if (d.active && p.divergence.resume && !divergenceStart) {
                 d.active = false;
             }
+            // 剧情地图里标了「从这层接回原文」：这层写完就算接回，起点层也一样
+            if (d.active && r.planResume) d.active = false;
             return {
                 state: next,
                 out: { tableActions, tableLog, divergenceStart, inDivergence: inDivergence || useRewrite, useRewrite, layer },
@@ -2415,6 +2462,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 prevTail,
                 prevSourceTail,
                 carryTags,
+                userPlan: userPlanOf(i),
                 ...extra,
                 needBigSummary: askBig,
                 eventRows: askBig ? eventRowsOf(st) : [],
@@ -2508,6 +2556,31 @@ ${blocks}`;
 
         async function processLayer(i, extra = {}) {
             const st = replay(i);
+            const up = userPlanOf(i);
+            // 剧情地图里标了跳过：不调 AI、不出楼层，状态原样往下传
+            if (up && up.skip && !extra.customPrompt && !extra.feedback) {
+                const r = {
+                    status: 'done',
+                    skipped: true,
+                    attempts: 0,
+                    calls: [],
+                    raw: '',
+                    finalParas: [],
+                    patchStats: { applied: 0, failed: [], addedChars: 0, rewritten: false },
+                    parsed: {
+                        ok: true, errors: [], warnings: [], title: '（跳过）', summary: '', patches: [], badPatchLines: [], rewrittenText: null, markedText: null,
+                        divergence: { triggered: false, rule: '', note: '', resume: false, facts: [], dropFacts: [] },
+                        aliases: [], worldbook: {}, tableOps: {}, bigSummary: '', terms: [], protagonist: '',
+                    },
+                    ms: 0,
+                };
+                E.results[i] = r;
+                const c = commit(st, i, r);
+                r.tableActions = c.out.tableActions;
+                r.tableLog = c.out.tableLog;
+                emit('layer-done', { index: i, result: r });
+                return r;
+            }
             const req = buildRequest(i, st, extra);
             const startedAt = Date.now();
             const r = {
@@ -2519,6 +2592,9 @@ ${blocks}`;
                 prompt: req.prompt,
                 request: req.messages.map((m) => ({ role: m.role, content: m.content })),
                 customPrompt: typeof extra.customPrompt === 'string' && extra.customPrompt.trim() ? true : undefined,
+                // 剧情地图里给这层定了改写安排：整层改写、审阅时停下
+                planRewrite: planRewrites(up) || undefined,
+                planResume: (up && up.resume) || undefined,
             };
             E.results[i] = r;
             emit('layer-start', { index: i });
@@ -2559,7 +2635,7 @@ ${blocks}`;
                 r.parsed = parsed;
                 r.warnings = parsed.warnings;
                 const layer = E.layers[i];
-                const useRewrite = !!parsed.rewrittenText && (layer.translate || st.divergence.active || parsed.divergence.triggered);
+                const useRewrite = !!parsed.rewrittenText && (layer.translate || st.divergence.active || parsed.divergence.triggered || r.planRewrite);
                 if (useRewrite) {
                     r.finalParas = ensureImageMarkers(layer.paras, splitParagraphs(parsed.rewrittenText));
                     r.patchStats = { applied: 0, failed: [], addedChars: parsed.rewrittenText.length - layer.chars, rewritten: true, translated: !!layer.translate };
@@ -2587,7 +2663,7 @@ ${blocks}`;
 
         function shouldReview(r) {
             if (settings.reviewMode === 'every') return true;
-            if (settings.reviewMode === 'divergence' && (r.divergenceStart || r.inDivergence)) return true;
+            if (settings.reviewMode === 'divergence' && (r.divergenceStart || r.inDivergence || r.planRewrite)) return true;
             return false;
         }
 
@@ -2903,7 +2979,7 @@ ${blocks}`;
             const st = replay(done.length);
             const conv = (s) => outText(s, st);
             let lastHeading = '';
-            return done.map((i) => {
+            return done.filter((i) => !E.results[i].skipped).map((i) => {
                 const r = E.results[i];
                 let heading = conv(formatHeading(E.layers[i], r.parsed.title, settings, E.stats.chapterUnit));
                 // 原文标题模式下，一章被切成几层时后面的层沿用这一章的标题，免得章号跳成层号
@@ -3467,6 +3543,9 @@ ${sums}
         splitParagraphs,
         splitLayers,
         buildLayerPrompt,
+        buildUserPlanSection,
+        isChapterTitle,
+        safeRegex,
         applyMessageChain,
         PRESET_SLOT_ID,
         presetDefaults,
