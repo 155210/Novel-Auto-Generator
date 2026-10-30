@@ -465,6 +465,106 @@ ${after || '（到结尾）'}
         return out;
     }
 
+    // ============================================
+    // 搜原文、目录、空章定位
+    // ============================================
+
+    /** 关键词转成正则：英文不分大小写；用 /.../ 包起来就按正则搜 */
+    function searchRegex(query) {
+        const q = String(query || '').trim();
+        if (!q) return null;
+        const m = q.match(/^\/(.+)\/([a-z]*)$/);
+        try {
+            if (m) return new RegExp(m[1], m[2].includes('i') ? 'gi' : 'g');
+        } catch (e) {
+            return null;
+        }
+        return new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    }
+
+    /** 全书搜：返回命中总数和前 limit 条（带层号、所在章节、前后文） */
+    function searchLayers(layers, query, { limit = 300, isChapterTitle = () => false, context = 28 } = {}) {
+        const re = searchRegex(query);
+        const hits = [];
+        let total = 0;
+        if (!re) return { total, hits, bad: !!String(query || '').trim() };
+        for (const l of layers) {
+            let chapter = '';
+            let nth = 0;
+            for (const p of l.paras || []) {
+                const t = p.text || '';
+                if (isChapterTitle(t)) chapter = t;
+                re.lastIndex = 0;
+                let m;
+                while ((m = re.exec(t))) {
+                    if (!m[0]) {
+                        re.lastIndex++;
+                        continue;
+                    }
+                    total++;
+                    if (hits.length < limit) {
+                        hits.push({
+                            layer: l.index,
+                            nth,
+                            chapter,
+                            before: (m.index > context ? '…' : '') + t.slice(Math.max(0, m.index - context), m.index),
+                            match: m[0],
+                            after: t.slice(m.index + m[0].length, m.index + m[0].length + context) + (m.index + m[0].length + context < t.length ? '…' : ''),
+                        });
+                    }
+                    nth++;
+                }
+            }
+        }
+        return { total, hits };
+    }
+
+    /** 目录：每个章节标题在哪一层 */
+    function chapterIndex(layers) {
+        const out = [];
+        for (const l of layers) for (const c of l.chapters || []) out.push({ title: c, layer: l.index });
+        return out;
+    }
+
+    /**
+     * 空章在原文里的位置：清洗时空章标题被删了，回原文找到它，
+     * 带出它后面那点内容（看得出是被替换还是真没写），并按下一个正常章节推出在第几层附近。
+     */
+    function locateEmptyChapters(rawText, titles, layers, isChapterTitle = () => false) {
+        const raw = String(rawText || '');
+        const lines = raw.split(/\r?\n/).map((x) => x.trim());
+        const chapLayer = new Map();
+        for (const c of chapterIndex(layers)) if (!chapLayer.has(c.title)) chapLayer.set(c.title, c.layer);
+        const used = new Set();
+        return (titles || []).map((title) => {
+            let at = -1;
+            for (let i = 0; i < lines.length; i++) {
+                if (lines[i] === title && !used.has(i)) {
+                    at = i;
+                    break;
+                }
+            }
+            if (at < 0) return { title, layer: null, after: '', next: '' };
+            used.add(at);
+            const body = [];
+            let next = '';
+            for (let j = at + 1; j < lines.length; j++) {
+                if (!lines[j]) continue;
+                if (isChapterTitle(lines[j])) {
+                    next = lines[j];
+                    break;
+                }
+                body.push(lines[j]);
+            }
+            let layer = next && chapLayer.has(next) ? chapLayer.get(next) : null;
+            if (layer === null) {
+                // 后面紧跟的也是空章，就往前找最近的正常章节
+                for (let j = at - 1; j >= 0 && layer === null; j--) if (lines[j] && chapLayer.has(lines[j])) layer = chapLayer.get(lines[j]);
+            }
+            return { title, layer, after: body.join('\n').slice(0, 200), next };
+        });
+    }
+
     const API = {
         DEFAULT_KEYWORDS,
         DEFAULT_TOXIC,
@@ -491,6 +591,10 @@ ${after || '（到结尾）'}
         buildOutlinePrompt,
         parseOutlineResponse,
         conflictHints,
+        searchRegex,
+        searchLayers,
+        chapterIndex,
+        locateEmptyChapters,
     };
     root.NovelImporterPlotMap = API;
 })(typeof window !== 'undefined' ? window : globalThis);

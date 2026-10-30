@@ -182,3 +182,29 @@ describe('剧情地图：改写安排进引擎', () => {
         expect(p).toContain('前情提要');
     });
 });
+
+describe('剧情地图：搜原文和空章', () => {
+    const { engine } = makeEngine(() => reply({}));
+    const isTitle = (t) => C.isChapterTitle(t, C.safeRegex(C.DEFAULT_CHAPTER_REGEX));
+
+    it('全书搜：命中数、层号、所在章节、前后文', () => {
+        const r = M.searchLayers(engine.layers, '玉佩', { isChapterTitle: isTitle });
+        expect(r.total).toBe(1);
+        expect(r.hits[0].layer).toBe(1);
+        expect(r.hits[0].chapter).toBe('第二章 同行');
+        expect(r.hits[0].before).toBe('路长远把');
+        expect(r.hits[0].after.startsWith('送给了')).toBe(true);
+    });
+
+    it('/正则/ 也能搜，坏正则不报错', () => {
+        expect(M.searchLayers(engine.layers, '/裘.寒/').total).toBe(3);
+        expect(M.searchLayers(engine.layers, '/(/').bad).toBe(true);
+    });
+
+    it('空章回原文找到位置和所在层', () => {
+        const raw = '第一章 雨夜\n正文\n第二章 坏章\n本章未完，请到某某网站阅读\n第三章 分别\n正文';
+        const layers = [{ index: 0, chapters: ['第一章 雨夜'] }, { index: 1, chapters: ['第三章 分别'] }];
+        const r = M.locateEmptyChapters(raw, ['第二章 坏章'], layers, isTitle);
+        expect(r[0]).toEqual({ title: '第二章 坏章', layer: 1, after: '本章未完，请到某某网站阅读', next: '第三章 分别' });
+    });
+});
