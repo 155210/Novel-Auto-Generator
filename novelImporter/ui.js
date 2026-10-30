@@ -535,39 +535,15 @@
             if (onChunk) onChunk(text, text);
             return text;
         }
-        const reader = resp.body.getReader();
-        const dec = new TextDecoder();
-        let buf = '';
-        let full = '';
         try {
-            for (;;) {
-                clearTimeout(timer);
-                timer = setTimeout(() => controller.abort(), timeout);
-                const { done, value } = await reader.read();
-                if (done) break;
-                buf += dec.decode(value, { stream: true });
-                const lines = buf.split('\n');
-                buf = lines.pop() || '';
-                for (const line of lines) {
-                    const t = line.trim();
-                    if (!t.startsWith('data:')) continue;
-                    const d = t.slice(5).trim();
-                    if (!d || d === '[DONE]') continue;
-                    let j;
-                    try {
-                        j = JSON.parse(d);
-                    } catch (e) {
-                        continue;
-                    }
-                    if (j.error) throw new Error(`流式错误：${j.error.message || JSON.stringify(j.error)}`);
-                    if (j.usage) State.lastUsage = j.usage;
-                    const delta = j.choices?.[0]?.delta?.content || j.choices?.[0]?.message?.content || '';
-                    if (delta) {
-                        full += delta;
-                        if (onChunk) onChunk(delta, full);
-                    }
-                }
-            }
+            return await readSSE(resp, {
+                onDelta: onChunk,
+                onUsage: (u) => (State.lastUsage = u),
+                onTick: () => {
+                    clearTimeout(timer);
+                    timer = setTimeout(() => controller.abort(), timeout);
+                },
+            });
         } catch (e) {
             if (e.name === 'AbortError') {
                 const err = new Error('响应中断：太久没有收到新数据');
@@ -577,6 +553,41 @@
             throw e;
         } finally {
             clearTimeout(timer);
+        }
+    }
+
+    /** 读 OpenAI 格式的 SSE 流：每段增量调 onDelta(delta, full)，每次收到数据先调 onTick（续超时） */
+    async function readSSE(resp, { onDelta, onUsage, onTick }) {
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        let full = '';
+        for (;;) {
+            if (onTick) onTick();
+            const { done, value } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop() || '';
+            for (const line of lines) {
+                const t = line.trim();
+                if (!t.startsWith('data:')) continue;
+                const d = t.slice(5).trim();
+                if (!d || d === '[DONE]') continue;
+                let j;
+                try {
+                    j = JSON.parse(d);
+                } catch (e) {
+                    continue;
+                }
+                if (j.error) throw new Error(`流式错误：${j.error.message || JSON.stringify(j.error)}`);
+                if (j.usage && onUsage) onUsage(j.usage);
+                const delta = j.choices?.[0]?.delta?.content || j.choices?.[0]?.message?.content || '';
+                if (delta) {
+                    full += delta;
+                    if (onDelta) onDelta(delta, full);
+                }
+            }
         }
         return full;
     }
@@ -2268,7 +2279,7 @@
     // ============================================
 
     const PM = window.NovelImporterPlotMap;
-    const mapUi = { stats: null, statsKey: '', openVol: new Set([0]), openLayer: null, filter: 'all', char: '', scan: null, busy: '' };
+    const mapUi = { stats: null, statsKey: '', openVol: new Set([0]), openLayer: null, filter: 'all', char: '', scan: null, busy: '', live: new Map() };
 
     function mapEngine() {
         const e = State.engine;
@@ -2588,33 +2599,86 @@
         };
     }
 
-    /** 预扫描、提议、出大纲用的请求：不流式、不占主流程的停止按钮 */
-    async function callSideAPI(prompt, { signal, maxTokens = 2000 } = {}) {
+    let sideUsageOk = true;
+
+    /** 预扫描、提议、出大纲用的请求：流式，onChunk(delta, full) 拿实时输出；不占主流程的停止按钮，超时按多久没收到新数据算 */
+    async function callSideAPI(prompt, { signal, maxTokens = 2000, onChunk } = {}) {
         const m = scanModelInfo();
         const h = { 'Content-Type': 'application/json' };
         if (m.key) h.Authorization = `Bearer ${m.key}`;
-        const body = { model: m.model || 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.3, stream: false, max_tokens: maxTokens };
+        const timeout = Number(State.settings.apiTimeout) || 300000;
         let last;
         for (let k = 0; k < 3; k++) {
             if (signal && signal.aborted) throw new Error('ABORTED');
+            const body = { model: m.model || 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.3, stream: true, max_tokens: maxTokens };
+            if (sideUsageOk) body.stream_options = { include_usage: true };
+            const ctl = new AbortController();
+            const onAbort = () => ctl.abort();
+            if (signal) signal.addEventListener('abort', onAbort);
+            let timer = setTimeout(() => ctl.abort(), timeout);
+            const tick = () => {
+                clearTimeout(timer);
+                timer = setTimeout(() => ctl.abort(), timeout);
+            };
             try {
-                const resp = await fetch(chatUrl(m.endpoint), { method: 'POST', headers: h, body: JSON.stringify(body), signal });
+                const resp = await fetch(chatUrl(m.endpoint), { method: 'POST', headers: h, body: JSON.stringify(body), signal: ctl.signal });
                 if (!resp.ok) {
                     const t = await resp.text().catch(() => '');
+                    if (sideUsageOk && resp.status === 400 && /stream_options|include_usage/i.test(t)) {
+                        sideUsageOk = false;
+                        k--;
+                        continue;
+                    }
                     const err = new Error(`API 返回 ${resp.status}：${t.slice(0, 200)}`);
                     err.retryable = RETRYABLE.has(resp.status);
                     throw err;
                 }
-                const data = await resp.json();
-                return { text: data?.choices?.[0]?.message?.content || '', usage: data.usage || null };
+                const ct = resp.headers.get('content-type') || '';
+                if (!ct.includes('event-stream') || !resp.body) {
+                    const data = await resp.json();
+                    const text = data?.choices?.[0]?.message?.content || '';
+                    if (onChunk) onChunk(text, text);
+                    return { text, usage: data.usage || null };
+                }
+                let usage = null;
+                const text = await readSSE(resp, { onDelta: onChunk, onUsage: (u) => (usage = u), onTick: tick });
+                return { text, usage };
             } catch (e) {
-                if (e.name === 'AbortError') throw new Error('ABORTED');
-                last = e;
-                if (e.retryable === false) throw e;
+                if (signal && signal.aborted) throw new Error('ABORTED');
+                if (e.name === 'AbortError') last = new Error('响应中断：太久没有收到新数据');
+                else {
+                    last = e;
+                    if (e.retryable === false) throw e;
+                }
                 await sleep(2 ** k * 1500);
+            } finally {
+                clearTimeout(timer);
+                if (signal) signal.removeEventListener('abort', onAbort);
             }
         }
         throw last;
+    }
+
+    /** 剧情地图的实时输出：同时扫几层就显示几段，只留最近 6 段 */
+    let mapLiveRaf = 0;
+    function mapLive(key, full, reset = false) {
+        if (reset) mapUi.live.clear();
+        if (key) {
+            mapUi.live.delete(key);
+            mapUi.live.set(key, full);
+            while (mapUi.live.size > 6) mapUi.live.delete(mapUi.live.keys().next().value);
+        }
+        if (mapLiveRaf) return;
+        mapLiveRaf = requestAnimationFrame(() => {
+            mapLiveRaf = 0;
+            const el = $('nim-map-live');
+            if (!el) return;
+            const box = $('nim-map-live-box');
+            if (mapUi.live.size && box && !box.open) box.open = true;
+            const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+            el.textContent = [...mapUi.live].map(([k, v]) => `【${k}】\n${v.length > 3000 ? '…' + v.slice(-3000) : v}`).join('\n\n');
+            if (atBottom) el.scrollTop = el.scrollHeight;
+        });
     }
 
     function scanTargets(onlyMissing) {
@@ -2648,6 +2712,7 @@
         if (!targets.length) return toast('这个范围里的层都扫过了', 'info');
         const ctl = new AbortController();
         mapUi.scan = { ctl, done: 0, total: targets.length, failed: 0, tokens: 0 };
+        mapLive('', '', true);
         renderScanState();
         const names = mapNames();
         const toxic = State.settings.mapToxic || State.settings.divergenceRules || PM.DEFAULT_TOXIC;
@@ -2658,7 +2723,10 @@
                 const prev = PM.layerPlan(State.plan, l.index - 1).scan;
                 const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '' });
                 try {
-                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens: 1200 });
+                    const key = `第 ${l.index + 1} 层`;
+                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens: 1200, onChunk: (_d, full) => mapLive(key, full) });
+                    mapLive(`${key} ✓`, res.text);
+                    mapUi.live.delete(key);
                     const parsed = PM.parseScanResponse(res.text, C.parseLooseJson);
                     if (res.usage) mapUi.scan.tokens += (res.usage.prompt_tokens || 0) + (res.usage.completion_tokens || 0);
                     setPlanField(l.index, { scan: { ...parsed, hash: PM.hashText(PM.layerText(l)) } });
@@ -2700,7 +2768,7 @@
         setStatus('AI 正在通读剧情地图、找要改的地方…');
         try {
             const pref = (State.settings.mapToxic || '') + (State.settings.divergenceDirection ? `\n改写方向：${State.settings.divergenceDirection}` : '');
-            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules }), { maxTokens: 4000 });
+            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules }), { maxTokens: 4000, onChunk: (_d, full) => mapLive('AI 提议改写点', full) });
             const list = PM.parseSuggestResponse(res.text, C.parseLooseJson);
             State.plan = { ...State.plan, suggestions: list };
             savePlan();
@@ -2750,7 +2818,7 @@
         try {
             const variants = Math.max(1, Math.min(3, Number(State.settings.mapVariants) || 1));
             const prompt = PM.buildOutlinePrompt(e.layers, State.plan, i, to, { instruction: instr.join('\n'), facts: ledgerFacts().map((f) => f.text), variants });
-            const res = await callSideAPI(prompt, { maxTokens: 3000 });
+            const res = await callSideAPI(prompt, { maxTokens: 3000, onChunk: (_d, full) => mapLive(`第 ${i + 1}–${to + 1} 层新大纲`, full) });
             const list = PM.parseOutlineResponse(res.text, C.parseLooseJson);
             if (!list.length) throw new Error('没拿到大纲');
             if (list.length === 1) applyOutline(list[0]);
@@ -2953,6 +3021,7 @@
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
            <div class="nim-row"><button id="nim-map-est-btn" class="nim-btn sm">估算花费</button><button id="nim-map-scan" class="nim-btn sm primary">扫描没扫过的层</button><button id="nim-map-rescan" class="nim-btn sm">全部重扫</button><button id="nim-map-scanstop" class="nim-btn sm danger-ghost" hidden>停止</button><span id="nim-map-scanstate" class="nim-muted"></span></div>
            <div id="nim-map-est" class="nim-muted"></div>
+           <details class="nim-fold" id="nim-map-live-box"><summary>实时输出</summary><pre id="nim-map-live" class="nim-pre"></pre></details>
            <div class="nim-row"><button id="nim-map-suggest" class="nim-btn sm">AI 提议改写点</button><button id="nim-map-export" class="nim-btn sm">导出规划</button><label class="nim-btn sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>`,
       )}
       <div id="nim-map" class="nim-map"></div>`;
