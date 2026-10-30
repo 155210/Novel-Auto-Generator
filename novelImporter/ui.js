@@ -557,12 +557,16 @@
         }
     }
 
-    /** 读 OpenAI 格式的 SSE 流：每段增量调 onDelta(delta, full)，每次收到数据先调 onTick（续超时） */
+    /**
+     * 读 OpenAI 格式的 SSE 流：每段增量调 onDelta(delta, full, think)，每次收到数据先调 onTick（续超时）。
+     * DeepSeek 等推理模型先在 reasoning_content 里输出思考，think 是累计的思考内容，只用来显示，不算进回复。
+     */
     async function readSSE(resp, { onDelta, onUsage, onTick }) {
         const reader = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
         let full = '';
+        let think = '';
         for (;;) {
             if (onTick) onTick();
             const { done, value } = await reader.read();
@@ -583,14 +587,26 @@
                 }
                 if (j.error) throw new Error(`流式错误：${j.error.message || JSON.stringify(j.error)}`);
                 if (j.usage && onUsage) onUsage(j.usage);
-                const delta = j.choices?.[0]?.delta?.content || j.choices?.[0]?.message?.content || '';
+                const dl = j.choices?.[0]?.delta || {};
+                const r = dl.reasoning_content || dl.reasoning || dl.thinking || '';
+                if (r && typeof r === 'string') {
+                    think += r;
+                    if (onDelta) onDelta('', full, think);
+                }
+                const delta = dl.content || j.choices?.[0]?.message?.content || '';
                 if (delta) {
                     full += delta;
-                    if (onDelta) onDelta(delta, full);
+                    if (onDelta) onDelta(delta, full, think);
                 }
             }
         }
         return full;
+    }
+
+    /** 实时输出框里显示的内容：有思考就先列思考，再列正文 */
+    function liveText(full, think) {
+        if (!think) return full;
+        return full ? `【思考】\n${think}\n\n【正文】\n${full}` : `【思考中】\n${think}`;
     }
 
     /** 给引擎用：网络错误自己退避重试，格式错误交给引擎重试 */
@@ -600,8 +616,12 @@
             if (State.stopped) throw new Error('ABORTED');
             try {
                 State.stream = '';
-                const text = await callAPI(messages, (_d, full) => {
-                    State.stream = full;
+                State.streamBody = 0;
+                State.streamThinking = false;
+                const text = await callAPI(messages, (_d, full, think) => {
+                    State.stream = liveText(full, think);
+                    State.streamBody = full.length;
+                    State.streamThinking = !!think && !full;
                     renderStream(info);
                 });
                 return { text, usage: State.lastUsage };
@@ -2742,7 +2762,7 @@
                 const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '' });
                 try {
                     const key = `第 ${l.index + 1} 层`;
-                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens: 1200, onChunk: (_d, full) => mapLive(key, full) });
+                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens: 1200, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
                     mapLive(`${key} ✓`, res.text);
                     mapUi.live.delete(key);
                     const parsed = PM.parseScanResponse(res.text, C.parseLooseJson);
@@ -2786,7 +2806,7 @@
         setStatus('AI 正在通读剧情地图、找要改的地方…');
         try {
             const pref = (State.settings.mapToxic || '') + (State.settings.divergenceDirection ? `\n改写方向：${State.settings.divergenceDirection}` : '');
-            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules }), { maxTokens: 4000, onChunk: (_d, full) => mapLive('AI 提议改写点', full) });
+            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules }), { maxTokens: 4000, onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
             const list = PM.parseSuggestResponse(res.text, C.parseLooseJson);
             State.plan = { ...State.plan, suggestions: list };
             savePlan();
@@ -2836,7 +2856,7 @@
         try {
             const variants = Math.max(1, Math.min(3, Number(State.settings.mapVariants) || 1));
             const prompt = PM.buildOutlinePrompt(e.layers, State.plan, i, to, { instruction: instr.join('\n'), facts: ledgerFacts().map((f) => f.text), variants });
-            const res = await callSideAPI(prompt, { maxTokens: 3000, onChunk: (_d, full) => mapLive(`第 ${i + 1}–${to + 1} 层新大纲`, full) });
+            const res = await callSideAPI(prompt, { maxTokens: 3000, onChunk: (_d, full, think) => mapLive(`第 ${i + 1}–${to + 1} 层新大纲`, liveText(full, think)) });
             const list = PM.parseOutlineResponse(res.text, C.parseLooseJson);
             if (!list.length) throw new Error('没拿到大纲');
             if (list.length === 1) applyOutline(list[0]);
@@ -2998,6 +3018,24 @@
         });
     }
 
+    /** 剧情地图的模型、并发、单价、雷点和模板：放在设置页 */
+    function mapCfgCard() {
+        const s = (key, label, type = 'text', hint = '', extra = '') =>
+            `<div class="nim-field"><label>${label}</label>${type === 'textarea' ? `<textarea class="nim-input nim-textarea" rows="3" data-map-set="${key}" ${extra}></textarea>` : `<input class="nim-input" type="${type}" data-map-set="${key}" ${extra}>`}${hint ? `<div class="nim-hint">${hint}</div>` : ''}</div>`;
+        return card(
+            'mapcfg',
+            '剧情地图',
+            '预扫描用的模型、并发、单价，雷点清单，改写指令模板',
+            `${s('mapScanModel', '预扫描用的模型', 'text', '留空用主 API 的模型；建议填便宜的，比如 Flash、Haiku、mini 档')}
+           ${s('mapScanEndpoint', '预扫描 API 地址', 'text', '留空用主 API')}
+           ${s('mapScanKey', '预扫描 API Key', 'password', '留空用主 API')}
+           <div class="nim-grid">${s('mapConcurrency', '同时扫几层', 'number', '1 到 8', 'min="1" max="8"')}${s('mapPriceIn', '输入单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapPriceOut', '输出单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapVariants', '新大纲出几个方案', 'number', '1 到 3', 'min="1" max="3"')}</div>
+           ${s('mapToxic', '雷点清单（每行一条，扫描时找出来，AI 提议时照着改）', 'textarea', '留空用「触发剧情改写的情节」')}
+           <div class="nim-row"><button id="nim-map-apply-toxic" class="nim-btn sm">把雷点加进剧情改写规则</button></div>
+           ${s('mapTemplates', '改写指令模板（每行一条）', 'textarea')}`,
+        );
+    }
+
     function mapPanelHtml() {
         const s = (key, label, type = 'text', hint = '', extra = '') =>
             `<div class="nim-field"><label>${label}</label>${type === 'textarea' ? `<textarea class="nim-input nim-textarea" rows="3" data-map-set="${key}" ${extra}></textarea>` : `<input class="nim-input" type="${type}" data-map-set="${key}" ${extra}>`}${hint ? `<div class="nim-hint">${hint}</div>` : ''}</div>`;
@@ -3012,23 +3050,16 @@
            <div class="nim-field"><label>每卷几层</label><input id="nim-map-volsize" class="nim-input" type="number" min="2"></div>
            <div id="nim-map-stats"></div>`,
       )}
-      ${card(
-          'map-scan',
-          '预扫描与 AI',
-          '便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点、出新大纲',
-          `${s('mapScanModel', '预扫描用的模型', 'text', '留空用主 API 的模型；建议填便宜的，比如 Flash、Haiku、mini 档')}
-           ${s('mapScanEndpoint', '预扫描 API 地址', 'text', '留空用主 API')}
-           ${s('mapScanKey', '预扫描 API Key', 'password', '留空用主 API')}
-           <div class="nim-grid">${s('mapConcurrency', '同时扫几层', 'number', '1 到 8', 'min="1" max="8"')}${s('mapPriceIn', '输入单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapPriceOut', '输出单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapVariants', '新大纲出几个方案', 'number', '1 到 3', 'min="1" max="3"')}</div>
-           ${s('mapToxic', '雷点清单（每行一条，扫描时找出来，AI 提议时照着改）', 'textarea', '留空用「触发剧情改写的情节」')}
-           <div class="nim-row"><button id="nim-map-apply-toxic" class="nim-btn sm">把雷点加进剧情改写规则</button></div>
-           ${s('mapTemplates', '改写指令模板（每行一条）', 'textarea')}
+      <div class="nim-card static nim-map-tools"><div class="nim-card-body">
+           <div class="nim-tools-head"><div><div class="nim-card-title">预扫描与 AI</div><div class="nim-card-desc">便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点</div></div><button class="nim-btn ghost sm" data-goto="nim-sec-mapcfg">模型和雷点设置</button></div>
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
-           <div class="nim-row"><button id="nim-map-est-btn" class="nim-btn sm">估算花费</button><button id="nim-map-scan" class="nim-btn sm primary">扫描没扫过的层</button><button id="nim-map-rescan" class="nim-btn sm">全部重扫</button><button id="nim-map-scanstop" class="nim-btn sm danger-ghost" hidden>停止</button><span id="nim-map-scanstate" class="nim-muted"></span></div>
+           <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
+           <div id="nim-map-scanstate" class="nim-muted"></div>
            <div id="nim-map-est" class="nim-muted"></div>
            <details class="nim-fold" id="nim-map-live-box"><summary>实时输出</summary><pre id="nim-map-live" class="nim-pre"></pre></details>
-           <div class="nim-row"><button id="nim-map-suggest" class="nim-btn sm">AI 提议改写点</button><button id="nim-map-export" class="nim-btn sm">导出规划</button><label class="nim-btn sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>`,
-      )}
+           <div class="nim-row"><button id="nim-map-suggest" class="nim-btn">AI 提议改写点</button></div>
+           <div class="nim-row nim-row-quiet"><button id="nim-map-rescan" class="nim-btn ghost sm">全部重扫</button><button id="nim-map-export" class="nim-btn ghost sm">导出规划</button><label class="nim-btn ghost sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>
+      </div></div>
       <div id="nim-map" class="nim-map"></div>`;
     }
 
@@ -3044,8 +3075,9 @@
     }
 
     /** 打开原文阅读：某一层（可带关键词、第几处命中、跳到某章），或者一段原文摘录 */
-    function openSource(i, { query = '', nth = 0, chapter = '', excerpt = null, title = '' } = {}) {
+    function openSource(i, { query = '', nth = 0, chapter = '', excerpt = null, title = '', gotoLayer = null } = {}) {
         const e = State.engine;
+        srcUi.gotoLayer = excerpt !== null ? gotoLayer : null;
         if (excerpt !== null) {
             srcUi.layer = null;
             srcUi.title = title || '原文';
@@ -3101,7 +3133,9 @@
         $('nim-src-title').textContent = srcUi.title;
         $('nim-src-sub').textContent = l ? `${fmtNum(l.chars)} 字${l.chapters.length ? ` · ${l.chapters[0]}${l.chapters.length > 1 ? ` 等 ${l.chapters.length} 章` : ''}` : ''}` : '';
         $('nim-src-count').textContent = srcUi.query ? (n ? `${srcUi.cur + 1} / ${n}` : '没找到') : '';
-        $('nim-src-nav').hidden = srcUi.layer === null;
+        $('nim-src-nav').hidden = srcUi.layer === null && srcUi.gotoLayer === null;
+        $('nim-src-nav').classList.toggle('excerpt', srcUi.layer === null);
+        $('nim-src-goto').textContent = srcUi.gotoLayer !== null ? `打开第 ${srcUi.gotoLayer + 1} 层原文` : '';
         if (l) {
             $('nim-src-prev').disabled = srcUi.layer <= 0;
             $('nim-src-next').disabled = srcUi.layer >= e.layers.length - 1;
@@ -3135,6 +3169,8 @@
             if ((act === 'up' || act === 'down') && srcUi.total) {
                 srcUi.cur = (srcUi.cur + (act === 'down' ? 1 : -1) + srcUi.total) % srcUi.total;
                 focusSourceHit();
+            } else if (act === 'goto' && srcUi.gotoLayer !== null) {
+                openSource(srcUi.gotoLayer, {});
             } else if (act === 'prev' || act === 'next') {
                 openSource(srcUi.layer + (act === 'next' ? 1 : -1), { query: srcUi.query });
             } else if (act === 'map' && srcUi.layer !== null) {
@@ -3176,7 +3212,7 @@
             <button class="nim-icon-btn sm" data-src="up" title="上一处">↑</button><button class="nim-icon-btn sm" data-src="down" title="下一处">↓</button>
           </div>
           <div id="nim-src-body" class="nim-src-body"></div>
-          <div id="nim-src-nav" class="nim-sheet-foot"><button id="nim-src-prev" class="nim-btn sm" data-src="prev">‹ 上一层</button><button class="nim-btn sm ghost" data-src="map">在剧情地图里看</button><button id="nim-src-next" class="nim-btn sm" data-src="next">下一层 ›</button></div>
+          <div id="nim-src-nav" class="nim-sheet-foot"><button id="nim-src-prev" class="nim-btn sm" data-src="prev">‹ 上一层</button><button class="nim-btn sm ghost" data-src="map">在剧情地图里看</button><button id="nim-src-next" class="nim-btn sm" data-src="next">下一层 ›</button><button id="nim-src-goto" class="nim-btn sm primary" data-src="goto"></button></div>
         </div></div>`;
     }
 
@@ -3238,6 +3274,46 @@
         return out;
     }
 
+    /** 设置页像手机设置一样：列表里点一项进二级页，点标题栏返回 */
+    function syncSettingsPage(opened) {
+        const panel = document.querySelector('#nim-modal [data-panel="settings"]');
+        if (!panel) return;
+        const cards = [...panel.querySelectorAll('.nim-set-list > details.nim-card')];
+        if (opened && opened.open) cards.forEach((d) => d !== opened && d.open && (d.open = false));
+        const sub = cards.some((d) => d.open);
+        if (sub !== panel.classList.contains('sub')) {
+            panel.classList.toggle('sub', sub);
+            const body = document.querySelector('#nim-modal .nim-body');
+            if (body) body.scrollTop = 0;
+        }
+    }
+
+    function renderSetSearch() {
+        const panel = document.querySelector('#nim-modal [data-panel="settings"]');
+        const q = $('nim-set-q').value.trim().toLowerCase();
+        const box = $('nim-set-results');
+        panel.classList.toggle('searching', !!q);
+        box.hidden = !q;
+        if (!q) return;
+        findUi.index = buildFeatureIndex();
+        const seen = new Set();
+        const list = findUi.index.filter((it) => {
+            if (!it.el || !(it.text.toLowerCase().includes(q) || it.desc.toLowerCase().includes(q) || it.where.toLowerCase().includes(q))) return false;
+            const k = it.text + '|' + it.where;
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+        });
+        // 设置页的排前面
+        list.sort((a, b) => (a.tab === 'settings' ? 0 : 1) - (b.tab === 'settings' ? 0 : 1));
+        box.innerHTML = list.length
+            ? list
+                  .slice(0, 60)
+                  .map((it) => `<button class="nim-hit" data-feat="${findUi.index.indexOf(it)}"><div class="nim-hit-where"><b>${esc(it.text)}</b></div><div class="nim-hit-text nim-muted">${esc(it.where)}${it.desc ? ` · ${esc(it.desc)}` : ''}</div></button>`)
+                  .join('')
+            : '<div class="nim-empty">没有找到。换个说法试试，比如「模型」「广告」「标题」「表格」。</div>';
+    }
+
     function goToEl(el, tab) {
         $('nim-find').hidden = true;
         switchTab(tab);
@@ -3247,6 +3323,7 @@
             d = d.parentElement && d.parentElement.closest('details');
         }
         if (el.matches('details')) el.open = true;
+        syncSettingsPage(el.closest('[data-panel="settings"] .nim-set-list > details.nim-card'));
         requestAnimationFrame(() => {
             el.scrollIntoView({ block: el.matches('details, .nim-res') ? 'start' : 'center' });
             el.classList.remove('nim-flash');
@@ -3352,10 +3429,13 @@
     function openEmptyChapter(k) {
         const x = emptyChapterInfo()[k];
         if (!x) return;
-        const lines = [x.title, x.after || '（标题后面什么都没有）'];
-        if (x.next) lines.push('', `下一章：${x.next}`);
-        openSource(null, { excerpt: lines.join('\n'), title: `空章：${x.title}` });
-        $('nim-src-sub').textContent = x.layer !== null ? `原文里在第 ${x.layer + 1} 层附近；清洗时整章去掉了，建议换个源补上` : '原文里没找到这一行';
+        // 前面几行 + 这一行（高亮）+ 后面到下一章之前的内容，看得出它夹在哪里
+        const lines = [];
+        if (x.before) lines.push('……', x.before);
+        lines.push(x.title, x.after || '（这一行后面直接就是下一章，没有内容）');
+        if (x.next) lines.push(x.next, '……');
+        openSource(null, { excerpt: lines.join('\n'), title: '空章在原文里的位置', query: x.title, gotoLayer: x.layer });
+        $('nim-src-sub').textContent = x.layer !== null ? `高亮的就是这一章，在第 ${x.layer + 1} 层附近。清洗时整章去掉了，不是章节的话去设置改章节标题规则` : '原文里没找到这一行';
     }
 
     function bindFind() {
@@ -3521,7 +3601,8 @@
             const top = el.scrollTop;
             el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
             el.scrollTop = follow ? el.scrollHeight : top;
-            setStatus(`${info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`}中 · ${State.stream.length} 字`);
+            const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
+            setStatus(State.streamThinking ? `${what.replace(/输出$/, '')}思考中 · ${State.stream.length} 字` : `${what}中 · ${State.streamBody || State.stream.length} 字`);
         });
     }
 
@@ -4109,23 +4190,30 @@
     }
 
     function res(id, icon, title, inner) {
-        return `<div class="nim-res"><div class="nim-res-icon">${icon}</div><div class="nim-res-main"><div class="nim-res-title">${title}</div><div class="nim-res-state" id="${id}"></div></div><div class="nim-res-actions">${inner}</div></div>`;
+        return `<div class="nim-res">${icon ? `<div class="nim-res-icon">${icon}</div>` : ''}<div class="nim-res-main"><div class="nim-res-title">${title}</div><div class="nim-res-state" id="${id}"></div></div><div class="nim-res-actions">${inner}</div></div>`;
     }
+
+    const ICONS = {
+        file: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5z"/></svg>',
+        map: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg>',
+        settings: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
+        run: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14M5 12h14M5 18h9"/></svg>',
+        export: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14"/></svg>',
+    };
 
     function buildHtml() {
         const f = (k) => `<div class="nim-grid">${FIELDS[k].map(fieldHtml).join('')}</div>`;
         const tabs = [
-            ['file', '1', '📖', '小说'],
-            ['map', '2', '🗺️', '剧情地图'],
-            ['settings', '3', '⚙️', '设置'],
-            ['run', '4', '📝', '处理'],
-            ['export', '5', '🎴', '导入酒馆'],
+            ['file', '1', ICONS.file, '小说'],
+            ['map', '2', ICONS.map, '剧情地图'],
+            ['settings', '3', ICONS.settings, '设置'],
+            ['run', '4', ICONS.run, '处理'],
+            ['export', '5', ICONS.export, '导入酒馆'],
         ];
         return `
 <div id="nim-modal" class="nim-overlay"><div class="nim-modal" role="dialog" aria-label="小说导入改写">
   <header class="nim-header">
     <div class="nim-brand">
-      <div class="nim-logo">📥</div>
       <div class="nim-brand-text"><div class="nim-title">小说导入改写 <span class="nim-ver">v${C.VERSION}</span></div><div id="nim-info" class="nim-subtitle"></div></div>
     </div>
     <div class="nim-head-actions"><button class="nim-icon-btn" data-find-open="text" title="搜索原文、目录、功能"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button><button id="nim-close" class="nim-icon-btn" title="关闭">✕</button></div>
@@ -4138,7 +4226,7 @@
     <section class="nim-panel" data-panel="file">
       <label class="nim-drop" id="nim-drop">
         <input type="file" id="nim-file" accept=".txt,.epub" hidden>
-        <div class="nim-drop-icon">📖</div>
+        <div class="nim-drop-icon">${ICONS.file}</div>
         <div class="nim-drop-main" id="nim-drop-text"></div>
         <div class="nim-muted">TXT 或 EPUB，按 1000 万字设计；EPUB 的插图会留在原位置</div>
       </label>
@@ -4148,17 +4236,17 @@
       <div id="nim-guide" class="nim-guide"></div>
       <div class="nim-sub nim-sec-title">素材（可选）</div>
       <div class="nim-res-list">
-        ${res('nim-res-tpl', '📊', '记忆表格模板', `<label class="nim-btn sm">导入文件<input type="file" id="nim-tpl" accept=".json" hidden></label><button id="nim-tpl-live" class="nim-btn sm">从记忆插件读取</button>`)}
-        ${res('nim-res-wb', '📚', '初始世界书', `<label class="nim-btn sm">导入<input type="file" id="nim-seed-wb" accept=".json" hidden></label><button id="nim-clear-wb" class="nim-btn ghost sm">清除</button>`)}
+        ${res('nim-res-tpl', '', '记忆表格模板', `<label class="nim-btn sm">导入文件<input type="file" id="nim-tpl" accept=".json" hidden></label><button id="nim-tpl-live" class="nim-btn sm">从记忆插件读取</button>`)}
+        ${res('nim-res-wb', '', '初始世界书', `<label class="nim-btn sm">导入<input type="file" id="nim-seed-wb" accept=".json" hidden></label><button id="nim-clear-wb" class="nim-btn ghost sm">清除</button>`)}
         ${res(
             'nim-res-gloss',
-            '🔤',
+            '',
             '术语表',
             `<button id="nim-gloss-edit" class="nim-btn sm">查看和编辑</button><button id="nim-gloss-nt" class="nim-btn sm">从小说翻译读取</button><label class="nim-btn sm">导入<input type="file" id="nim-gloss-file" accept=".json,.txt" hidden></label><button id="nim-gloss-clear" class="nim-btn ghost sm">清除</button>`,
         )}
-        ${res('nim-res-ledger', '📝', '和原文不同的事实', `<button id="nim-ledger-edit" class="nim-btn sm">查看和编辑</button>`)}
+        ${res('nim-res-ledger', '', '和原文不同的事实', `<button id="nim-ledger-edit" class="nim-btn sm">查看和编辑</button>`)}
+        ${res('nim-res-layer', '', '分层与清洗', `<button id="nim-cleanlog" class="nim-btn sm">查看清掉的内容</button><button class="nim-btn sm" data-goto="nim-sec-file">设置</button>`)}
       </div>
-      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog" class="nim-btn">查看清掉的内容</button></div>`)}
     </section>
 
     <section class="nim-panel" data-panel="map">
@@ -4166,19 +4254,10 @@
     </section>
 
     <section class="nim-panel" data-panel="settings">
-      <nav class="nim-setnav">${[
-          ['api', 'API'],
-          ['preset', '预设'],
-          ['rewrite', '改写'],
-          ['translate', '翻译和标题'],
-          ['alias', '主角'],
-          ['wb', '世界书'],
-          ['stwb', '酒馆世界书'],
-          ['table', '记忆表格'],
-          ['cfg', '配置'],
-      ]
-          .map(([id, t]) => `<button class="nim-chip" data-goto="nim-sec-${id}">${t}</button>`)
-          .join('')}<button class="nim-chip" data-find-open="ui">🔍 找设置</button></nav>
+      <div class="nim-set-search"><div class="nim-search-in"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="nim-set-q" type="search" placeholder="搜索设置，例如 模型、雷点、标题" enterkeyhint="search"></div></div>
+      <div id="nim-set-results" class="nim-set-results" hidden></div>
+      <div class="nim-set-gtitle">基础</div>
+      <div class="nim-set-list">
       ${card(
           'api',
           'API',
@@ -4191,17 +4270,31 @@
            </div>`,
       )}
       ${card('preset', '酒馆预设', '导入后每个条目可以开关、拖动排序、编辑', presetHtml())}
-      ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
+      </div>
+      <div class="nim-set-gtitle">怎么改写</div>
+      <div class="nim-set-list">
       ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite') + '<div class="nim-row"><button id="nim-ledger-edit2" class="nim-btn sm">查看和编辑「和原文不同的事实」</button></div>')}
-      ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
       ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
+      ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
+      </div>
+      <div class="nim-set-gtitle">生成什么</div>
+      <div class="nim-set-list">
       ${card('wb', '世界书', '提取分类（和 TXT转世界书 一样）、额外要求', categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
+      ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
       ${card(
           'table',
           '记忆表格',
           '导入表格模板、表格角色、消息模板、大总结',
           `<div class="nim-row nim-tpl-row"><span id="nim-tpl-state2" class="nim-muted nim-grow"></span><label class="nim-btn sm">导入表格模板<input type="file" id="nim-tpl2" accept=".json" hidden></label><button id="nim-tpl-live2" class="nim-btn sm">从记忆插件读取</button></div>${f('table')}`,
       )}
+      </div>
+      <div class="nim-set-gtitle">分层和剧情地图</div>
+      <div class="nim-set-list">
+      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog2" class="nim-btn">查看清掉的内容</button></div>`)}
+      ${mapCfgCard()}
+      </div>
+      <div class="nim-set-gtitle">其他</div>
+      <div class="nim-set-list">
       ${card(
           'cfg',
           '配置与任务',
@@ -4214,18 +4307,18 @@
            <div class="nim-row">
              <button id="nim-task-export" class="nim-btn sm">导出任务进度</button>
              <label class="nim-btn sm">导入任务进度<input type="file" id="nim-task-import" accept=".json" hidden></label>
-             <button id="nim-preview" class="nim-btn sm">预览当前层提示词</button>
            </div>`,
       )}
+      </div>
     </section>
 
     <section class="nim-panel" data-panel="run">
       <div class="nim-runbox">
         <div class="nim-split">
-          <div class="nim-col"><div class="nim-col-head">分层</div><div id="nim-layers" class="nim-layers"></div></div>
+          <div class="nim-col"><div class="nim-col-head"><span>分层</span><button id="nim-preview" class="nim-btn ghost xs">预览提示词</button></div><div id="nim-layers" class="nim-layers"></div></div>
           <div class="nim-col nim-col-wide"><button id="nim-detail-back" class="nim-back">‹ 返回分层列表</button><div id="nim-detail" class="nim-detail"></div></div>
         </div>
-        <details class="nim-fold" id="nim-stream-box"><summary>实时输出</summary><pre id="nim-stream" class="nim-pre"></pre></details>
+        <details class="nim-fold" id="nim-stream-box" open><summary>实时输出</summary><pre id="nim-stream" class="nim-pre"></pre></details>
         <details class="nim-fold" open><summary>日志</summary><pre id="nim-log" class="nim-pre nim-log"></pre></details>
       </div>
     </section>
@@ -4361,6 +4454,9 @@ button.nim-step:hover{border-color:var(--line2);background:var(--surface2);}
 .nim-src-chap:first-child{margin-top:0;}
 #nim-src-nav{justify-content:space-between;}
 #nim-src-nav[hidden]{display:none;}
+#nim-src-goto{display:none;}
+#nim-src-nav.excerpt>*{display:none;}
+#nim-src-nav.excerpt>#nim-src-goto{display:inline-flex;flex:1;}
 .nim-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(139,124,246,.10),transparent);}
 .nim-brand{display:flex;align-items:center;gap:12px;min-width:0;}
 .nim-logo{width:38px;height:38px;flex:none;border-radius:11px;display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 6px 18px rgba(139,124,246,.35);}
@@ -4647,6 +4743,117 @@ select.nim-input{appearance:auto;}
   .nim-sheet-foot .nim-btn{flex:1;}
   .nim-sheet-foot .nim-grow-sp{display:none;}
 }
+/* ===== 简约主题：放在最后，覆盖上面的样式 ===== */
+.nim-modal{--bg:#121316;--surface:#1a1b20;--surface2:#23242a;--line:rgba(255,255,255,.06);--line2:rgba(255,255,255,.10);--text:#e9e9ec;--muted:#8a8c97;--accent:#8c7ef5;--accent2:#8c7ef5;--ok:#4cc38a;--warn:#e5b04c;--bad:#e86a6a;border-color:var(--line2);box-shadow:0 20px 60px rgba(0,0,0,.5);}
+.nim-overlay{background:rgba(0,0,0,.55);backdrop-filter:none;-webkit-backdrop-filter:none;}
+.nim-header{background:var(--bg);border-bottom:1px solid var(--line);padding:12px 16px;}
+.nim-title{font-size:16px;font-weight:600;letter-spacing:0;}
+.nim-icon-btn{border:0;background:transparent;border-radius:10px;}
+.nim-icon-btn:hover{background:var(--surface);}
+.nim-tabs{border-bottom:1px solid var(--line);}
+.nim-tab{border:0;font-weight:500;}
+.nim-tab.active{background:var(--surface);border:0;}
+.nim-tab-no{display:none;}
+.nim-badge{background:var(--warn);}
+.nim-body{padding:16px;}
+.nim-panel{gap:12px;}
+/* 卡片：去边框，靠底色分层 */
+.nim-card{border:0;border-radius:14px;background:var(--surface);}
+.nim-card[open]>summary{border-bottom:1px solid var(--line);}
+.nim-card-title{font-weight:600;font-size:15px;}
+.nim-card-desc{margin-top:2px;}
+.nim-res-list{border:0;border-radius:14px;}
+.nim-res-icon{display:none;}
+.nim-stat{border:0;background:var(--surface);}
+.nim-step{border:0;background:var(--surface);border-radius:12px;}
+button.nim-step:hover{background:var(--surface2);}
+.nim-step-no{background:transparent;border:1.5px solid var(--line2);}
+.nim-step.ok .nim-step-no{background:transparent;border-color:var(--ok);}
+.nim-searchbar{border:0;background:var(--surface);border-radius:12px;}
+.nim-issue{border:0;background:rgba(229,176,76,.10);border-radius:12px;}
+.nim-drop{border:1.5px dashed var(--line2);background:transparent;border-radius:14px;}
+.nim-drop:hover,.nim-drop.over{background:var(--surface);border-color:var(--accent);}
+.nim-drop.has-file{border:0;background:var(--surface);}
+.nim-drop-icon{color:var(--muted);font-size:0;}
+.nim-drop-icon svg{width:30px;height:30px;}
+.nim-drop.has-file .nim-drop-icon svg{width:20px;height:20px;}
+.nim-sub,.nim-sec-title{color:var(--muted);font-weight:600;}
+/* 按钮：扁平，不发光 */
+.nim-btn{border:0;background:var(--surface2);font-weight:500;}
+.nim-btn:hover{border:0;background:#2c2d34;}
+.nim-btn.primary{background:var(--accent);box-shadow:none;color:#fff;}
+.nim-btn.primary:hover{filter:none;background:#9a8df7;}
+.nim-btn.ghost{background:transparent;color:var(--muted);}
+.nim-btn.ghost:hover{color:var(--text);background:var(--surface2);}
+.nim-btn.danger-ghost{border:0;background:transparent;}
+.nim-chip{border:0;background:var(--surface);}
+.nim-chip.on{background:var(--accent);}
+/* 输入框 */
+.nim-input{background:var(--surface2);border:1px solid transparent;}
+.nim-input:focus{border-color:var(--accent);box-shadow:none;}
+.nim-search-in{background:var(--surface);border:0;}
+.nim-search-in:focus-within{box-shadow:0 0 0 1.5px var(--accent);}
+.nim-field>label{font-weight:500;}
+.nim-switch{border:0;background:#33343c;}
+/* 处理页 */
+.nim-col{border:0;}
+.nim-col-head{border-bottom:1px solid var(--line);}
+.nim-layer.sel{background:var(--surface2);box-shadow:inset 3px 0 0 var(--accent);}
+.nim-runbox .nim-fold{border:0;}
+.nim-pre{background:var(--bg);border:0;}
+/* 底栏 */
+.nim-footer{background:var(--bg);border-top:1px solid var(--line);}
+.nim-bar{height:4px;}
+.nim-bar-fill{background:var(--accent);}
+.is-running .nim-bar-fill{background-image:none;background:var(--accent);animation:none;}
+.nim-status{color:var(--accent);}
+/* 弹层 */
+.nim-sheet{background:rgba(0,0,0,.55);}
+.nim-sheet-box{border:0;background:var(--bg);box-shadow:0 -10px 40px rgba(0,0,0,.4);}
+.nim-hit{border:0;background:var(--surface);}
+.nim-hit:hover{background:var(--surface2);}
+.nim-seg{border:0;}
+.nim-map-vol,.nim-vol-card{border:0;}
+.nim-vol-card.on{box-shadow:inset 0 0 0 1.5px var(--accent);}
+.nim-pr{border:0;}
+.nim-alert.warn{border:0;}.nim-alert.danger{border:0;}.nim-alert.ok{border:0;}
+.nim-alert:not(.ok):not(.warn):not(.danger){border:0;}
+/* 设置页：列表 → 二级页 */
+.nim-set-search{margin-bottom:4px;}
+.nim-set-results{display:flex;flex-direction:column;gap:6px;}
+.nim-set-results[hidden]{display:none;}
+.nim-panel[data-panel="settings"]{gap:0;}
+.nim-panel[data-panel="settings"]>.nim-set-search{margin-bottom:6px;}
+.nim-set-gtitle{font-size:12px;font-weight:600;color:var(--muted);padding:14px 4px 6px;}
+.nim-set-list{display:flex;flex-direction:column;border-radius:14px;overflow:hidden;background:var(--surface);}
+.nim-set-list>details.nim-card{border-radius:0;background:transparent;}
+.nim-set-list>details.nim-card+details.nim-card{border-top:1px solid var(--line);}
+.nim-set-list>details.nim-card>summary{min-height:58px;}
+.nim-set-list>details.nim-card>summary .nim-chev{transform:rotate(-45deg);}
+.nim-panel[data-panel="settings"].searching>.nim-set-gtitle,.nim-panel[data-panel="settings"].searching>.nim-set-list{display:none;}
+.nim-panel[data-panel="settings"].sub>.nim-set-gtitle,.nim-panel[data-panel="settings"].sub>.nim-set-search,.nim-panel[data-panel="settings"].sub>.nim-set-results,.nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card:not([open]){display:none;}
+.nim-panel[data-panel="settings"].sub>.nim-set-list:not(:has(details[open])){display:none;}
+.nim-panel[data-panel="settings"].sub .nim-set-list{overflow:visible;background:transparent;border-radius:0;margin:-16px -16px 0;}
+.nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>summary{position:sticky;top:-16px;z-index:5;background:var(--bg);min-height:52px;padding:10px 16px;justify-content:flex-start;gap:12px;border-bottom:1px solid var(--line);}
+.nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>summary .nim-chev{order:-1;transform:rotate(135deg);margin:0 4px 0 6px;border-color:var(--accent);}
+.nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>summary .nim-card-desc{display:none;}
+.nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>.nim-card-body{padding:16px;}
+.nim-modal [hidden]{display:none !important;}
+.nim-card-body>.nim-field+.nim-field,.nim-card-body>.nim-field+.nim-grid,.nim-card-body>.nim-grid+.nim-field,.nim-card-body>.nim-row+.nim-field{margin-top:14px;}
+.nim-tools-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
+.nim-map-tools .nim-row{margin-top:4px;}
+.nim-col-head{display:flex;align-items:center;justify-content:space-between;}
+@media (max-width:760px){
+  .nim-header{padding:8px 8px 8px 16px;padding-top:max(8px,env(safe-area-inset-top));}
+  .nim-tabs{background:var(--bg);border-top:1px solid var(--line);padding-top:2px;}
+  .nim-tab{min-height:54px;gap:3px;color:var(--muted);}
+  .nim-tab.active{background:transparent;color:var(--accent);}
+  .nim-tab-ico{font-size:0;}
+  .nim-body{padding:12px;}
+  .nim-panel[data-panel="settings"].sub .nim-set-list{margin:-12px -12px 0;}
+  .nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>summary{top:-12px;}
+  .nim-footer{background:var(--bg);}
+}
 `;
 
     function bind() {
@@ -4699,6 +4906,13 @@ select.nim-input{appearance:auto;}
         onFile('nim-task-import', importTask);
         on('nim-prepare', 'click', prepareLayers);
         on('nim-cleanlog', 'click', openCleanLog);
+        on('nim-cleanlog2', 'click', openCleanLog);
+        document.querySelector('#nim-modal [data-panel="settings"]').addEventListener('change', (ev) => {
+            const t = ev.target;
+            if (!t.dataset.mapSet) return;
+            State.settings[t.dataset.mapSet] = t.type === 'number' ? Number(t.value) : t.dataset.mapSet === 'mapTemplates' ? t.value.split('\n').map((x) => x.trim()).filter(Boolean) : t.value;
+            saveSettings();
+        });
         $('nim-file-stats').addEventListener('click', (ev) => {
             if (ev.target.closest('[data-cleanlog]')) openCleanLog();
         });
@@ -4734,6 +4948,20 @@ select.nim-input{appearance:auto;}
         bindMap();
         bindSource();
         bindFind();
+        document.querySelectorAll('#nim-modal [data-panel="settings"] .nim-set-list > details.nim-card').forEach((d) => d.addEventListener('toggle', () => syncSettingsPage(d)));
+        let setT = 0;
+        $('nim-set-q').addEventListener('input', () => {
+            clearTimeout(setT);
+            setT = setTimeout(renderSetSearch, 120);
+        });
+        $('nim-set-results').addEventListener('click', (ev) => {
+            const ft = ev.target.closest('[data-feat]');
+            if (!ft) return;
+            const it = findUi.index[Number(ft.dataset.feat)];
+            $('nim-set-q').value = '';
+            renderSetSearch();
+            goToEl(it.el, it.tab);
+        });
         // 各处的「去某个设置」「打开搜索」「去某一页」
         $('nim-modal').addEventListener('click', (ev) => {
             const go = ev.target.closest('[data-goto]');

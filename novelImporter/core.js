@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.3';
+    const VERSION = '1.5.4';
 
     // ============================================
     // 默认配置
@@ -636,8 +636,13 @@ P段号 |  | ++新段落          在该段之后另起一段
             .filter((l) => l.length > 0);
     }
 
+    // 「1、xxx」「2. xxx」这种数字开头的，带句末标点的多半是正文里的列表，不当章节标题
+    const NUMBERED_LINE = /^[0-9０-９]{1,5}[.．、 ]/;
+    const SENTENCE_TAIL = /[。！？!?；;…]["”’」』]?$/;
+
     function isChapterTitle(line, regex) {
         if (!regex || !line || line.length > 45) return false;
+        if (NUMBERED_LINE.test(line) && SENTENCE_TAIL.test(line)) return false;
         return regex.test(line);
     }
 

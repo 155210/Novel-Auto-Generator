@@ -1447,3 +1447,15 @@ describe('预设', () => {
         expect(r.params.temperature).toBe(0.8);
     });
 });
+
+describe('小说导入：数字开头的列表不当章节', () => {
+    it('「2、xxx。」带句末标点是正文列表，不算空章、不删', () => {
+        const raw = ['第1章 开始', '能力分为几类：', '1、火元素：可以放火。', '2、电元素：超自然犯罪者能够释放电流，但具体等级无法确定。', '3、群体瞬移：可带着物品瞬移。', '他合上了档案。'].join('\n');
+        const r = C.cleanText(raw, [], false, C.DEFAULT_CHAPTER_REGEX);
+        expect(r.emptyChapters).toEqual([]);
+        expect(r.text).toContain('2、电元素');
+        const re = C.safeRegex(C.DEFAULT_CHAPTER_REGEX);
+        expect(C.isChapterTitle('2、电元素：超自然犯罪者能够释放电流，但具体等级无法确定。', re)).toBe(false);
+        expect(C.isChapterTitle('12、重逢', re)).toBe(true);
+    });
+});
