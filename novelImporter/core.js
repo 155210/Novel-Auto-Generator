@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.9';
+    const VERSION = '1.5.10';
 
     // ============================================
     // 默认配置
@@ -803,6 +803,8 @@ ${tablesForPrompt(state, layerText, settings)}
 
     function buildDivergenceSection(settings, state, translate = false) {
         if (!settings.divergenceEnabled) return '';
+        // 没填主角、也还没认出来时，用剧情地图预扫描投票出来的
+        const hero = protagonistOf(settings, state) || String(settings.protagonistGuess || '').trim();
         const div = state.divergence || {};
         const how = translate
             ? `- 触发时：在 <改写判定> 里写 "触发": true、命中的规则和改写说明，<${settings.bodyTag || '正文'}> 里直接输出按改写方向改好的译文
@@ -812,7 +814,7 @@ ${tablesForPrompt(state, layerText, settings)}
         const base = `## 剧情改写规则（强规则）
 当本层原文出现下列情节时，触发剧情改写：
 ${settings.divergenceRules || DEFAULT_DIVERGENCE_RULES}
-${TOXIC_JUDGE_NOTES}${protagonistOf(settings, state) ? `\n- 本书主角是「${protagonistOf(settings, state)}」` : ''}
+${TOXIC_JUDGE_NOTES}${hero ? `\n- 本书主角是「${hero}」` : ''}
 改写方向：${settings.divergenceDirection || DEFAULT_DIVERGENCE_DIRECTION}
 ${how}`;
         const factLine = `- 触发或处于改写状态时，在 <改写判定> 里写 "事实": [本层改写后新成立、和原文不一样、后面剧情要一直遵守的事实，一条一句，写清人物和结果，比如 "林晚没有被送走，仍留在宗门"]；之前的事实不再成立时，把原句写进 "作废": [...]；没有就写空数组`;

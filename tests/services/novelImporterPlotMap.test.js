@@ -225,3 +225,21 @@ describe('剧情地图：雷点判断', () => {
         expect(p).toContain('本书主角是「路长远」');
     });
 });
+
+describe('剧情地图：自动认主角', () => {
+    it('没填主角时让 AI 先判断；按各层投票；涉及 AI 认出的主角的毒点丢掉', () => {
+        const p = M.buildScanPrompt({ index: 0, paras: [{ text: '正文' }] }, {});
+        expect(p).toContain('写进 "主角"');
+        const r = M.parseScanResponse('{"主角":"祁铭","毒点":[{"雷点":"NTR","涉及":"祁铭","证据":"x"}]}', C.parseLooseJson);
+        expect(r.hero).toBe('祁铭');
+        expect(r.toxic).toEqual([]);
+        const plan = { layers: { 0: { scan: { hero: '祁铭' } }, 1: { scan: { hero: '祁铭' } }, 2: { scan: { hero: '林晚' } } } };
+        expect(M.voteHero(plan)).toBe('祁铭');
+        expect(M.voteHero({ layers: { 0: { scan: { hero: 'A' } }, 1: { scan: { hero: 'B' } } } })).toBe('');
+    });
+
+    it('引擎没认出主角时，剧情改写规则用预扫描认出的', () => {
+        const { engine } = makeEngine(() => reply({}), {}, { divergenceEnabled: true, protagonistName: '', protagonistGuess: '祁铭' });
+        expect(engine.buildRequestFor(0).prompt).toContain('本书主角是「祁铭」');
+    });
+});

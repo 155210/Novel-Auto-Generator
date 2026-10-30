@@ -730,6 +730,8 @@
 
     function makeEngine(settingsOverride) {
         const s = { ...State.settings, ...(settingsOverride || {}) };
+        // 剧情地图预扫描认出的主角，引擎每次取最新的
+        Object.defineProperty(s, 'protagonistGuess', { get: () => (State.plan && State.plan.hero) || '', enumerable: true, configurable: true });
         return C.createEngine({
             settings: s,
             // 取最新的预设：导入、开关、排序后不用重建引擎
@@ -2515,7 +2517,7 @@
             : '';
 
         box.innerHTML = `
-          <div class="nim-map-summary">共 ${n} 层 · 已扫描 ${scanned} 层 · 有改写安排 ${planned} 层${ledgerFacts().length ? ` · 账本 ${ledgerFacts().length} 条事实` : ''}</div>
+          <div class="nim-map-summary">共 ${n} 层 · 已扫描 ${scanned} 层 · 有改写安排 ${planned} 层${ledgerFacts().length ? ` · 账本 ${ledgerFacts().length} 条事实` : ''}${heroLine()}</div>
           <div class="nim-vol-cards">${cards.join('')}</div>
           ${sg}
           <div class="nim-row nim-map-filters">${filters.map(([k, t]) => `<button class="nim-chip ${mapUi.filter === k ? 'on' : ''}" data-map-filter="${k}">${t}</button>`).join('')}
@@ -2650,7 +2652,7 @@
             const sc = PM.layerPlan(State.plan, l.index).scan;
             for (const c of (sc && sc.characters) || []) count.set(c, (count.get(c) || 0) + 1);
         }
-        const hero = new Set([C.protagonistOf(State.settings, null), '{{user}}', '主角', '我'].filter(Boolean));
+        const hero = new Set([C.protagonistOf(State.settings, null), State.plan.hero, '{{user}}', '主角', '我'].filter(Boolean));
         const add = [...count.entries()]
             .filter(([n]) => n && n.length <= 12 && !have.has(n) && !hero.has(n))
             .sort((a, b) => b[1] - a[1])
@@ -2816,7 +2818,8 @@
         } catch (err) {
             /* 还没处理过 */
         }
-        const protagonist = C.protagonistOf(State.settings, fs);
+        // 主角：设置里填的 > 处理时认出来的 > 预扫描各层投票出来的；都没有就让每层先自己判断
+        const protagonist = C.protagonistOf(State.settings, fs) || State.plan.hero || '';
         const heroAliases = [protagonist, ...(State.settings.protagonistAliases || []), ...((fs && fs.aliases) || [])].filter((a) => a && a.length >= 2);
         await PM.runPool(
             targets,
@@ -2844,6 +2847,11 @@
         );
         const sc = mapUi.scan;
         mapUi.scan = null;
+        const hero = PM.voteHero(State.plan);
+        if (hero && hero !== State.plan.hero) {
+            State.plan = { ...State.plan, hero };
+            savePlan();
+        }
         const added = addNamesFromScan();
         renderScanState();
         renderMap();
@@ -2858,6 +2866,20 @@
         el.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? `，失败 ${sc.failed}` : ''}` : busy;
         $('nim-map-scanstop').hidden = !sc && !mapUi.busy;
         renderMapFooter();
+    }
+
+    /** 剧情地图顶部显示主角是谁、从哪来的 */
+    function heroLine() {
+        if ((State.settings.protagonistName || '').trim()) return ` · 主角：${esc(State.settings.protagonistName.trim())}（设置里填的）`;
+        let fs = null;
+        try {
+            fs = State.engine && State.engine.finalState();
+        } catch (err) {
+            /* 没有 */
+        }
+        if (fs && fs.protagonist) return ` · 主角：${esc(fs.protagonist)}（处理时认出的）`;
+        if (State.plan.hero) return ` · 主角：${esc(State.plan.hero)}（扫描时自动认出，不对就去设置「主角」里填）`;
+        return '';
     }
 
     /** 停掉剧情地图里正在跑的扫描、提议或出大纲 */

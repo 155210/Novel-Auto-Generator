@@ -222,7 +222,21 @@
             volumeSize: Math.max(2, Number(p.volumeSize) || 10),
             layers: p.layers && typeof p.layers === 'object' ? p.layers : {},
             suggestions: Array.isArray(p.suggestions) ? p.suggestions : [],
+            hero: typeof p.hero === 'string' ? p.hero : '', // 预扫描投票认出的主角
         };
+    }
+
+    /** 各层扫描里 AI 认出的主角，取出现最多的（至少两层一致，只扫了一层就用那一层的） */
+    function voteHero(plan) {
+        const count = new Map();
+        for (const x of Object.values((plan && plan.layers) || {})) {
+            const h = x && x.scan && x.scan.hero;
+            if (h) count.set(h, (count.get(h) || 0) + 1);
+        }
+        const top = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+        if (!top) return '';
+        const total = [...count.values()].reduce((a, b) => a + b, 0);
+        return top[1] >= 2 || total === 1 ? top[0] : '';
     }
 
     /** 某层的规划（没有就给空的） */
@@ -285,10 +299,10 @@
             `你是网文剧情分析助手。下面是一部长篇小说的第 ${layer.index + 1} 层（约 ${text.length} 字）。只读、不改写，按要求输出一个 JSON。`,
             opts.prevOneLine ? `## 上一层剧情\n${opts.prevOneLine}` : '',
             names ? `## 已知人物（同一人的不同叫法用 / 分隔，统一用第一个名字）\n${names}` : '',
-            `## 读者的雷点（本层出现就写进 毒点，附原文证据）\n${opts.toxicRules || DEFAULT_TOXIC}${opts.judgeNotes ? `\n${opts.judgeNotes}` : ''}${opts.protagonist ? `\n- 本书主角是「${opts.protagonist}」` : '\n- 主角按全书视角和戏份判断'}\n- 每条毒点写清 "涉及"：除主角以外做这件事的那个人；写不出这个人就不要算`,
+            `## 读者的雷点（本层出现就写进 毒点，附原文证据）\n${opts.toxicRules || DEFAULT_TOXIC}${opts.judgeNotes ? `\n${opts.judgeNotes}` : ''}${opts.protagonist ? `\n- 本书主角是「${opts.protagonist}」` : '\n- 主角是全书的视角人物、戏份最多的那个人（第一人称小说里就是「我」，写出「我」的名字）；先判断出主角，写进 "主角"，再按主角判断雷点'}\n- 每条毒点写清 "涉及"：除主角以外做这件事的那个人；写不出这个人就不要算`,
             `## 原文\n<原文>\n${text}\n</原文>`,
             `## 输出格式（只输出这个 JSON，别的什么都不要写）
-{"一句话": "30 字以内概括本层主线", "摘要": "100 到 200 字，谁做了什么、结果如何", "人物": ["本层出场的主要人物，用规范名"], "关系": [{"甲": "人名", "乙": "人名", "变化": "比如 结拜、翻脸、订婚、表白"}], "毒点": [{"雷点": "命中的雷点", "涉及": "主角以外的那个人", "证据": "原文里的一句话"}], "标签": ["从 战斗 感情 日常 修炼 阴谋 转折 高潮 水章 里选，最多 3 个"]}
+{"一句话": "30 字以内概括本层主线", "摘要": "100 到 200 字，谁做了什么、结果如何", "人物": ["本层出场的主要人物，用规范名"], "关系": [{"甲": "人名", "乙": "人名", "变化": "比如 结拜、翻脸、订婚、表白"}], "毒点": [{"雷点": "命中的雷点", "涉及": "主角以外的那个人", "证据": "原文里的一句话"}], "标签": ["从 战斗 感情 日常 修炼 阴谋 转折 高潮 水章 里选，最多 3 个"], "主角": "主角的名字（看不出写空字符串）"}
 键和字符串一律用英文双引号，没有的写空数组。`,
         ]
             .filter(Boolean)
@@ -318,8 +332,12 @@
             toxic: arr(j.毒点 ?? j.toxic)
                 .map((t) => (typeof t === 'string' ? { rule: t, evidence: '', who: '' } : { rule: str(t.雷点 ?? t.rule), evidence: str(t.证据 ?? t.evidence), who: str(t.涉及 ?? t.who) }))
                 // 「涉及」写的是主角自己的，是 AI 把主角的戏当成了雷点
-                .filter((t) => t.rule && !(opts.protagonist && t.who && opts.protagonistAliases.some((a) => a && t.who.includes(a)))),
+                .filter((t) => t.rule && !(t.who && [...opts.protagonistAliases, str(j.主角 ?? j.hero)].some((a) => a && a.length >= 1 && (t.who === a || (a.length >= 2 && t.who.includes(a)))))),
             tags: arr(j.标签 ?? j.tags).map(str).filter(Boolean).slice(0, 3),
+            hero: (() => {
+                const h = str(j.主角 ?? j.hero).split(/[/／、,，]/)[0].trim();
+                return h && h.length <= 12 && !/^(无|未知|不明|我|主角)$/.test(h) ? h : '';
+            })(),
         };
     }
 
@@ -595,6 +613,7 @@ ${after || '（到结尾）'}
         buildOutlinePrompt,
         parseOutlineResponse,
         conflictHints,
+        voteHero,
         searchRegex,
         searchLayers,
         chapterIndex,
