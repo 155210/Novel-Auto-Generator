@@ -47,6 +47,7 @@
         ledgerManual: [], // 用户手动加或改过的既成事实：[{from（从第几层起，0 开始）, text}]
         ledgerRemoved: [], // 用户删掉或改掉的 AI 事实原句，AI 之后再报也不收
         plan: window.NovelImporterPlotMap ? window.NovelImporterPlotMap.normalizePlan(null) : {}, // 剧情地图：人物名单、每层的扫描结果和改写安排
+        planBook: '', // 剧情地图属于哪本书（全文哈希），导入别的书时清空地图
         stWorlds: null, // 酒馆里开着的世界书：[{name, source, count, chars, rules}]，开始处理时重读
         outputRules: '', // 勾选的那几本拼成的输出要求
         images: [], // EPUB 插图：[{id, name, mime, data(base64)}]，正文里是〔插图id〕
@@ -666,6 +667,7 @@
             ledgerManual: State.ledgerManual,
             ledgerRemoved: State.ledgerRemoved,
             plan: State.plan,
+            planBook: State.planBook,
             images: State.images,
             imagePaths: State.imagePaths,
             meta: State.meta,
@@ -690,6 +692,7 @@
         State.ledgerManual = Array.isArray(snap.ledgerManual) ? snap.ledgerManual : [];
         State.ledgerRemoved = Array.isArray(snap.ledgerRemoved) ? snap.ledgerRemoved : [];
         State.plan = window.NovelImporterPlotMap.normalizePlan(snap.plan);
+        State.planBook = snap.planBook || '';
         State.images = snap.images || [];
         State.imagePaths = snap.imagePaths || null;
         State.meta = { ...State.meta, ...(snap.meta || {}) };
@@ -1237,6 +1240,10 @@
             return toast(`读取失败：${e.message}`, 'error');
         }
         setStatus('');
+        // 换了一本书：剧情地图和既成事实是上一本的，清掉；同一本重新导入就保留
+        const book = PM.hashText(text);
+        if (State.planBook !== book) resetBookPlan();
+        State.planBook = book;
         State.text = text;
         State.fileName = file.name;
         State.engine = null;
@@ -2288,6 +2295,17 @@
 
     function savePlan() {
         saveProgress();
+    }
+
+    /** 换书时清空剧情地图（含正在跑的扫描）和既成事实 */
+    function resetBookPlan() {
+        if (mapUi.scan) mapUi.scan.ctl.abort();
+        State.plan = PM.normalizePlan(null);
+        State.ledgerManual = [];
+        State.ledgerRemoved = [];
+        Object.assign(mapUi, { stats: null, statsKey: '', openVol: new Set([0]), openLayer: null, char: '' });
+        mapUi.live.clear();
+        fillMapFields();
     }
 
     function mapNames() {
