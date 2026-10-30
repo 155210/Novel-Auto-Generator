@@ -2416,6 +2416,7 @@
     }
 
     function renderMap() {
+        renderMapFooter();
         const box = $('nim-map');
         if (!box) return;
         const e = mapEngine();
@@ -2792,6 +2793,23 @@
         const sc = mapUi.scan;
         el.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? `，失败 ${sc.failed}` : ''}` : '';
         $('nim-map-scanstop').hidden = !sc;
+        renderMapFooter();
+    }
+
+    /** 剧情地图页的底栏：换成扫描进度和扫描按钮，不放「开始处理」免得误点 */
+    function renderMapFooter() {
+        const t = $('nim-foot-maptext');
+        if (!t) return;
+        const sc = mapUi.scan;
+        const e = State.engine;
+        const n = e ? e.layers.length : 0;
+        const scanned = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length : 0;
+        t.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? ` · 失败 ${sc.failed}` : ''}` : n ? `已扫描 ${scanned} / ${n} 层` : '先在「小说」页选一本小说';
+        $('nim-foot-mapbar').style.width = `${sc ? Math.round((sc.done / Math.max(1, sc.total)) * 100) : n ? Math.round((scanned / n) * 100) : 0}%`;
+        $('nim-foot-scan').hidden = !!sc;
+        $('nim-foot-scan').disabled = !n || scanned === n;
+        $('nim-foot-scan').textContent = scanned && scanned < n ? '继续扫描' : scanned === n && n ? '已全部扫描' : '扫描';
+        $('nim-foot-scanstop').hidden = !sc;
     }
 
     // --------- D4 AI 提议、D5/D8 新大纲 ---------
@@ -3002,6 +3020,8 @@
         on('nim-map-scan', 'click', () => runScan(true));
         on('nim-map-rescan', 'click', () => runScan(false));
         on('nim-map-scanstop', 'click', () => mapUi.scan && mapUi.scan.ctl.abort());
+        on('nim-foot-scan', 'click', () => runScan(true));
+        on('nim-foot-scanstop', 'click', () => mapUi.scan && mapUi.scan.ctl.abort());
         on('nim-map-suggest', 'click', suggestPoints);
         on('nim-map-export', 'click', exportPlan);
         on('nim-map-apply-toxic', 'click', applyToxicToRules);
@@ -3608,6 +3628,8 @@
 
     function switchTab(name) {
         State.tab = name;
+        $('nim-modal').classList.toggle('on-map', name === 'map');
+        if (name === 'map') renderMapFooter();
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
         document.querySelectorAll('#nim-modal .nim-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === name));
         const body = document.querySelector('#nim-modal .nim-body');
@@ -4354,7 +4376,14 @@
       </div></div>
     </section>
   </main>
-  <footer class="nim-footer">
+  <footer class="nim-footer nim-footer-map">
+    <div class="nim-foot-info">
+      <div class="nim-foot-line"><span id="nim-foot-maptext"></span><span class="nim-muted">剧情地图</span></div>
+      <div class="nim-bar"><div id="nim-foot-mapbar" class="nim-bar-fill"></div></div>
+    </div>
+    <div class="nim-foot-actions"><button id="nim-foot-scan" class="nim-btn primary">扫描</button><button id="nim-foot-scanstop" class="nim-btn danger-ghost" hidden>停止扫描</button></div>
+  </footer>
+  <footer class="nim-footer nim-footer-main">
     <div class="nim-foot-info">
       <div class="nim-foot-line"><span id="nim-progress"></span><span id="nim-status" class="nim-status"></span></div>
       <div class="nim-bar"><div id="nim-progress-bar" class="nim-bar-fill"></div></div>
@@ -4840,6 +4869,9 @@ button.nim-step:hover{background:var(--surface2);}
 .nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>.nim-card-body{padding:16px;}
 .nim-modal [hidden]{display:none !important;}
 .nim-card-body>.nim-field+.nim-field,.nim-card-body>.nim-field+.nim-grid,.nim-card-body>.nim-grid+.nim-field,.nim-card-body>.nim-row+.nim-field{margin-top:14px;}
+#nim-modal .nim-footer-map{display:none;}
+#nim-modal.on-map .nim-footer-map{display:flex;}
+#nim-modal.on-map .nim-footer-main{display:none;}
 .nim-tools-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
 .nim-map-tools .nim-row{margin-top:4px;}
 .nim-col-head{display:flex;align-items:center;justify-content:space-between;}
