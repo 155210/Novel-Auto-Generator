@@ -2387,6 +2387,7 @@
         if (PM.hasRewritePlan(lp)) out.push('<span class="nim-tag violet">改写</span>');
         if (lp.resume) out.push('<span class="nim-tag violet">接回</span>');
         if (lp.skip) out.push('<span class="nim-tag">跳过</span>');
+        if (lp.scanError) out.push('<span class="nim-tag red">上次扫描失败</span>');
         if (lp.scan && lp.scan.toxic.length) out.push(`<span class="nim-tag red">雷点 ${esc(lp.scan.toxic.map((t) => t.rule).join('、'))}</span>`);
         if (row && row.hot) out.push(`<span class="nim-tag red">关键词 ${row.keywordTotal}</span>`);
         if (conflicts[i]) out.push('<span class="nim-tag orange">可能和事实冲突</span>');
@@ -2410,7 +2411,7 @@
         if (f === 'mark') return lp.bookmark || lp.todo;
         if (f === 'conflict') return !!conflicts[i];
         if (f === 'new') return !!(row && row.newNames.length);
-        if (f === 'unscanned') return !lp.scan;
+        if (f === 'unscanned') return !lp.scan || !!lp.scanError;
         return true;
     }
 
@@ -2480,7 +2481,7 @@
             ['mark', '书签和待决定'],
             ['conflict', '可能冲突'],
             ['new', '新角色'],
-            ['unscanned', '没扫描'],
+            ['unscanned', '没扫或失败'],
         ];
         const names = mapNames();
         let body = '';
@@ -2551,6 +2552,7 @@
             ${row && row.odd.length ? `<div class="nim-muted">长度异常：${row.odd.map((c) => `${esc(c.title)} ${c.chars} 字（${c.flag === 'short' ? '偏短' : '偏长'}）`).join('；')}</div>` : ''}
             ${row ? `<div class="nim-muted">出场：${topNames(row, 10) || '（名单里的人物都没出场）'}${pairs ? `<br>同场：${pairs}` : ''}<br>关键词：${Object.entries(row.keywords).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || '无'} · 对话 ${row.dialogue}% · 节奏 ${row.pace}</div>` : ''}
             ${conflicts[i] ? `<div class="nim-alert warn">后面原文又写到账本里的人：${conflicts[i].map((c) => `${esc(c.names.join('、'))}（${esc(c.fact)}）`).join('；')}。处理这层时会按账本改，留意看。</div>` : ''}
+            ${lp.scanError ? `<div class="nim-alert warn">上次扫描失败：${esc(lp.scanError)}${s ? '。下面是更早一次扫描的结果。' : ''}</div>` : ''}
             ${s ? `<div class="nim-sub">原剧情（预扫描）</div><div>${esc(s.summary || s.oneLine)}</div>${s.relations.length ? `<div class="nim-muted">关系变化：${s.relations.map((x) => `${esc(x.a)}${x.b ? ' 和 ' + esc(x.b) : ''} ${esc(x.change)}`).join('；')}</div>` : ''}${s.toxic.length ? `<div class="nim-alert warn">${s.toxic.map((t) => `${esc(t.rule)}${t.who ? `（${esc(t.who)}）` : ''}：${esc(t.evidence)}`).join('<br>')}</div>` : ''}` : '<div class="nim-muted">还没预扫描。</div>'}
             ${after ? `<div class="nim-sub">改写后（已处理）</div><div>${esc(after)}</div>` : ''}
             <div class="nim-row">
@@ -2784,9 +2786,10 @@
         return e.layers.filter((l) => {
             if (l.index < from || l.index > to) return false;
             if (!onlyMissing) return true;
-            const s = PM.layerPlan(State.plan, l.index).scan;
-            // F3：原文没变就用缓存
-            return !s || s.hash !== PM.hashText(PM.layerText(l));
+            const lp = PM.layerPlan(State.plan, l.index);
+            const s = lp.scan;
+            // F3：原文没变就用缓存；上次扫失败的也算没扫
+            return !s || !!lp.scanError || s.hash !== PM.hashText(PM.layerText(l));
         });
     }
 
@@ -2827,16 +2830,29 @@
             async (l) => {
                 const prev = PM.layerPlan(State.plan, l.index - 1).scan;
                 const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '', protagonist, judgeNotes: C.TOXIC_JUDGE_NOTES });
-                try {
-                    const key = `第 ${l.index + 1} 层`;
-                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens: 1200, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
-                    mapLive(key, res.text, false, true);
-                    const parsed = PM.parseScanResponse(res.text, C.parseLooseJson, { protagonist, protagonistAliases: heroAliases });
+                const key = `第 ${l.index + 1} 层`;
+                const attempt = async (maxTokens) => {
+                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
                     if (res.usage) mapUi.scan.tokens += (res.usage.prompt_tokens || 0) + (res.usage.completion_tokens || 0);
-                    setPlanField(l.index, { scan: { ...parsed, hash: PM.hashText(PM.layerText(l)) } });
+                    mapLive(key, res.text, false, true);
+                    return PM.parseScanResponse(res.text, C.parseLooseJson, { protagonist, protagonistAliases: heroAliases });
+                };
+                try {
+                    let parsed;
+                    try {
+                        parsed = await attempt(1200);
+                    } catch (err) {
+                        // JSON 坏了多半是回复被截断（会思考的模型，思考也占上限），放宽上限再试一次
+                        if (!/JSON/.test(String(err.message))) throw err;
+                        log(`剧情地图：第 ${l.index + 1} 层回复格式不对，放宽长度上限重试一次`);
+                        mapLive(key, '', false);
+                        parsed = await attempt(4000);
+                    }
+                    setPlanField(l.index, { scan: { ...parsed, hash: PM.hashText(PM.layerText(l)) }, scanError: '' });
                 } catch (err) {
                     if (String(err.message) === 'ABORTED') return;
                     mapUi.scan.failed++;
+                    setPlanField(l.index, { scanError: String(err.message || err) });
                     log(`剧情地图：第 ${l.index + 1} 层扫描失败：${err.message}`);
                 }
                 mapUi.scan.done++;
@@ -2896,12 +2912,13 @@
         const e = State.engine;
         const n = e ? e.layers.length : 0;
         const scanned = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length : 0;
+        const failedN = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scanError).length : 0;
         const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
         t.textContent = busy && !sc ? busy : sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? ` · 失败 ${sc.failed}` : ''}` : n ? `已扫描 ${scanned} / ${n} 层` : '先在「小说」页选一本小说';
         $('nim-foot-mapbar').style.width = `${sc ? Math.round((sc.done / Math.max(1, sc.total)) * 100) : n ? Math.round((scanned / n) * 100) : 0}%`;
         $('nim-foot-scan').hidden = !!sc || !!mapUi.busy;
-        $('nim-foot-scan').disabled = !n || scanned === n;
-        $('nim-foot-scan').textContent = scanned && scanned < n ? '扫描剩下的' : scanned === n && n ? '已全部扫描' : '扫描';
+        $('nim-foot-scan').disabled = !n || (scanned === n && !failedN);
+        $('nim-foot-scan').textContent = failedN && scanned === n ? `重扫失败的 ${failedN} 层` : scanned && scanned < n ? `扫描剩下 ${n - scanned + failedN} 层` : scanned === n && n ? '已全部扫描' : '扫描';
         $('nim-foot-scanstop').hidden = !sc && !mapUi.busy;
         $('nim-foot-scanstop').textContent = sc ? '停止扫描' : '停止';
         $('nim-foot-rescan').hidden = !!sc || !!mapUi.busy || !scanned;
@@ -3219,7 +3236,7 @@
       <div class="nim-card static nim-map-tools"><div class="nim-card-body">
            <div class="nim-tools-head"><div><div class="nim-card-title">预扫描与 AI</div><div class="nim-card-desc">便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点</div></div><button class="nim-btn ghost sm" data-goto="nim-sec-mapcfg">模型和雷点设置</button></div>
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
-           <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
+           <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过或失败的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
            <div id="nim-map-scanstate" class="nim-muted"></div>
            <div id="nim-map-est" class="nim-muted"></div>
            <details class="nim-fold" id="nim-map-live-box"><summary>实时输出</summary><div id="nim-map-live" class="nim-map-live"></div></details>
