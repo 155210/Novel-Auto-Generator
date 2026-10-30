@@ -243,3 +243,15 @@ describe('剧情地图：自动认主角', () => {
         expect(engine.buildRequestFor(0).prompt).toContain('本书主角是「祁铭」');
     });
 });
+
+describe('剧情地图：扫描失败', () => {
+    it('失败原因记在层上，旧结果保留；成功后清掉', () => {
+        let plan = M.setLayerPlan({}, 1, { scan: { oneLine: '旧' } });
+        plan = M.setLayerPlan(plan, 1, { scanError: 'JSON 解析失败' });
+        expect(M.layerPlan(plan, 1).scan.oneLine).toBe('旧');
+        expect(M.layerPlan(plan, 1).scanError).toBe('JSON 解析失败');
+        plan = M.setLayerPlan(plan, 1, { scan: { oneLine: '新' }, scanError: '' });
+        expect(M.layerPlan(plan, 1).scanError).toBe('');
+        expect(plan.layers[1].scanError).toBeUndefined();
+    });
+});

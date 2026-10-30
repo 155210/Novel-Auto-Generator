@@ -254,6 +254,7 @@
             todo: !!x.todo, // C8 待决定
             note: x.note || '',
             scan: x.scan || null, // B1 预扫描结果 {hash, oneLine, summary, characters, relations, toxic, tags}
+            scanError: x.scanError || '', // 最近一次扫描失败的原因（旧结果还留着）
         };
     }
 
