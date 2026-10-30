@@ -15,6 +15,18 @@
     const SETTINGS_KEY = 'novelImporterSettings';
 
     const API_DEFAULTS = {
+        // 剧情地图：预扫描用的模型（留空用主 API）、并发、单价、雷点、指令模板
+        mapScanModel: '',
+        mapScanEndpoint: '',
+        mapScanKey: '',
+        mapConcurrency: 3,
+        mapPriceIn: 0,
+        mapPriceOut: 0,
+        mapVariants: 2,
+        mapToxic: '',
+        mapTemplates: null,
+        // 预设方案：存几套预设，按模型切换（[{name, preset}]，「插件默认」不存，随时能切回）
+        presetLibrary: [],
         apiEndpoint: '',
         apiKey: '',
         apiModel: '',
@@ -34,6 +46,7 @@
         glossaryRemoved: [], // 用户在术语表里删掉的原文，AI 之后再报也不收
         ledgerManual: [], // 用户手动加或改过的既成事实：[{from（从第几层起，0 开始）, text}]
         ledgerRemoved: [], // 用户删掉或改掉的 AI 事实原句，AI 之后再报也不收
+        plan: window.NovelImporterPlotMap ? window.NovelImporterPlotMap.normalizePlan(null) : {}, // 剧情地图：人物名单、每层的扫描结果和改写安排
         stWorlds: null, // 酒馆里开着的世界书：[{name, source, count, chars, rules}]，开始处理时重读
         outputRules: '', // 勾选的那几本拼成的输出要求
         images: [], // EPUB 插图：[{id, name, mime, data(base64)}]，正文里是〔插图id〕
@@ -266,6 +279,7 @@
             { key: 'extraRules', label: '其他规则（随便写，会原样放进提示词）', type: 'textarea', rows: 3 },
             { key: 'prevTailChars', label: '带上一层正文结尾的字数', type: 'number', hint: '让本层开头和上一层接得上；0 不带。取的是上一层处理完的正文（补丁、翻译、改写后的）；翻译时还会带上一层原文结尾的同样字数，让 AI 补上漏译的最后几句' },
             { key: 'carryTags', label: '上一层回复里一起发的标签', type: 'text', hint: '逗号分隔，比如 Plotline, Calculated_data。从上一层 AI 的原始回复里取（楼层里没有也行），原样带给本层；哪层没输出就沿用最近一次的' },
+            { key: 'recapLayers', label: '前情提要带几层摘要', type: 'number', hint: '每层带上最近几层改写后的摘要，新剧情接得上；剧情改写中会额外带上从改写起点开始的层（最多 10 层）。0 不带' },
             { key: 'divergenceEnabled', label: '启用剧情改写强规则', type: 'check' },
             { key: 'divergenceRules', label: '触发剧情改写的情节（每行一条，可以随意加）', type: 'textarea', rows: 4 },
             { key: 'divergenceDirection', label: '改写方向', type: 'textarea', rows: 3 },
@@ -640,6 +654,7 @@
             glossaryRemoved: State.glossaryRemoved,
             ledgerManual: State.ledgerManual,
             ledgerRemoved: State.ledgerRemoved,
+            plan: State.plan,
             images: State.images,
             imagePaths: State.imagePaths,
             meta: State.meta,
@@ -663,6 +678,7 @@
         State.glossaryRemoved = Array.isArray(snap.glossaryRemoved) ? snap.glossaryRemoved : [];
         State.ledgerManual = Array.isArray(snap.ledgerManual) ? snap.ledgerManual : [];
         State.ledgerRemoved = Array.isArray(snap.ledgerRemoved) ? snap.ledgerRemoved : [];
+        State.plan = window.NovelImporterPlotMap.normalizePlan(snap.plan);
         State.images = snap.images || [];
         State.imagePaths = snap.imagePaths || null;
         State.meta = { ...State.meta, ...(snap.meta || {}) };
@@ -701,6 +717,8 @@
             get ledgerRemoved() {
                 return State.ledgerRemoved;
             },
+            // 剧情地图里每层的改写安排（指令、新大纲、接回、跳过……），处理时每层取最新的
+            planFor: (i) => window.NovelImporterPlotMap.layerPlan(State.plan, i),
             get outputRules() {
                 return State.settings.stWorldEnabled ? State.outputRules : '';
             },
@@ -1314,6 +1332,7 @@
         try {
             const p = C.parseSTPreset(JSON.parse(await readFileText(file)));
             State.settings.preset = { name: file.name.replace(/\.json$/i, ''), entries: p.entries, squash: p.squash };
+            storePresetInLibrary(State.settings.preset);
             if (p.params.temperature != null) State.settings.temperature = p.params.temperature;
             if (p.params.maxTokens) State.settings.maxTokens = p.params.maxTokens;
             saveSettings();
@@ -1332,6 +1351,70 @@
         } catch (e) {
             toast(`导入预设失败：${e.message}`, 'error');
         }
+    }
+
+    // ============================================
+    // 预设方案：存几套预设，按模型切换
+    // ============================================
+
+    const DEFAULT_PRESET_KEY = '__default__';
+
+    function presetLibrary() {
+        return Array.isArray(State.settings.presetLibrary) ? State.settings.presetLibrary : [];
+    }
+
+    /** 同名的覆盖，没有就加在最后 */
+    function storePresetInLibrary(preset, name = preset.name) {
+        const lib = presetLibrary().filter((x) => x.name !== name);
+        lib.push({ name: name || '未命名预设', preset: JSON.parse(JSON.stringify({ ...preset, name: name || preset.name })) });
+        State.settings.presetLibrary = lib;
+        saveSettings();
+        renderPresetLibrary();
+    }
+
+    function renderPresetLibrary() {
+        const sel = $('nim-preset-lib');
+        if (!sel) return;
+        const cur = State.settings.preset && State.settings.preset.name;
+        sel.innerHTML =
+            `<option value="${DEFAULT_PRESET_KEY}">插件默认</option>` +
+            presetLibrary()
+                .map((x, k) => `<option value="${k}" ${x.name === cur ? 'selected' : ''}>${esc(x.name)}</option>`)
+                .join('');
+    }
+
+    function usePresetFromLibrary() {
+        const v = $('nim-preset-lib').value;
+        const p = v === DEFAULT_PRESET_KEY ? C.presetDefaults() : presetLibrary()[Number(v)] && presetLibrary()[Number(v)].preset;
+        if (!p) return;
+        State.settings.preset = C.normalizePreset(JSON.parse(JSON.stringify(p)));
+        saveSettings();
+        presetUi.selecting = false;
+        presetUi.selected.clear();
+        renderPreset();
+        log(`预设切换到「${State.settings.preset.name || '插件默认'}」`);
+        toast(`已切换到「${State.settings.preset.name || '插件默认'}」，后面的层按它发`, 'success');
+    }
+
+    function savePresetToLibrary() {
+        const cur = State.settings.preset || {};
+        const input = $('nim-preset-name-input');
+        const name = ((input && input.value) || cur.name || '').trim() || `预设方案 ${presetLibrary().length + 1}`;
+        storePresetInLibrary(cur, name);
+        State.settings.preset = { ...cur, name };
+        saveSettings();
+        renderPreset();
+        toast(`已存成方案「${name}」`, 'success');
+    }
+
+    function deletePresetFromLibrary() {
+        const v = $('nim-preset-lib').value;
+        if (v === DEFAULT_PRESET_KEY) return toast('插件默认不能删', 'info');
+        const x = presetLibrary()[Number(v)];
+        if (!x || !confirm(`删掉方案「${x.name}」？当前正在用的预设不受影响。`)) return;
+        State.settings.presetLibrary = presetLibrary().filter((_, k) => k !== Number(v));
+        saveSettings();
+        renderPresetLibrary();
     }
 
     /** 预设条目里的 {{char}}/{{user}} 等宏交给酒馆展开 */
@@ -1382,6 +1465,7 @@
             ? `<button class="nim-btn sm" data-act="all">${allPicked ? '全不选' : '全选'}</button><button class="nim-btn sm danger-ghost" data-act="del" ${presetUi.selected.size ? '' : 'disabled'}>删除选中（${presetUi.selected.size}）</button><button class="nim-btn sm" data-act="done">完成</button>`
             : `<button class="nim-btn sm" data-act="add">新建条目</button>${selectable.length ? '<button class="nim-btn sm" data-act="select">多选删除</button>' : ''}${real.length ? '<button class="nim-btn sm danger-ghost" data-act="clear">清空预设</button>' : ''}`;
         $('nim-preset-squash').checked = !!p.squash;
+        renderPresetLibrary();
     }
 
     function findPresetEntry(id) {
@@ -1860,6 +1944,10 @@
           <div class="nim-muted">支持酒馆导出的聊天补全预设 JSON，顺序和开关和酒馆里一样。角色卡、世界书、示例对话等占位条目不导入；📌 是每层的提示词（小说正文和任务），相当于预设里「聊天记录」的位置。按住左边的抓手上下拖动调整顺序，点条目名编辑。</div>
           <ul id="nim-preset-list" class="nim-pr-list"></ul>
           <div id="nim-preset-actions" class="nim-row"></div>
+          <div class="nim-sub">预设方案（按模型切换）</div>
+          <div class="nim-row"><select id="nim-preset-lib" class="nim-input nim-grow"></select><button id="nim-preset-use" class="nim-btn sm">切换到这个</button></div>
+          <div class="nim-row"><input id="nim-preset-name-input" class="nim-input nim-grow" placeholder="方案名，比如「Claude 用」「Gemini 用」"><button id="nim-preset-save" class="nim-btn sm">把当前预设存成方案</button><button id="nim-preset-libdel" class="nim-btn sm danger-ghost">删掉选中的方案</button></div>
+          <div class="nim-muted">导入的预设会自动存成方案。「插件默认」是本模块自带的预设，随时能切回。切换后，还没处理的层按新预设发。</div>
           <label class="nim-check"><input type="checkbox" id="nim-preset-squash"><span class="nim-switch"></span><span>合并相邻的系统消息<span class="nim-hint">和酒馆的「压缩系统消息」一样</span></span></label>
         </div>`;
     }
@@ -2175,6 +2263,708 @@
         </div></div>`;
     }
 
+    // ============================================
+    // 剧情地图：正式改写前先摸清每层讲了什么，再定怎么改
+    // ============================================
+
+    const PM = window.NovelImporterPlotMap;
+    const mapUi = { stats: null, statsKey: '', openVol: new Set([0]), openLayer: null, filter: 'all', char: '', scan: null, busy: '' };
+
+    function mapEngine() {
+        const e = State.engine;
+        return e && e.layers && e.layers.length ? e : null;
+    }
+
+    function savePlan() {
+        saveProgress();
+    }
+
+    function mapNames() {
+        return PM.parseNameList(State.plan.names);
+    }
+
+    function chapterTest() {
+        const re = C.safeRegex(State.settings.chapterRegex || C.DEFAULT_CHAPTER_REGEX);
+        return (t) => C.isChapterTitle(t, re);
+    }
+
+    /** 免费统计按人物名单、关键词、分层缓存；有变化才重算 */
+    function mapStats() {
+        const e = mapEngine();
+        if (!e) return null;
+        const key = [e.layers.length, e.layers[0].paras.length, State.plan.names, State.plan.keywords, State.settings.chapterRegex].join('|');
+        if (mapUi.statsKey !== key) {
+            mapUi.stats = PM.analyze(e.layers, { names: mapNames(), keywords: PM.parseWordList(State.plan.keywords), isChapterTitle: chapterTest() });
+            mapUi.statsKey = key;
+        }
+        return mapUi.stats;
+    }
+
+    function ledgerFacts() {
+        try {
+            return (State.engine.finalState().divergence || {}).facts || [];
+        } catch (err) {
+            return [];
+        }
+    }
+
+    function volOf(i) {
+        return Math.floor(i / State.plan.volumeSize);
+    }
+
+    /** 一层的标签：统计、扫描、规划、处理进度 */
+    function mapChips(i, row, lp, conflicts) {
+        const e = State.engine;
+        const r = e.results[i];
+        const out = [];
+        if (r && r.status === 'done') out.push(`<span class="nim-tag">${r.skipped ? '已跳过' : '已处理'}</span>`);
+        if (lp.bookmark) out.push('<span class="nim-tag orange">★ 书签</span>');
+        if (lp.todo) out.push('<span class="nim-tag orange">待决定</span>');
+        if (PM.hasRewritePlan(lp)) out.push('<span class="nim-tag violet">改写</span>');
+        if (lp.resume) out.push('<span class="nim-tag violet">接回</span>');
+        if (lp.skip) out.push('<span class="nim-tag">跳过</span>');
+        if (lp.scan && lp.scan.toxic.length) out.push(`<span class="nim-tag red">雷点 ${esc(lp.scan.toxic.map((t) => t.rule).join('、'))}</span>`);
+        if (row && row.hot) out.push(`<span class="nim-tag red">关键词 ${row.keywordTotal}</span>`);
+        if (conflicts[i]) out.push('<span class="nim-tag orange">可能和事实冲突</span>');
+        if (row && row.newNames.length) out.push(`<span class="nim-tag blue">新：${esc(row.newNames.join('、'))}</span>`);
+        if (row && row.odd.length) out.push(`<span class="nim-tag orange">${row.odd.map((c) => (c.flag === 'short' ? '短章' : '长章')).join(' ')}</span>`);
+        if (row) out.push(`<span class="nim-tag">${row.pace}</span>`);
+        if (lp.scan) for (const t of lp.scan.tags) out.push(`<span class="nim-tag">${esc(t)}</span>`);
+        return out.join('');
+    }
+
+    function mapMatches(i, row, lp, conflicts) {
+        const f = mapUi.filter;
+        if (mapUi.char) {
+            const n = (row && row.names[mapUi.char]) || 0;
+            const inScan = lp.scan && lp.scan.characters.includes(mapUi.char);
+            if (!n && !inScan) return false;
+        }
+        if (f === 'all') return true;
+        if (f === 'toxic') return !!((lp.scan && lp.scan.toxic.length) || (row && row.hot));
+        if (f === 'plan') return PM.hasRewritePlan(lp) || lp.resume || lp.skip;
+        if (f === 'mark') return lp.bookmark || lp.todo;
+        if (f === 'conflict') return !!conflicts[i];
+        if (f === 'new') return !!(row && row.newNames.length);
+        if (f === 'unscanned') return !lp.scan;
+        return true;
+    }
+
+    function layerTitle(i, row, lp) {
+        const r = State.engine.results[i];
+        if (lp.scan && lp.scan.oneLine) return lp.scan.oneLine;
+        if (r && r.status === 'done' && r.parsed && r.parsed.title && !r.skipped) return r.parsed.title;
+        if (row && row.chapters.length) return row.chapters.slice(0, 2).join(' / ') + (row.chapters.length > 2 ? ` 等 ${row.chapters.length} 章` : '');
+        return '（无章节标题）';
+    }
+
+    function topNames(row, n = 4) {
+        return Object.entries((row && row.names) || {})
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, n)
+            .map(([k, v]) => `${esc(k)} ${v}`)
+            .join(' · ');
+    }
+
+    function renderMap() {
+        const box = $('nim-map');
+        if (!box) return;
+        const e = mapEngine();
+        if (!e) {
+            box.innerHTML = '<div class="nim-empty">先在「小说」页选一本小说，分好层以后这里会显示全书的剧情地图。</div>';
+            return;
+        }
+        const stats = mapStats();
+        const plan = State.plan;
+        const conflicts = PM.conflictHints(stats.rows, ledgerFacts(), mapNames());
+        const n = e.layers.length;
+        const vols = Math.ceil(n / plan.volumeSize);
+        const scanned = e.layers.filter((l) => PM.layerPlan(plan, l.index).scan).length;
+        const planned = Object.keys(plan.layers).filter((k) => {
+            const lp = PM.layerPlan(plan, k);
+            return PM.hasRewritePlan(lp) || lp.resume || lp.skip;
+        }).length;
+
+        // C9 卷纲卡片（手机上横着滑）
+        const cards = [];
+        for (let v = 0; v < vols; v++) {
+            const from = v * plan.volumeSize;
+            const to = Math.min(n, from + plan.volumeSize) - 1;
+            let tox = 0;
+            let hot = 0;
+            let pl = 0;
+            const lines = [];
+            for (let i = from; i <= to; i++) {
+                const lp = PM.layerPlan(plan, i);
+                if (lp.scan && lp.scan.toxic.length) tox++;
+                if (stats.rows[i] && stats.rows[i].hot) hot++;
+                if (PM.hasRewritePlan(lp)) pl++;
+                if (lp.scan && lp.scan.oneLine && lines.length < 3) lines.push(lp.scan.oneLine);
+            }
+            cards.push(`<button class="nim-vol-card ${mapUi.openVol.has(v) ? 'on' : ''}" data-map-vol="${v}">
+                <b>第 ${v + 1} 卷</b><span class="nim-muted">第 ${from + 1}–${to + 1} 层</span>
+                <span class="nim-vol-lines">${lines.length ? lines.map(esc).join('；') : '还没扫描'}</span>
+                <span>${tox ? `<span class="nim-tag red">雷点 ${tox}</span>` : ''}${hot ? `<span class="nim-tag red">关键词 ${hot}</span>` : ''}${pl ? `<span class="nim-tag violet">改写 ${pl}</span>` : ''}</span>
+              </button>`);
+        }
+
+        const filters = [
+            ['all', '全部'],
+            ['toxic', '雷点和关键词'],
+            ['plan', '有改写安排'],
+            ['mark', '书签和待决定'],
+            ['conflict', '可能冲突'],
+            ['new', '新角色'],
+            ['unscanned', '没扫描'],
+        ];
+        const names = mapNames();
+        let body = '';
+        for (let v = 0; v < vols; v++) {
+            const from = v * plan.volumeSize;
+            const to = Math.min(n, from + plan.volumeSize) - 1;
+            const open = mapUi.openVol.has(v) || mapUi.filter !== 'all' || mapUi.char;
+            let rows = '';
+            if (open) {
+                for (let i = from; i <= to; i++) {
+                    const row = stats.rows[i];
+                    const lp = PM.layerPlan(plan, i);
+                    if (!mapMatches(i, row, lp, conflicts)) continue;
+                    rows += `<li class="nim-map-row ${mapUi.openLayer === i ? 'open' : ''}" data-map-row="${i}">
+                        <button class="nim-map-head" data-map-act="toggle" data-i="${i}">
+                          <span class="nim-map-no">${i + 1}</span>
+                          <span class="nim-map-main"><span class="nim-map-title">${esc(layerTitle(i, row, lp))}</span><span class="nim-map-chips">${mapChips(i, row, lp, conflicts)}</span>${row && Object.keys(row.names).length ? `<span class="nim-muted">${topNames(row)}</span>` : ''}</span>
+                        </button>
+                        ${mapUi.openLayer === i ? layerDetailHtml(i, row, lp, conflicts) : ''}
+                      </li>`;
+                }
+                if (!rows) continue;
+            }
+            body += `<section class="nim-map-vol"><button class="nim-map-volhead" data-map-vol="${v}"><b>${open ? '▾' : '▸'} 第 ${v + 1} 卷</b><span class="nim-muted">第 ${from + 1}–${to + 1} 层</span></button>${open ? `<ul class="nim-map-list">${rows}</ul>` : ''}</section>`;
+        }
+
+        const sg = plan.suggestions.length
+            ? `<div class="nim-sub">AI 提议的改写点（${plan.suggestions.length} 条）</div><ul class="nim-map-sugg">${plan.suggestions
+                  .map(
+                      (s, k) => `<li><b>第 ${s.layer + 1} 层${s.resume !== null && s.resume !== undefined ? ` → 第 ${s.resume + 1} 层接回` : ''}</b><div class="nim-muted">${esc(s.reason)}</div><div>${esc(s.change)}</div>
+                        <div class="nim-row"><button class="nim-btn sm" data-map-act="sugg-take" data-k="${k}">采用</button><button class="nim-btn sm ghost" data-map-act="sugg-go" data-k="${k}">看这层</button><button class="nim-btn sm ghost" data-map-act="sugg-drop" data-k="${k}">不要</button></div></li>`,
+                  )
+                  .join('')}</ul>`
+            : '';
+
+        box.innerHTML = `
+          <div class="nim-map-summary">共 ${n} 层 · 已扫描 ${scanned} 层 · 有改写安排 ${planned} 层${ledgerFacts().length ? ` · 账本 ${ledgerFacts().length} 条事实` : ''}</div>
+          <div class="nim-vol-cards">${cards.join('')}</div>
+          ${sg}
+          <div class="nim-row nim-map-filters">${filters.map(([k, t]) => `<button class="nim-chip ${mapUi.filter === k ? 'on' : ''}" data-map-filter="${k}">${t}</button>`).join('')}
+            <select id="nim-map-char" class="nim-input nim-map-char"><option value="">所有人物</option>${names.map((x) => `<option ${mapUi.char === x.name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
+          ${body || '<div class="nim-empty">这个筛选下没有层</div>'}`;
+        renderMapStatsBox();
+    }
+
+    function layerDetailHtml(i, row, lp, conflicts) {
+        const e = State.engine;
+        const r = e.results[i];
+        const s = lp.scan;
+        const after = r && r.status === 'done' && !r.skipped ? r.parsed.summary : '';
+        const pairs = Object.entries((row && row.pairs) || {})
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 6)
+            .map(([k, v]) => `${esc(k.replace('|', ' + '))} ${v}`)
+            .join(' · ');
+        const tpl = mapTemplates().map((t, k) => `<option value="${k}">${esc(t.length > 30 ? t.slice(0, 30) + '…' : t)}</option>`).join('');
+        const outlines = lp.outlines.length
+            ? `<div class="nim-sub">候选新大纲（选一个）</div>${lp.outlines
+                  .map(
+                      (o, k) => `<div class="nim-map-outline"><b>${esc(o.name || `方案 ${k + 1}`)}</b>${Object.entries(o.layers)
+                          .map(([li, t]) => `<div><span class="nim-muted">第 ${Number(li) + 1} 层：</span>${esc(t)}</div>`)
+                          .join('')}<button class="nim-btn sm" data-map-act="outline-pick" data-i="${i}" data-k="${k}">用这个方案</button></div>`,
+                  )
+                  .join('')}`
+            : '';
+        return `<div class="nim-map-detail">
+            ${row && row.chapters.length ? `<div class="nim-muted">章节：${esc(row.chapters.join(' / '))}</div>` : ''}
+            ${row && row.odd.length ? `<div class="nim-muted">长度异常：${row.odd.map((c) => `${esc(c.title)} ${c.chars} 字（${c.flag === 'short' ? '偏短' : '偏长'}）`).join('；')}</div>` : ''}
+            ${row ? `<div class="nim-muted">出场：${topNames(row, 10) || '（名单里的人物都没出场）'}${pairs ? `<br>同场：${pairs}` : ''}<br>关键词：${Object.entries(row.keywords).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || '无'} · 对话 ${row.dialogue}% · 节奏 ${row.pace}</div>` : ''}
+            ${conflicts[i] ? `<div class="nim-alert warn">后面原文又写到账本里的人：${conflicts[i].map((c) => `${esc(c.names.join('、'))}（${esc(c.fact)}）`).join('；')}。处理这层时会按账本改，留意看。</div>` : ''}
+            ${s ? `<div class="nim-sub">原剧情（预扫描）</div><div>${esc(s.summary || s.oneLine)}</div>${s.relations.length ? `<div class="nim-muted">关系变化：${s.relations.map((x) => `${esc(x.a)}${x.b ? ' 和 ' + esc(x.b) : ''} ${esc(x.change)}`).join('；')}</div>` : ''}${s.toxic.length ? `<div class="nim-alert warn">${s.toxic.map((t) => `${esc(t.rule)}：${esc(t.evidence)}`).join('<br>')}</div>` : ''}` : '<div class="nim-muted">还没预扫描。</div>'}
+            ${after ? `<div class="nim-sub">改写后（已处理）</div><div>${esc(after)}</div>` : ''}
+            <div class="nim-row">
+              <button class="nim-btn sm" data-map-act="source" data-i="${i}">看原文</button>
+              <button class="nim-btn sm" data-map-act="scan-one" data-i="${i}">${s ? '重新扫描这层' : '扫描这层'}</button>
+              <button class="nim-btn sm" data-map-act="goto-run" data-i="${i}">去处理页</button>
+            </div>
+            <div class="nim-row">
+              <label class="nim-check"><input type="checkbox" data-map-flag="bookmark" data-i="${i}" ${lp.bookmark ? 'checked' : ''}><span class="nim-switch"></span><span>书签</span></label>
+              <label class="nim-check"><input type="checkbox" data-map-flag="todo" data-i="${i}" ${lp.todo ? 'checked' : ''}><span class="nim-switch"></span><span>待决定</span></label>
+              <label class="nim-check"><input type="checkbox" data-map-flag="resume" data-i="${i}" ${lp.resume ? 'checked' : ''}><span class="nim-switch"></span><span>从这层接回原文</span></label>
+              <label class="nim-check"><input type="checkbox" data-map-flag="condense" data-i="${i}" ${lp.condense ? 'checked' : ''}><span class="nim-switch"></span><span>水章压缩</span></label>
+              <label class="nim-check"><input type="checkbox" data-map-flag="skip" data-i="${i}" ${lp.skip ? 'checked' : ''}><span class="nim-switch"></span><span>跳过这层</span></label>
+            </div>
+            <div class="nim-field"><label>这层的改写指令 <select class="nim-input nim-map-tpl" data-map-tpl="${i}"><option value="">套用模板…</option>${tpl}</select></label>
+              <textarea class="nim-input nim-textarea" rows="3" data-map-text="instruction" data-i="${i}" placeholder="比如：这里女主没被送走，改成男主出手拦下">${esc(lp.instruction)}</textarea></div>
+            <div class="nim-field"><label>新大纲（定下来以后改写按它写）</label>
+              <textarea class="nim-input nim-textarea" rows="3" data-map-text="outline" data-i="${i}" placeholder="可以自己写，也可以按指令让 AI 出">${esc(lp.outline)}</textarea>
+              <div class="nim-row"><button class="nim-btn sm" data-map-act="outline" data-i="${i}">按指令出新大纲</button><span class="nim-muted">到下一个「接回原文」的层为止，方案数在上面设置</span></div></div>
+            ${outlines}
+            <div class="nim-field"><label>在这层后面插一段自创剧情</label>
+              <textarea class="nim-input nim-textarea" rows="2" data-map-text="insert" data-i="${i}" placeholder="比如：加一段男主和女主月下谈心">${esc(lp.insert)}</textarea></div>
+            <div class="nim-field"><label>备注</label><input class="nim-input" data-map-text="note" data-i="${i}" value="${esc(lp.note)}"></div>
+          </div>`;
+    }
+
+    function renderMapStatsBox() {
+        const box = $('nim-map-stats');
+        if (!box) return;
+        const stats = mapStats();
+        if (!stats) return (box.innerHTML = '');
+        const plan = State.plan;
+        const names = stats.names.slice(0, 12);
+        const vols = Math.ceil(stats.rows.length / plan.volumeSize);
+        // A2 出场热力图：人物 × 卷
+        const grid = names.length
+            ? (() => {
+                  const cells = names.map((nm) => {
+                      const per = [];
+                      for (let v = 0; v < vols; v++) {
+                          let c = 0;
+                          for (let i = v * plan.volumeSize; i < Math.min(stats.rows.length, (v + 1) * plan.volumeSize); i++) c += stats.rows[i].names[nm] || 0;
+                          per.push(c);
+                      }
+                      return per;
+                  });
+                  const max = Math.max(1, ...cells.flat());
+                  return `<div class="nim-heat-wrap"><table class="nim-heat"><tr><th></th>${Array.from({ length: vols }, (_, v) => `<th>${v + 1}</th>`).join('')}</tr>${names
+                      .map((nm, a) => `<tr><th>${esc(nm)}</th>${cells[a].map((c) => `<td style="--h:${(c / max).toFixed(2)}" title="${c}">${c || ''}</td>`).join('')}</tr>`)
+                      .join('')}</table></div><div class="nim-muted">每格是这个人物在这一卷出现的次数，颜色越深越多；看哪段消失、哪段集中出场。</div>`;
+              })()
+            : '<div class="nim-muted">先填人物名单（或点「从原文猜人名」），这里会显示每个人在各卷的出场次数。</div>';
+        const pairs = stats.pairs.slice(0, 12).map((p) => `${esc(p.a)} + ${esc(p.b)} ${p.count}`).join(' · ');
+        const odd = stats.chapters.filter((c) => c.flag);
+        box.innerHTML = `${grid}
+          ${pairs ? `<div class="nim-sub">人名共现（同一段里一起出现的次数）</div><div class="nim-muted">${pairs}</div>` : ''}
+          <div class="nim-sub">章节</div><div class="nim-muted">共 ${stats.chapters.length} 章，中位数 ${Math.round(stats.medianChapter)} 字；偏短 ${odd.filter((c) => c.flag === 'short').length} 章，偏长 ${odd.filter((c) => c.flag === 'long').length} 章（在地图里标出）</div>`;
+    }
+
+    function mapTemplates() {
+        const t = State.settings.mapTemplates;
+        return Array.isArray(t) && t.length ? t : PM.DEFAULT_TEMPLATES;
+    }
+
+    function setPlanField(i, patch) {
+        State.plan = PM.setLayerPlan(State.plan, i, patch);
+        savePlan();
+    }
+
+    function guessNamesIntoList() {
+        const e = mapEngine();
+        if (!e) return toast('先选一本小说', 'warning');
+        const have = new Set(mapNames().flatMap((n) => n.aliases));
+        // 世界书里的角色名也收进来
+        let wbNames = [];
+        try {
+            const wb = e.finalState().worldbook || {};
+            wbNames = Object.keys(wb['角色'] || wb['人物'] || {});
+        } catch (err) {
+            /* 没有 */
+        }
+        const guessed = PM.guessNames(e.layers).map((x) => x.name);
+        const add = [...new Set([...wbNames, ...guessed])].filter((x) => x && !have.has(x) && x !== '{{user}}');
+        if (!add.length) return toast('没有猜到新的人名', 'info');
+        State.plan = { ...State.plan, names: [State.plan.names.trim(), ...add].filter(Boolean).join('\n') };
+        $('nim-map-names').value = State.plan.names;
+        savePlan();
+        renderMap();
+        toast(`加了 ${add.length} 个名字，删掉猜错的就行`, 'success');
+    }
+
+    // --------- 预扫描（B1 G5 C5，F1 F2 F3 F6）---------
+
+    function scanModelInfo() {
+        const s = State.settings;
+        return {
+            endpoint: (s.mapScanEndpoint || '').trim() || s.apiEndpoint,
+            key: (s.mapScanKey || '').trim() || s.apiKey,
+            model: (s.mapScanModel || '').trim() || s.apiModel,
+        };
+    }
+
+    /** 预扫描、提议、出大纲用的请求：不流式、不占主流程的停止按钮 */
+    async function callSideAPI(prompt, { signal, maxTokens = 2000 } = {}) {
+        const m = scanModelInfo();
+        const h = { 'Content-Type': 'application/json' };
+        if (m.key) h.Authorization = `Bearer ${m.key}`;
+        const body = { model: m.model || 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.3, stream: false, max_tokens: maxTokens };
+        let last;
+        for (let k = 0; k < 3; k++) {
+            if (signal && signal.aborted) throw new Error('ABORTED');
+            try {
+                const resp = await fetch(chatUrl(m.endpoint), { method: 'POST', headers: h, body: JSON.stringify(body), signal });
+                if (!resp.ok) {
+                    const t = await resp.text().catch(() => '');
+                    const err = new Error(`API 返回 ${resp.status}：${t.slice(0, 200)}`);
+                    err.retryable = RETRYABLE.has(resp.status);
+                    throw err;
+                }
+                const data = await resp.json();
+                return { text: data?.choices?.[0]?.message?.content || '', usage: data.usage || null };
+            } catch (e) {
+                if (e.name === 'AbortError') throw new Error('ABORTED');
+                last = e;
+                if (e.retryable === false) throw e;
+                await sleep(2 ** k * 1500);
+            }
+        }
+        throw last;
+    }
+
+    function scanTargets(onlyMissing) {
+        const e = mapEngine();
+        const from = Math.max(1, parseInt($('nim-map-from')?.value, 10) || 1) - 1;
+        const to = Math.min(e.layers.length, parseInt($('nim-map-to')?.value, 10) || e.layers.length) - 1;
+        return e.layers.filter((l) => {
+            if (l.index < from || l.index > to) return false;
+            if (!onlyMissing) return true;
+            const s = PM.layerPlan(State.plan, l.index).scan;
+            // F3：原文没变就用缓存
+            return !s || s.hash !== PM.hashText(PM.layerText(l));
+        });
+    }
+
+    function showScanEstimate() {
+        const e = mapEngine();
+        if (!e) return toast('先选一本小说', 'warning');
+        const t = scanTargets(true);
+        const s = State.settings;
+        const est = PM.estimateScanCost(t, { estimateTokens: C.estimateTokens, inPrice: Number(s.mapPriceIn) || 0, outPrice: Number(s.mapPriceOut) || 0 });
+        const money = Number(s.mapPriceIn) || Number(s.mapPriceOut) ? `，约 ${est.cost.toFixed(est.cost < 1 ? 3 : 2)}（按你填的单价）` : '，填上单价能算出钱';
+        $('nim-map-est').textContent = `要扫 ${est.layers} 层：输入约 ${fmtNum(est.input)} token，输出约 ${fmtNum(est.output)} token${money}`;
+    }
+
+    async function runScan(onlyMissing, single = null) {
+        const e = mapEngine();
+        if (!e) return toast('先选一本小说', 'warning');
+        if (mapUi.scan) return toast('正在扫描', 'info');
+        const targets = single !== null ? [e.layers[single]] : scanTargets(onlyMissing);
+        if (!targets.length) return toast('这个范围里的层都扫过了', 'info');
+        const ctl = new AbortController();
+        mapUi.scan = { ctl, done: 0, total: targets.length, failed: 0, tokens: 0 };
+        renderScanState();
+        const names = mapNames();
+        const toxic = State.settings.mapToxic || State.settings.divergenceRules || PM.DEFAULT_TOXIC;
+        await PM.runPool(
+            targets,
+            Math.max(1, Math.min(8, Number(State.settings.mapConcurrency) || 3)),
+            async (l) => {
+                const prev = PM.layerPlan(State.plan, l.index - 1).scan;
+                const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '' });
+                try {
+                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens: 1200 });
+                    const parsed = PM.parseScanResponse(res.text, C.parseLooseJson);
+                    if (res.usage) mapUi.scan.tokens += (res.usage.prompt_tokens || 0) + (res.usage.completion_tokens || 0);
+                    setPlanField(l.index, { scan: { ...parsed, hash: PM.hashText(PM.layerText(l)) } });
+                } catch (err) {
+                    if (String(err.message) === 'ABORTED') return;
+                    mapUi.scan.failed++;
+                    log(`剧情地图：第 ${l.index + 1} 层扫描失败：${err.message}`);
+                }
+                mapUi.scan.done++;
+                renderScanState();
+                if (mapUi.scan.done % 5 === 0 || single !== null) renderMap();
+            },
+            () => ctl.signal.aborted,
+        );
+        const sc = mapUi.scan;
+        mapUi.scan = null;
+        renderScanState();
+        renderMap();
+        toast(`扫描完成 ${sc.done - sc.failed} 层${sc.failed ? `，失败 ${sc.failed} 层（日志里有原因）` : ''}${sc.tokens ? `，用了约 ${fmtNum(sc.tokens)} token` : ''}`, sc.failed ? 'warning' : 'success');
+    }
+
+    function renderScanState() {
+        const el = $('nim-map-scanstate');
+        if (!el) return;
+        const sc = mapUi.scan;
+        el.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? `，失败 ${sc.failed}` : ''}` : '';
+        $('nim-map-scanstop').hidden = !sc;
+    }
+
+    // --------- D4 AI 提议、D5/D8 新大纲 ---------
+
+    async function suggestPoints() {
+        const e = mapEngine();
+        if (!e) return toast('先选一本小说', 'warning');
+        const scanned = e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length;
+        if (!scanned) return toast('先预扫描，AI 要看着剧情地图提议', 'warning');
+        if (mapUi.busy) return;
+        mapUi.busy = 'suggest';
+        setStatus('AI 正在通读剧情地图、找要改的地方…');
+        try {
+            const pref = (State.settings.mapToxic || '') + (State.settings.divergenceDirection ? `\n改写方向：${State.settings.divergenceDirection}` : '');
+            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules }), { maxTokens: 4000 });
+            const list = PM.parseSuggestResponse(res.text, C.parseLooseJson);
+            State.plan = { ...State.plan, suggestions: list };
+            savePlan();
+            toast(list.length ? `AI 提了 ${list.length} 个改写点，在地图上方` : 'AI 觉得没有要改的', 'success');
+        } catch (err) {
+            toast(`提议失败：${err.message}`, 'error');
+        } finally {
+            mapUi.busy = '';
+            setStatus('');
+            renderMap();
+        }
+    }
+
+    function takeSuggestion(k) {
+        const s = State.plan.suggestions[k];
+        if (!s) return;
+        const lp = PM.layerPlan(State.plan, s.layer);
+        setPlanField(s.layer, { instruction: lp.instruction ? `${lp.instruction}\n${s.change}` : s.change });
+        if (s.resume !== null && s.resume !== undefined && s.resume >= s.layer) setPlanField(s.resume, { resume: true });
+        State.plan = { ...State.plan, suggestions: State.plan.suggestions.filter((_, j) => j !== k) };
+        savePlan();
+        mapUi.openVol.add(volOf(s.layer));
+        mapUi.openLayer = s.layer;
+        renderMap();
+        toast(`已写进第 ${s.layer + 1} 层的改写指令`, 'success');
+    }
+
+    /** 从第 i 层到下一个标了接回的层（没有就只这一层）出新大纲 */
+    async function genOutline(i) {
+        const e = mapEngine();
+        if (mapUi.busy) return;
+        let to = i;
+        for (let k = i; k < Math.min(e.layers.length, i + 15); k++) {
+            if (PM.layerPlan(State.plan, k).resume) {
+                to = k;
+                break;
+            }
+        }
+        const instr = [];
+        for (let k = i; k <= to; k++) {
+            const t = PM.layerPlan(State.plan, k).instruction.trim();
+            if (t) instr.push(`第 ${k + 1} 层：${t}`);
+        }
+        if (!instr.length) return toast('先在这层写改写指令', 'warning');
+        mapUi.busy = 'outline';
+        setStatus(`AI 正在出第 ${i + 1}–${to + 1} 层的新大纲…`);
+        try {
+            const variants = Math.max(1, Math.min(3, Number(State.settings.mapVariants) || 1));
+            const prompt = PM.buildOutlinePrompt(e.layers, State.plan, i, to, { instruction: instr.join('\n'), facts: ledgerFacts().map((f) => f.text), variants });
+            const res = await callSideAPI(prompt, { maxTokens: 3000 });
+            const list = PM.parseOutlineResponse(res.text, C.parseLooseJson);
+            if (!list.length) throw new Error('没拿到大纲');
+            if (list.length === 1) applyOutline(list[0]);
+            else setPlanField(i, { outlines: list });
+            toast(list.length === 1 ? '新大纲已填进各层' : `出了 ${list.length} 个方案，选一个`, 'success');
+        } catch (err) {
+            toast(`出大纲失败：${err.message}`, 'error');
+        } finally {
+            mapUi.busy = '';
+            setStatus('');
+            renderMap();
+        }
+    }
+
+    function applyOutline(o) {
+        for (const [li, t] of Object.entries(o.layers)) setPlanField(Number(li), { outline: t });
+    }
+
+    function openSource(i) {
+        const e = mapEngine();
+        const l = e && e.layers[i];
+        if (!l) return;
+        $('nim-src-title').textContent = `第 ${i + 1} 层原文（${fmtNum(l.chars)} 字）`;
+        $('nim-src-body').textContent = PM.layerText(l);
+        $('nim-src').hidden = false;
+        $('nim-src-body').scrollTop = 0;
+    }
+
+    // --------- H1 规划导出导入、一键应用 ---------
+
+    function exportPlan() {
+        download(JSON.stringify({ type: 'novel-importer-plan', version: 1, plan: State.plan }, null, 2), `${baseName()}-剧情规划.json`);
+    }
+
+    async function importPlan(file) {
+        try {
+            const j = JSON.parse(await file.text());
+            State.plan = PM.normalizePlan(j.plan || j);
+            savePlan();
+            renderMap();
+            toast('规划已导入', 'success');
+        } catch (err) {
+            toast(`导入失败：${err.message}`, 'error');
+        }
+    }
+
+    /** 雷点清单直接当「触发剧情改写的情节」用 */
+    function applyToxicToRules() {
+        const t = (State.settings.mapToxic || '').trim();
+        if (!t) return toast('先填雷点清单', 'warning');
+        const cur = State.settings.divergenceRules || '';
+        const add = t.split('\n').filter((line) => line.trim() && !cur.includes(line.trim()));
+        if (!add.length) return toast('雷点都已经在改写规则里了', 'info');
+        State.settings.divergenceRules = [cur.trim(), ...add].filter(Boolean).join('\n');
+        saveSettings();
+        fillFields();
+        if (State.engine) State.engine = rebuildEngineKeepResults();
+        toast(`加了 ${add.length} 条到「触发剧情改写的情节」，后面的层按新规则判断`, 'success');
+    }
+
+    function bindMap() {
+        const panel = document.querySelector('#nim-modal [data-panel="map"]');
+        panel.addEventListener('click', (ev) => {
+            const vol = ev.target.closest('[data-map-vol]');
+            if (vol) {
+                const v = Number(vol.dataset.mapVol);
+                if (mapUi.openVol.has(v)) mapUi.openVol.delete(v);
+                else mapUi.openVol.add(v);
+                if (vol.classList.contains('nim-vol-card')) {
+                    mapUi.openVol.add(v);
+                    renderMap();
+                    document.querySelector(`#nim-map [data-map-row="${v * State.plan.volumeSize}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                    return;
+                }
+                return renderMap();
+            }
+            const f = ev.target.closest('[data-map-filter]');
+            if (f) {
+                mapUi.filter = f.dataset.mapFilter;
+                return renderMap();
+            }
+            const b = ev.target.closest('[data-map-act]');
+            if (!b) return;
+            const i = Number(b.dataset.i);
+            const act = b.dataset.mapAct;
+            if (act === 'toggle') {
+                mapUi.openLayer = mapUi.openLayer === i ? null : i;
+                renderMap();
+            } else if (act === 'source') openSource(i);
+            else if (act === 'scan-one') runScan(false, i);
+            else if (act === 'goto-run') {
+                State.selected = i;
+                switchTab('run');
+                renderAll();
+            } else if (act === 'outline') genOutline(i);
+            else if (act === 'outline-pick') {
+                const o = PM.layerPlan(State.plan, i).outlines[Number(b.dataset.k)];
+                if (o) applyOutline(o);
+                setPlanField(i, { outlines: [] });
+                renderMap();
+            } else if (act === 'sugg-take') takeSuggestion(Number(b.dataset.k));
+            else if (act === 'sugg-go') {
+                const s = State.plan.suggestions[Number(b.dataset.k)];
+                mapUi.openVol.add(volOf(s.layer));
+                mapUi.openLayer = s.layer;
+                renderMap();
+            } else if (act === 'sugg-drop') {
+                State.plan = { ...State.plan, suggestions: State.plan.suggestions.filter((_, j) => j !== Number(b.dataset.k)) };
+                savePlan();
+                renderMap();
+            }
+        });
+        panel.addEventListener('change', (ev) => {
+            const t = ev.target;
+            if (t.dataset.mapFlag) {
+                setPlanField(Number(t.dataset.i), { [t.dataset.mapFlag]: t.checked });
+                renderMap();
+            } else if (t.dataset.mapTpl !== undefined && t.value !== '') {
+                const i = Number(t.dataset.mapTpl);
+                const tpl = mapTemplates()[Number(t.value)];
+                const lp = PM.layerPlan(State.plan, i);
+                setPlanField(i, { instruction: lp.instruction ? `${lp.instruction}\n${tpl}` : tpl });
+                renderMap();
+            } else if (t.id === 'nim-map-char') {
+                mapUi.char = t.value;
+                renderMap();
+            } else if (t.dataset.mapText) {
+                setPlanField(Number(t.dataset.i), { [t.dataset.mapText]: t.value });
+                renderMap();
+            } else if (t.id === 'nim-map-names' || t.id === 'nim-map-keywords' || t.id === 'nim-map-volsize') {
+                State.plan = {
+                    ...State.plan,
+                    names: $('nim-map-names').value,
+                    keywords: $('nim-map-keywords').value,
+                    volumeSize: Math.max(2, parseInt($('nim-map-volsize').value, 10) || 10),
+                };
+                savePlan();
+                renderMap();
+            } else if (t.dataset.mapSet) {
+                State.settings[t.dataset.mapSet] = t.type === 'number' ? Number(t.value) : t.dataset.mapSet === 'mapTemplates' ? t.value.split('\n').map((x) => x.trim()).filter(Boolean) : t.value;
+                saveSettings();
+            } else if (t.id === 'nim-map-plan-file' && t.files[0]) {
+                importPlan(t.files[0]);
+                t.value = '';
+            }
+        });
+        const on = (id, ev, fn) => {
+            const el = $(id);
+            if (el) el.addEventListener(ev, fn);
+        };
+        on('nim-map-guess', 'click', guessNamesIntoList);
+        on('nim-map-est-btn', 'click', showScanEstimate);
+        on('nim-map-scan', 'click', () => runScan(true));
+        on('nim-map-rescan', 'click', () => runScan(false));
+        on('nim-map-scanstop', 'click', () => mapUi.scan && mapUi.scan.ctl.abort());
+        on('nim-map-suggest', 'click', suggestPoints);
+        on('nim-map-export', 'click', exportPlan);
+        on('nim-map-apply-toxic', 'click', applyToxicToRules);
+        $('nim-src').addEventListener('click', (ev) => {
+            if (ev.target === $('nim-src') || ev.target.closest('[data-src="close"]')) $('nim-src').hidden = true;
+        });
+    }
+
+    function fillMapFields() {
+        if (!$('nim-map-names')) return;
+        $('nim-map-names').value = State.plan.names;
+        $('nim-map-keywords').value = State.plan.keywords;
+        $('nim-map-volsize').value = State.plan.volumeSize;
+        document.querySelectorAll('#nim-modal [data-map-set]').forEach((el) => {
+            const v = el.dataset.mapSet === 'mapTemplates' ? mapTemplates() : State.settings[el.dataset.mapSet];
+            el.value = Array.isArray(v) ? v.join('\n') : v ?? '';
+        });
+    }
+
+    function mapPanelHtml() {
+        const s = (key, label, type = 'text', hint = '', extra = '') =>
+            `<div class="nim-field"><label>${label}</label>${type === 'textarea' ? `<textarea class="nim-input nim-textarea" rows="3" data-map-set="${key}" ${extra}></textarea>` : `<input class="nim-input" type="${type}" data-map-set="${key}" ${extra}>`}${hint ? `<div class="nim-hint">${hint}</div>` : ''}</div>`;
+        return `
+      ${card(
+          'map-stats',
+          '人物和关键词（免费统计）',
+          '不花 token：出场热力图、关键词雷达、人名共现、新角色、节奏、章节长度',
+          `<div class="nim-field"><label>人物名单（每行一个人，同一人的叫法用 / 隔开）</label><textarea id="nim-map-names" class="nim-input nim-textarea" rows="4" placeholder="裘月寒 / 月寒 / 裘仙子&#10;路长远"></textarea></div>
+           <div class="nim-row"><button id="nim-map-guess" class="nim-btn sm">从原文和世界书猜人名</button></div>
+           <div class="nim-field"><label>关键词雷达（顿号或换行隔开，命中多的层标红）</label><textarea id="nim-map-keywords" class="nim-input nim-textarea" rows="2"></textarea></div>
+           <div class="nim-field"><label>每卷几层</label><input id="nim-map-volsize" class="nim-input" type="number" min="2"></div>
+           <div id="nim-map-stats"></div>`,
+      )}
+      ${card(
+          'map-scan',
+          '预扫描与 AI',
+          '便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点、出新大纲',
+          `${s('mapScanModel', '预扫描用的模型', 'text', '留空用主 API 的模型；建议填便宜的，比如 Flash、Haiku、mini 档')}
+           ${s('mapScanEndpoint', '预扫描 API 地址', 'text', '留空用主 API')}
+           ${s('mapScanKey', '预扫描 API Key', 'password', '留空用主 API')}
+           <div class="nim-grid">${s('mapConcurrency', '同时扫几层', 'number', '1 到 8', 'min="1" max="8"')}${s('mapPriceIn', '输入单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapPriceOut', '输出单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapVariants', '新大纲出几个方案', 'number', '1 到 3', 'min="1" max="3"')}</div>
+           ${s('mapToxic', '雷点清单（每行一条，扫描时找出来，AI 提议时照着改）', 'textarea', '留空用「触发剧情改写的情节」')}
+           <div class="nim-row"><button id="nim-map-apply-toxic" class="nim-btn sm">把雷点加进剧情改写规则</button></div>
+           ${s('mapTemplates', '改写指令模板（每行一条）', 'textarea')}
+           <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
+           <div class="nim-row"><button id="nim-map-est-btn" class="nim-btn sm">估算花费</button><button id="nim-map-scan" class="nim-btn sm primary">扫描没扫过的层</button><button id="nim-map-rescan" class="nim-btn sm">全部重扫</button><button id="nim-map-scanstop" class="nim-btn sm danger-ghost" hidden>停止</button><span id="nim-map-scanstate" class="nim-muted"></span></div>
+           <div id="nim-map-est" class="nim-muted"></div>
+           <div class="nim-row"><button id="nim-map-suggest" class="nim-btn sm">AI 提议改写点</button><button id="nim-map-export" class="nim-btn sm">导出规划</button><label class="nim-btn sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>`,
+      )}
+      <div id="nim-map" class="nim-map"></div>`;
+    }
+
+    function sourceSheetHtml() {
+        return `<div id="nim-src" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="原文">
+          <div class="nim-sheet-head"><b id="nim-src-title">原文</b><button class="nim-icon-btn" data-src="close" title="关闭">✕</button></div>
+          <pre id="nim-src-body" class="nim-pre nim-src-body"></pre>
+        </div></div>`;
+    }
+
     const wrUi = { text: '', total: 0, summary: '' };
 
     /** 词语替换写进已生成的层之前，先列出每条规则换了几处、在哪一层哪一块，带前后文 */
@@ -2291,6 +3081,10 @@
         document.querySelectorAll('#nim-modal .nim-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === name));
         const body = document.querySelector('#nim-modal .nim-body');
         if (body) body.scrollTop = 0;
+        if (name === 'map') {
+            fillMapFields();
+            renderMap();
+        }
     }
 
     /** 手机上分层列表和单层详情分两屏，点一层进详情，「返回」回列表 */
@@ -2556,8 +3350,10 @@
         const reviewing = e.reviewing === i;
         const hasLater = e.results.slice(i + 1).some((x) => x);
         let body = '';
-        if (r && r.status === 'done') {
-            const floor = e.renderFloors()[i];
+        if (r && r.status === 'done' && r.skipped) {
+            body += '<div class="nim-alert">这层在剧情地图里标了「跳过」：没有调用 AI，也不出楼层。要处理的话去剧情地图取消跳过，再从这层重新处理。</div>';
+        } else if (r && r.status === 'done') {
+            const floor = e.renderFloors().find((f) => f.layer === i);
             const d = r.parsed.divergence;
             if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
@@ -2809,6 +3605,7 @@
     }
 
     function renderAll() {
+        if (State.tab === 'map') renderMap();
         renderInfo();
         renderProgress();
         renderLayers();
@@ -2834,9 +3631,10 @@
         const f = (k) => `<div class="nim-grid">${FIELDS[k].map(fieldHtml).join('')}</div>`;
         const tabs = [
             ['file', '1', '📖', '小说'],
-            ['settings', '2', '⚙️', '设置'],
-            ['run', '3', '📝', '处理'],
-            ['export', '4', '🎴', '导入酒馆'],
+            ['map', '2', '🗺️', '剧情地图'],
+            ['settings', '3', '⚙️', '设置'],
+            ['run', '4', '📝', '处理'],
+            ['export', '5', '🎴', '导入酒馆'],
         ];
         return `
 <div id="nim-modal" class="nim-overlay"><div class="nim-modal" role="dialog" aria-label="小说导入改写">
@@ -2872,6 +3670,10 @@
         ${res('nim-res-ledger', '📝', '和原文不同的事实', `<button id="nim-ledger-edit" class="nim-btn sm">查看和编辑</button>`)}
       </div>
       ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog" class="nim-btn">查看清掉的内容</button></div>`)}
+    </section>
+
+    <section class="nim-panel" data-panel="map">
+      ${mapPanelHtml()}
     </section>
 
     <section class="nim-panel" data-panel="settings">
@@ -2975,6 +3777,7 @@
   ${replacePreviewHtml()}
   ${glossaryHtml()}
   ${ledgerHtml()}
+  ${sourceSheetHtml()}
 </div></div>`;
     }
 
@@ -3162,6 +3965,38 @@ select.nim-input{appearance:auto;}
 .nim-lg-row{display:flex;flex-direction:column;gap:6px;padding:8px;border-radius:10px;background:var(--surface);border:1px solid var(--line);}
 .nim-lg-row textarea{resize:vertical;min-height:2.6em;}
 .nim-lg-from{width:4.5em;}
+.nim-chip{padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:transparent;color:var(--muted);font-size:12px;cursor:pointer;}
+.nim-chip.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+.nim-map{display:flex;flex-direction:column;gap:10px;margin-top:12px;}
+.nim-map-summary{font-size:13px;color:var(--muted);}
+.nim-vol-cards{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scroll-snap-type:x mandatory;}
+.nim-vol-card{flex:none;width:200px;scroll-snap-align:start;display:flex;flex-direction:column;gap:4px;text-align:left;padding:10px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--text);cursor:pointer;}
+.nim-vol-card.on{border-color:var(--accent);}
+.nim-vol-lines{font-size:12px;color:var(--muted);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.nim-map-filters{margin-top:0;}
+.nim-map-char{width:auto;min-width:8em;}
+.nim-map-vol{border:1px solid var(--line);border-radius:12px;background:var(--surface);overflow:hidden;}
+.nim-map-volhead{all:unset;box-sizing:border-box;display:flex;gap:10px;align-items:baseline;width:100%;padding:10px 12px;cursor:pointer;color:var(--text);}
+.nim-map-list{list-style:none;margin:0;padding:0;}
+.nim-map-row{border-top:1px solid var(--line);}
+.nim-map-row.open{background:var(--bg);}
+.nim-map-head{all:unset;box-sizing:border-box;display:grid;grid-template-columns:2.6em 1fr;gap:8px;width:100%;padding:9px 12px;cursor:pointer;color:var(--text);}
+.nim-map-no{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:600;}
+.nim-map-main{display:flex;flex-direction:column;gap:4px;min-width:0;}
+.nim-map-title{font-size:13px;}
+.nim-map-chips{display:flex;flex-wrap:wrap;gap:4px;}
+.nim-map-detail{padding:4px 12px 14px;display:flex;flex-direction:column;gap:8px;font-size:13px;}
+.nim-map-detail .nim-row{margin-top:0;}
+.nim-map-tpl{width:auto;max-width:60%;margin-left:6px;font-size:12px;padding:2px 6px;}
+.nim-map-outline{padding:8px;border-radius:10px;border:1px solid var(--line);display:flex;flex-direction:column;gap:4px;}
+.nim-map-sugg{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;}
+.nim-map-sugg li{padding:10px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-size:13px;}
+.nim-map-num{width:5em;}
+.nim-heat-wrap{overflow-x:auto;}
+.nim-heat{border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums;}
+.nim-heat th{padding:3px 6px;color:var(--muted);font-weight:500;white-space:nowrap;text-align:left;}
+.nim-heat td{min-width:26px;padding:3px 4px;text-align:center;background:rgba(106,168,255,calc(var(--h) * .75));color:var(--text);border:1px solid var(--line);}
+.nim-src-body{flex:1;overflow:auto;margin:0;white-space:pre-wrap;}
 .nim-gl-arrow{color:var(--muted);}
 .nim-gl-pager{justify-content:center;align-items:center;}
 .nim-wb-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:8px;}
@@ -3199,7 +4034,7 @@ select.nim-input{appearance:auto;}
   .nim-header{padding:10px 12px;padding-top:max(10px,env(safe-area-inset-top));}
   .nim-logo{width:34px;height:34px;font-size:18px;}
   .nim-icon-btn{width:40px;height:40px;}
-  .nim-tabs{order:4;display:grid;grid-template-columns:repeat(4,1fr);gap:0;padding:4px;padding-bottom:max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);border-bottom:0;background:var(--surface);overflow:visible;}
+  .nim-tabs{order:4;display:grid;grid-template-columns:repeat(5,1fr);gap:0;padding:4px;padding-bottom:max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);border-bottom:0;background:var(--surface);overflow:visible;}
   .nim-tab{position:relative;flex-direction:column;gap:2px;padding:6px 2px;border-radius:12px;font-size:11px;min-height:52px;justify-content:center;}
   .nim-tab.active{background:rgba(139,124,246,.14);border-color:transparent;color:var(--text);}
   .nim-tab-no{display:none;}
@@ -3323,6 +4158,10 @@ select.nim-input{appearance:auto;}
         on('nim-ledger-edit', 'click', openLedger);
         on('nim-ledger-edit2', 'click', openLedger);
         bindLedgerEdit();
+        bindMap();
+        on('nim-preset-use', 'click', usePresetFromLibrary);
+        on('nim-preset-save', 'click', savePresetToLibrary);
+        on('nim-preset-libdel', 'click', deletePresetFromLibrary);
         on('nim-gloss-clear', 'click', () => setSeedGlossary([], '已清除初始术语表'));
         on('nim-clear-wb', 'click', () => {
             State.seedWorldbook = null;
