@@ -17,6 +17,8 @@
     const API_DEFAULTS = {
         // 剧情地图：预扫描用的模型（留空用主 API）、并发、单价、雷点、指令模板
         mapScanModel: '',
+        // 「拉取模型列表」拉到的模型存下来，主模型和剧情地图的模型都从这里选
+        apiModels: [],
         mapScanEndpoint: '',
         mapScanKey: '',
         mapConcurrency: 3,
@@ -1040,6 +1042,7 @@
             State.settings = { ...withDefaults(j), apiKey: j.apiKey || key };
             saveSettings();
             fillFields();
+            renderModelPickers();
             renderPreset();
             renderCategories();
             toast('配置已导入', 'success');
@@ -1280,6 +1283,7 @@
             State.settings.tableMessageTemplate = messageTemplate;
             saveSettings();
             fillFields();
+            renderModelPickers();
         }
         const msg = `${source}：${tpl.tables.length} 张表，${withNotes} 张有填写说明${messageTemplate ? '，已读取消息模板' : '，没有消息模板'}`;
         log(`${msg}（${tpl.tables.map((t) => t.name).join('、')}）`);
@@ -1375,6 +1379,7 @@
             if (p.params.maxTokens) State.settings.maxTokens = p.params.maxTokens;
             saveSettings();
             fillFields();
+            renderModelPickers();
             presetUi.selecting = false;
             presetUi.selected.clear();
             renderPreset();
@@ -2068,6 +2073,7 @@
         clUi.changed = true;
         saveSettings();
         fillFields();
+        renderModelPickers();
     }
 
     function renderCleanFoot() {
@@ -2921,6 +2927,7 @@
         State.settings.divergenceRules = [cur.trim(), ...add].filter(Boolean).join('\n');
         saveSettings();
         fillFields();
+        renderModelPickers();
         if (State.engine) State.engine = rebuildEngineKeepResults();
         toast(`加了 ${add.length} 条到「触发剧情改写的情节」，后面的层按新规则判断`, 'success');
     }
@@ -3036,6 +3043,33 @@
             const v = el.dataset.mapSet === 'mapTemplates' ? mapTemplates() : State.settings[el.dataset.mapSet];
             el.value = Array.isArray(v) ? v.join('\n') : v ?? '';
         });
+        renderModelPickers();
+    }
+
+    /** 主模型和剧情地图模型的下拉：选项来自保存的模型列表 */
+    function renderModelPickers() {
+        const st = State.settings;
+        const list = Array.isArray(st.apiModels) ? st.apiModels : [];
+        const opt = (v, t, sel) => `<option value="${esc(v)}" ${sel ? 'selected' : ''}>${esc(t)}</option>`;
+        const main = $('nim-model-list');
+        if (main) {
+            const cur = st.apiModel || '';
+            const all = cur && !list.includes(cur) ? [cur, ...list] : list;
+            main.innerHTML = all.length ? all.map((m) => opt(m, m, m === cur)).join('') : opt('', '先点「拉取模型列表」', true);
+        }
+        const sel = $('nim-map-model-sel');
+        if (!sel) return;
+        const cur = (st.mapScanModel || '').trim();
+        const custom = !!cur && !list.includes(cur);
+        sel.innerHTML =
+            opt('', `跟主模型一样${st.apiModel ? `（${st.apiModel}）` : ''}`, !cur) +
+            list.map((m) => opt(m, m, m === cur)).join('') +
+            opt('__custom', list.length ? '其他（手动填）' : '手动填模型名', custom);
+        $('nim-map-model-custom').hidden = !custom && sel.value !== '__custom';
+        if (custom) $('nim-map-model-custom').value = cur;
+        $('nim-map-model-hint').innerHTML = list.length
+            ? `建议选便宜快的，比如 Flash、Haiku、mini 档。列表来自 API 设置里拉取的 ${list.length} 个模型`
+            : '还没有模型列表：去 <button type="button" class="nim-linkbtn" data-goto="nim-sec-api">API 设置</button> 点「拉取模型列表」，之后这里直接选';
     }
 
     /** 剧情地图的模型、并发、单价、雷点和模板：放在设置页 */
@@ -3046,9 +3080,12 @@
             'mapcfg',
             '剧情地图',
             '预扫描用的模型、并发、单价，雷点清单，改写指令模板',
-            `${s('mapScanModel', '预扫描用的模型', 'text', '留空用主 API 的模型；建议填便宜的，比如 Flash、Haiku、mini 档')}
-           ${s('mapScanEndpoint', '预扫描 API 地址', 'text', '留空用主 API')}
-           ${s('mapScanKey', '预扫描 API Key', 'password', '留空用主 API')}
+            `<div class="nim-field"><label>预扫描用的模型</label><select id="nim-map-model-sel" class="nim-input"></select><div class="nim-hint" id="nim-map-model-hint"></div>
+             <input id="nim-map-model-custom" class="nim-input nim-mt" type="text" data-map-set="mapScanModel" placeholder="手动填模型名" hidden></div>
+           <details class="nim-fold nim-subfold"><summary>用另一个接口扫描（可选，一般不用填）</summary>
+           ${s('mapScanEndpoint', '预扫描 API 地址', 'text', '留空用主 API 的地址')}
+           ${s('mapScanKey', '预扫描 API Key', 'password', '留空用主 API 的 Key')}
+           </details>
            <div class="nim-grid">${s('mapConcurrency', '同时扫几层', 'number', '1 到 8', 'min="1" max="8"')}${s('mapPriceIn', '输入单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapPriceOut', '输出单价（每百万 token）', 'number', '', 'step="0.01"')}${s('mapVariants', '新大纲出几个方案', 'number', '1 到 3', 'min="1" max="3"')}</div>
            ${s('mapToxic', '雷点清单（每行一条，扫描时找出来，AI 提议时照着改）', 'textarea', '留空用「触发剧情改写的情节」')}
            <div class="nim-row"><button id="nim-map-apply-toxic" class="nim-btn sm">把雷点加进剧情改写规则</button></div>
@@ -4872,6 +4909,11 @@ button.nim-step:hover{background:var(--surface2);}
 #nim-modal .nim-footer-map{display:none;}
 #nim-modal.on-map .nim-footer-map{display:flex;}
 #nim-modal.on-map .nim-footer-main{display:none;}
+.nim-mt{margin-top:8px;}
+.nim-subfold{margin:14px 0;}
+.nim-subfold>summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0;}
+.nim-subfold[open]>summary{margin-bottom:10px;}
+.nim-linkbtn{border:0;background:none;padding:0;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline;}
 .nim-tools-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
 .nim-map-tools .nim-row{margin-top:4px;}
 .nim-col-head{display:flex;align-items:center;justify-content:space-between;}
@@ -5034,6 +5076,7 @@ button.nim-step:hover{background:var(--surface2);}
             for (const k of ['rewritePrompt', 'divergenceRules', 'divergenceDirection', 'worldbookCategories', 'adPatterns', 'chapterRegex']) State.settings[k] = d[k];
             saveSettings();
             fillFields();
+            renderModelPickers();
             renderCategories();
         });
         on('nim-task-export', 'click', exportTask);
@@ -5044,6 +5087,7 @@ button.nim-step:hover{background:var(--surface2);}
                 if (!confirm('恢复成默认内容？你改过的会丢掉。')) return;
                 State.settings[key] = defaultSettings()[key];
                 fillFields();
+                renderModelPickers();
                 collectFields();
                 toast('已恢复默认', 'success');
             }),
@@ -5084,16 +5128,33 @@ button.nim-step:hover{background:var(--surface2);}
             collectFields();
             try {
                 const list = await fetchModels();
-                $('nim-model-list').innerHTML = list.map((m) => `<option>${esc(m)}</option>`).join('');
-                toast(`拉到 ${list.length} 个模型`, 'success');
+                State.settings.apiModels = [...new Set(list)].sort();
+                saveSettings();
+                renderModelPickers();
+                toast(`拉到 ${list.length} 个模型，已保存；剧情地图的模型也能直接选了`, 'success');
             } catch (e) {
                 toast(`拉取失败：${e.message}`, 'error');
             }
         });
         on('nim-model-list', 'change', (ev) => {
+            if (!ev.target.value) return;
             State.settings.apiModel = ev.target.value;
             saveSettings();
             fillFields();
+            renderModelPickers();
+            renderModelPickers();
+        });
+        on('nim-map-model-sel', 'change', (ev) => {
+            const v = ev.target.value;
+            const input = $('nim-map-model-custom');
+            if (v === '__custom') {
+                input.hidden = false;
+                input.focus();
+                return;
+            }
+            input.hidden = true;
+            State.settings.mapScanModel = v;
+            saveSettings();
         });
         on('nim-test', 'click', async () => {
             collectFields();
@@ -5148,6 +5209,7 @@ button.nim-step:hover{background:var(--surface2);}
         });
         bind();
         fillFields();
+        renderModelPickers();
         renderPreset();
         renderCategories();
         switchTab(State.tab);
