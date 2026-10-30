@@ -165,6 +165,21 @@ describe('补丁', () => {
         expect(r.failed.map((f) => f.reason)).toEqual(['锚点在该段出现多次', '段号不在本层', '补充内容超过 120 字']);
         expect(r.paras).toEqual(['嗯，嗯。']);
     });
+
+    it('段号标错时，本层别的段里只有一处对得上就用那一处', () => {
+        const ps = [
+            { id: 24, text: '祁铭的身体猛地跪下。' },
+            { id: 25, text: '天色暗了。' },
+            { id: 26, text: '祁铭和祁铭的影子。' },
+        ];
+        const r = C.applyPatches(ps, [
+            { pid: 25, anchor: '祁铭的身体猛地跪', op: 'replace', text: '{{user}}的身体猛地跪' },
+            { pid: 25, anchor: '祁铭', op: 'replace', text: '{{user}}' },
+        ]);
+        expect(r.paras[0]).toBe('{{user}}的身体猛地跪下。');
+        expect(r.moved).toBe(1);
+        expect(r.failed.map((f) => f.reason)).toEqual(['锚点不在该段，其他段里也对不上唯一一处']);
+    });
 });
 
 describe('称呼替换', () => {

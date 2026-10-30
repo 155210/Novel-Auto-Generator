@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.6';
+    const VERSION = '1.5.7';
 
     // ============================================
     // 默认配置
@@ -1412,8 +1412,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         let addedChars = 0;
         let applied = 0;
 
+        let moved = 0;
         for (const pt of patches) {
-            const idx = byId.get(pt.pid);
+            let idx = byId.get(pt.pid);
             if (idx === undefined) {
                 failed.push({ patch: pt, reason: '段号不在本层' });
                 continue;
@@ -1426,7 +1427,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 failed.push({ patch: pt, reason: `补充内容超过 ${maxChars} 字` });
                 continue;
             }
-            const src = paras[idx].text;
+            let src = paras[idx].text;
             if (pt.op === 'para') {
                 extraParas[idx].push(wrap(pt.text));
                 addedChars += pt.text.length;
@@ -1442,7 +1443,22 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 }
                 pos = src.length;
             } else {
-                const r = locateAnchor(src, pt.anchor);
+                let r = locateAnchor(src, pt.anchor);
+                if (r.pos < 0 && r.reason === '锚点不在该段') {
+                    // AI 常把段号标错一两段：本层其他段里只有一处能对上，就用那一处
+                    const hits = [];
+                    for (let k = 0; k < paras.length && hits.length < 2; k++) {
+                        if (k === idx) continue;
+                        const h = locateAnchor(paras[k].text, pt.anchor);
+                        if (h.pos >= 0 || h.reason === '锚点在该段出现多次') hits.push({ k, h });
+                    }
+                    if (hits.length === 1 && hits[0].h.pos >= 0) {
+                        idx = hits[0].k;
+                        src = paras[idx].text;
+                        r = hits[0].h;
+                        moved++;
+                    } else if (hits.length) r = { pos: -1, reason: '锚点不在该段，其他段里也对不上唯一一处' };
+                }
                 if (r.pos < 0) {
                     failed.push({ patch: pt, reason: r.reason });
                     continue;
@@ -1472,7 +1488,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             out.push(t);
             out.push(...extraParas[i]);
         });
-        return { paras: out, applied, failed, addedChars };
+        return { paras: out, applied, failed, addedChars, moved };
     }
 
     // ============================================
@@ -2647,7 +2663,7 @@ ${blocks}`;
                 } else {
                     const ap = applyPatches(layer.paras, parsed.patches, { maxPatchChars: settings.maxPatchChars });
                     r.finalParas = ap.paras;
-                    r.patchStats = { applied: ap.applied, failed: ap.failed, addedChars: ap.addedChars, rewritten: false };
+                    r.patchStats = { applied: ap.applied, failed: ap.failed, addedChars: ap.addedChars, moved: ap.moved, rewritten: false };
                 }
                 const c = commit(st, i, r);
                 r.tableActions = c.out.tableActions;
