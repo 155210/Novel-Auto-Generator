@@ -205,6 +205,6 @@ describe('剧情地图：搜原文和空章', () => {
         const raw = '第一章 雨夜\n正文\n第二章 坏章\n本章未完，请到某某网站阅读\n第三章 分别\n正文';
         const layers = [{ index: 0, chapters: ['第一章 雨夜'] }, { index: 1, chapters: ['第三章 分别'] }];
         const r = M.locateEmptyChapters(raw, ['第二章 坏章'], layers, isTitle);
-        expect(r[0]).toEqual({ title: '第二章 坏章', layer: 1, after: '本章未完，请到某某网站阅读', next: '第三章 分别' });
+        expect(r[0]).toEqual({ title: '第二章 坏章', layer: 1, before: '第一章 雨夜\n正文', after: '本章未完，请到某某网站阅读', next: '第三章 分别' });
     });
 });

@@ -544,7 +544,7 @@ ${after || '（到结尾）'}
                     break;
                 }
             }
-            if (at < 0) return { title, layer: null, after: '', next: '' };
+            if (at < 0) return { title, layer: null, before: '', after: '', next: '' };
             used.add(at);
             const body = [];
             let next = '';
@@ -561,7 +561,9 @@ ${after || '（到结尾）'}
                 // 后面紧跟的也是空章，就往前找最近的正常章节
                 for (let j = at - 1; j >= 0 && layer === null; j--) if (lines[j] && chapLayer.has(lines[j])) layer = chapLayer.get(lines[j]);
             }
-            return { title, layer, after: body.join('\n').slice(0, 200), next };
+            const before = [];
+            for (let j = at - 1; j >= 0 && before.length < 4; j--) if (lines[j]) before.unshift(lines[j].length > 120 ? lines[j].slice(0, 120) + '…' : lines[j]);
+            return { title, layer, before: before.join('\n'), after: body.join('\n').slice(0, 200), next };
         });
     }
 
