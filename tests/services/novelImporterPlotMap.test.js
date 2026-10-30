@@ -255,3 +255,14 @@ describe('剧情地图：扫描失败', () => {
         expect(plan.layers[1].scanError).toBeUndefined();
     });
 });
+
+describe('剧情地图：日文总结', () => {
+    it('认出没翻成中文的总结；提示词要求中文、带上额外要求', () => {
+        expect(M.scanNotChinese({ oneLine: '主人公は森で魔物と戦った', summary: '' })).toBe(true);
+        expect(M.scanNotChinese({ oneLine: '祁铭在森林里打败魔物', summary: '他拿到了「ポーション」' })).toBe(false);
+        expect(M.scanNotChinese(null)).toBe(false);
+        const p = M.buildScanPrompt({ index: 0, paras: [{ text: '正文' }] }, { extra: '人名翻成中文' });
+        expect(p).toContain('所有内容用简体中文写');
+        expect(p).toContain('## 额外要求\n人名翻成中文');
+    });
+});
