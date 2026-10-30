@@ -2372,6 +2372,27 @@
         }
     }
 
+    /** 剧情地图里展开第 i 层并滚过去；被筛选藏住了就先清掉筛选 */
+    function revealMapLayer(i) {
+        mapUi.openVol.add(volOf(i));
+        mapUi.openLayer = i;
+        renderMap();
+        let row = document.querySelector(`#nim-map [data-map-row="${i}"]`);
+        if (!row) {
+            mapUi.filter = 'all';
+            mapUi.char = '';
+            renderMap();
+            row = document.querySelector(`#nim-map [data-map-row="${i}"]`);
+        }
+        if (!row) return;
+        requestAnimationFrame(() => {
+            row.scrollIntoView({ block: 'start' });
+            row.classList.remove('nim-flash');
+            void row.offsetWidth;
+            row.classList.add('nim-flash');
+        });
+    }
+
     function volOf(i) {
         return Math.floor(i / State.plan.volumeSize);
     }
@@ -2965,9 +2986,7 @@
         if (s.resume !== null && s.resume !== undefined && s.resume >= s.layer) setPlanField(s.resume, { resume: true });
         State.plan = { ...State.plan, suggestions: State.plan.suggestions.filter((_, j) => j !== k) };
         savePlan();
-        mapUi.openVol.add(volOf(s.layer));
-        mapUi.openLayer = s.layer;
-        renderMap();
+        revealMapLayer(s.layer);
         toast(`已写进第 ${s.layer + 1} 层的改写指令`, 'success');
     }
 
@@ -3094,9 +3113,7 @@
             } else if (act === 'sugg-take') takeSuggestion(Number(b.dataset.k));
             else if (act === 'sugg-go') {
                 const s = State.plan.suggestions[Number(b.dataset.k)];
-                mapUi.openVol.add(volOf(s.layer));
-                mapUi.openLayer = s.layer;
-                renderMap();
+                if (s) revealMapLayer(s.layer);
             } else if (act === 'sugg-drop') {
                 State.plan = { ...State.plan, suggestions: State.plan.suggestions.filter((_, j) => j !== Number(b.dataset.k)) };
                 savePlan();
@@ -3361,11 +3378,7 @@
                 sheet.hidden = true;
                 $('nim-find').hidden = true;
                 switchTab('map');
-                mapUi.openVol.add(volOf(i));
-                mapUi.openLayer = i;
-                renderMap();
-                const row = document.querySelector(`#nim-map [data-map-row="${i}"]`);
-                if (row) row.scrollIntoView({ block: 'start' });
+                revealMapLayer(i);
             }
         });
         let t = 0;
