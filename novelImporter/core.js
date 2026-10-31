@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.24';
+    const VERSION = '1.5.25';
 
     // ============================================
     // 默认配置
@@ -816,7 +816,8 @@ ${tablesForPrompt(state, layerText, settings)}
 ${settings.divergenceRules || DEFAULT_DIVERGENCE_RULES}
 ${TOXIC_JUDGE_NOTES}${hero ? `\n- 本书主角是「${hero}」` : ''}
 改写方向：${settings.divergenceDirection || DEFAULT_DIVERGENCE_DIRECTION}
-${how}`;
+${how}
+- 改写只改情节；文风、格式、字数这些照用户的改写要求和输出要求写，不因为改写而放松`;
         const factLine = `- 触发或处于改写状态时，在 <改写判定> 里写 "事实": [本层改写后新成立、和原文不一样、后面剧情要一直遵守的事实，一条一句，写清人物和结果，比如 "林晚没有被送走，仍留在宗门"]；之前的事实不再成立时，把原句写进 "作废": [...]；没有就写空数组`;
         // 账本全部带上，不截断；AI 没报事实（旧任务、自定义输出格式）时退回用每层的改动说明
         const facts = (div.facts || []).length ? div.facts : (div.notes || []).map((n) => ({ text: `第 ${n.layer + 1} 层的改动：${n.note}` }));
@@ -1001,7 +1002,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const how = translate
             ? `- 这些要求在译文里直接做到；<改写判定> 写 "触发": true，"规则" 写「用户指令」`
             : `- 本层按触发剧情改写处理：<改写判定> 写 "触发": true，"规则" 写「用户指令」，不输出 <补丁>，改为输出 <改写正文>本层完整的改写后正文</改写正文>，和原文不同的部分用 ⟪ 和 ⟫ 包起来`;
-        return `## 用户给这一层的改写安排（最优先，必须做到）\n${lines.join('\n')}\n${how}\n- 改写后新成立、和原文不一样的事实写进 <改写判定> 的 "事实"`;
+        return `## 用户给这一层的改写安排（最优先，必须做到）\n${lines.join('\n')}\n${how}\n- 改的是情节；文风、格式、字数这些照用户的改写要求和输出要求写，不因为改写而放松\n- 改写后新成立、和原文不一样的事实写进 <改写判定> 的 "事实"`;
     }
 
     function buildLayerPrompt(layer, settings, state, extra = {}) {
@@ -1019,7 +1020,6 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             parts.push(`## 用户的改写要求\n${(s.rewritePrompt || '').trim()}\n- ${ratioText}`);
         }
         if ((s.extraRules || '').trim()) parts.push(`## 其他规则\n${s.extraRules.trim()}`);
-        if ((extra.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守）\n${extra.outputRules.trim()}`);
         if (!tr) parts.push(PATCH_RULES.replace('{MAX_PATCH}', String(s.maxPatchChars)));
         const div = buildDivergenceSection(s, state, tr);
         if (div) parts.push(div);
@@ -1068,6 +1068,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (un) parts.push(un);
         const wr = buildWordReplaceSection(s, tr);
         if (wr) parts.push(wr);
+        // 酒馆世界书的输出要求放在原文前面、剧情改写规则后面：放太前面会被后面的「强规则」「最优先」压过去，改写正文时就不照着写了
+        if ((extra.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守；补丁的补充内容、<改写正文>、译文都算正文）\n${extra.outputRules.trim()}`);
         if (extra.feedback && extra.previousRaw) parts.push(`## 你上一次的输出（用户不满意，要按最后的修改要求重做）\n<上一次输出>\n${extra.previousRaw}\n</上一次输出>`);
         // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
@@ -1079,6 +1081,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const reminders = [];
         if (aiUserName(s)) reminders.push(`指主角的名字和称呼一律写成 ${target}`);
         if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
+        if ((extra.outputRules || '').trim()) reminders.push('正文（补丁的补充内容、<改写正文>、译文）照「输出要求（来自酒馆里开着的世界书）」里的每一条写，剧情改写时也一样');
         if (reminders.length) parts.push(`再次提醒（硬性要求，按语境做，即使原文、术语表、世界书还是旧写法也要换）：${reminders.join('。')}`);
         // 修改要求放在最后：前面有上一次的输出和整层原文，放中间 AI 很容易看漏
         if ((layer.note || '').trim()) parts.push(`## 这一层的额外要求（用户提前为第 ${layer.index + 1} 层写的，必须做到；其他照上面的要求和格式）\n${layer.note.trim()}`);
