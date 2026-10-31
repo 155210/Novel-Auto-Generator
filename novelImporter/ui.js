@@ -2829,9 +2829,10 @@
             el.innerHTML = [...mapUi.live]
                 .map(([k, v]) => {
                     const fin = mapUi.liveDone.has(k);
-                    return `<div class="nim-live-item ${fin ? 'done' : ''}"><div class="nim-live-head">${esc(k)}<span>${fin ? '✓ 完成' : `输出中 · ${v.length} 字`}</span></div><div class="nim-live-text"><span>${esc(v.length > 600 ? '…' + v.slice(-600) : v)}</span></div></div>`;
+                    return `<div class="nim-live-item ${fin ? 'done' : ''}" data-live-key="${esc(k)}" title="点开看全部"><div class="nim-live-head">${esc(k)}<span>${fin ? '✓ 完成' : `输出中 · ${v.length} 字`}</span></div><div class="nim-live-text"><span>${esc(v.length > 600 ? '…' + v.slice(-600) : v)}</span></div></div>`;
                 })
                 .join('');
+            if (lvUi.src === 'map' && mapUi.live.has(lvUi.key)) updateLiveViewer(mapUi.live.get(lvUi.key), mapUi.liveDone.has(lvUi.key));
         });
     }
 
@@ -3553,6 +3554,59 @@
         });
     }
 
+    // --------- 实时输出全屏看：点开后边输出边更新，没往上翻就跟着最新一行 ---------
+
+    const lvUi = { src: '', key: '' };
+
+    function liveViewerHtml() {
+        return `<div id="nim-lv" class="nim-sheet" hidden><div class="nim-sheet-box nim-lv-box" role="dialog" aria-label="实时输出">
+          <div class="nim-sheet-head"><div><b id="nim-lv-title">实时输出</b><div id="nim-lv-sub" class="nim-muted"></div></div><button class="nim-icon-btn" data-lv="close" title="关闭">✕</button></div>
+          <pre id="nim-lv-text" class="nim-lv-text"></pre>
+          <div class="nim-sheet-foot"><button class="nim-btn sm ghost" data-lv="top">回到开头</button><span class="nim-grow-sp"></span><button class="nim-btn sm" data-lv="bottom">跟着最新</button></div>
+        </div></div>`;
+    }
+
+    function openLiveViewer(src, key, title, text, done) {
+        Object.assign(lvUi, { src, key });
+        $('nim-lv-title').textContent = title;
+        $('nim-lv').hidden = false;
+        $('nim-lv-text').textContent = '';
+        updateLiveViewer(text, done, true);
+    }
+
+    function updateLiveViewer(text, done, jump = false) {
+        const el = $('nim-lv-text');
+        if (!el || $('nim-lv').hidden) return;
+        const follow = jump || atBottom(el);
+        const top = el.scrollTop;
+        el.textContent = text || '';
+        el.scrollTop = follow ? el.scrollHeight : top;
+        $('nim-lv-sub').textContent = `${done ? '已完成' : '输出中'} · ${(text || '').length} 字`;
+    }
+
+    function bindLiveViewer() {
+        const sheet = $('nim-lv');
+        sheet.addEventListener('click', (ev) => {
+            const a = ev.target.closest('[data-lv]');
+            const act = a ? a.dataset.lv : ev.target === sheet ? 'close' : '';
+            if (act === 'close') {
+                sheet.hidden = true;
+                lvUi.src = '';
+            } else if (act === 'top') $('nim-lv-text').scrollTop = 0;
+            else if (act === 'bottom') $('nim-lv-text').scrollTop = $('nim-lv-text').scrollHeight;
+        });
+        const live = $('nim-map-live');
+        if (live)
+            live.addEventListener('click', (ev) => {
+                const it = ev.target.closest('[data-live-key]');
+                if (!it) return;
+                const key = it.dataset.liveKey;
+                openLiveViewer('map', key, key, mapUi.live.get(key) || '', mapUi.liveDone.has(key));
+            });
+        const st = $('nim-stream');
+        if (st) st.addEventListener('click', () => openLiveViewer('stream', '', '处理的实时输出', State.stream || '', false));
+    }
+
     function sourceSheetHtml() {
         return `<div id="nim-src" class="nim-sheet" hidden><div class="nim-sheet-box nim-reader" role="dialog" aria-label="原文">
           <div class="nim-sheet-head"><div class="nim-reader-title"><b id="nim-src-title">原文</b><div id="nim-src-sub" class="nim-muted nim-ellipsis"></div></div><button class="nim-icon-btn" data-src="close" title="关闭">✕</button></div>
@@ -3951,6 +4005,7 @@
             const top = el.scrollTop;
             el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
             el.scrollTop = follow ? el.scrollHeight : top;
+            if (lvUi.src === 'stream') updateLiveViewer(State.stream, false);
             const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
             setStatus(State.streamThinking ? `${what.replace(/输出$/, '')}思考中 · ${State.stream.length} 字` : `${what}中 · ${State.streamBody || State.stream.length} 字`);
         });
@@ -4733,6 +4788,7 @@
   ${ledgerHtml()}
   ${findSheetHtml()}
   ${sourceSheetHtml()}
+  ${liveViewerHtml()}
 </div></div>`;
     }
 
@@ -5213,7 +5269,10 @@ button.nim-step:hover{background:var(--surface2);}
 .nim-subfold[open]>summary{margin-bottom:10px;}
 .nim-linkbtn{border:0;background:none;padding:0;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline;}
 .nim-map-live{display:flex;flex-direction:column;gap:6px;margin-top:6px;}
-.nim-live-item{background:var(--bg);border-radius:10px;padding:8px 10px;}
+.nim-live-item{background:var(--bg);border-radius:10px;padding:8px 10px;cursor:pointer;}
+.nim-lv-box{height:92%;}
+.nim-lv-text{flex:1;min-height:0;overflow-y:auto;margin:0;padding:14px 16px;white-space:pre-wrap;word-break:break-word;font-size:14px;line-height:1.7;-webkit-overflow-scrolling:touch;}
+#nim-stream{cursor:pointer;}
 .nim-live-head{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:600;margin-bottom:4px;}
 .nim-live-head span{font-weight:400;color:var(--accent);font-variant-numeric:tabular-nums;}
 .nim-live-item.done .nim-live-head span{color:var(--ok);}
@@ -5326,6 +5385,7 @@ button.nim-step:hover{background:var(--surface2);}
         bindLedgerEdit();
         bindMap();
         bindSource();
+        bindLiveViewer();
         bindFind();
         document.querySelectorAll('#nim-modal [data-panel="settings"] .nim-set-list > details.nim-card').forEach((d) => d.addEventListener('toggle', () => syncSettingsPage(d)));
         let setT = 0;
