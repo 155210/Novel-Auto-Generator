@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.26';
+    const VERSION = '1.5.27';
 
     // ============================================
     // 默认配置
@@ -2201,6 +2201,175 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         return [header, ...msgs];
     }
 
+    // ============================================
+    // 从旧聊天搬柏宝绘插图
+    // ============================================
+
+    /** 和柏宝绘同一个哈希（cyrb53，14 位 hex）：extra.bbiImage 按 tag 原文的哈希找图 */
+    function bbiHash(text) {
+        let h1 = 0xdeadbeef;
+        let h2 = 0x41c6ce57;
+        for (let i = 0; i < text.length; i++) {
+            const ch = text.charCodeAt(i);
+            h1 = Math.imul(h1 ^ ch, 2654435761);
+            h2 = Math.imul(h2 ^ ch, 1597334677);
+        }
+        h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+        h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+        return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+    }
+
+    const BBI_TAG_RE = /<bbi_image>[\s\S]+?<\/bbi_image>/gi;
+    // 本插件自己导入的书内插图（<bbi_image>插图N</bbi_image>），重新导入时会再生成，不用搬
+    const BOOK_IMAGE_TAG_RE = /^<bbi_image>\s*插图\d+\s*<\/bbi_image>$/i;
+    const carryNorm = (line) => String(line || '').replace(/<[^>]+>/g, '').replace(/\s+/g, '');
+
+    function bbiEntriesOf(store, hash, seq) {
+        return ((store && store[hash]) || []).filter((e) => (e.slotSeq ?? 0) === seq);
+    }
+
+    /** 拆出一条旧楼层里的柏宝绘 tag：tag 原文、所在序号、前面一段的文字（定位用）、相对位置、图 */
+    function oldBbiSlots(msg) {
+        const mes = String(msg.mes || '');
+        const swipe = String(msg.swipe_id ?? 0);
+        const store = msg.extra && msg.extra.bbiImage ? msg.extra.bbiImage[swipe] : null;
+        const sources = (msg.extra && msg.extra.bbiPassageSources && msg.extra.bbiPassageSources[swipe]) || {};
+        const plain = mes.replace(BBI_TAG_RE, '');
+        const totalLines = plain.split('\n').filter((l) => carryNorm(l)).length || 1;
+        const out = [];
+        let seq = 0;
+        for (const m of mes.matchAll(BBI_TAG_RE)) {
+            const tag = m[0];
+            const mySeq = seq++;
+            if (BOOK_IMAGE_TAG_RE.test(tag.trim())) continue;
+            const before = mes.slice(0, m.index).replace(BBI_TAG_RE, '').split('\n').filter((l) => carryNorm(l));
+            const hash = bbiHash(tag);
+            out.push({
+                tag,
+                hash,
+                anchor: before.length ? carryNorm(before[before.length - 1]) : '',
+                ratio: before.length / totalLines,
+                entries: bbiEntriesOf(store, hash, mySeq),
+                sources: sources[hash] || null,
+            });
+        }
+        return out;
+    }
+
+    /**
+     * 把旧聊天里柏宝绘画的图搬到新导入的聊天里（按层对上楼层）。
+     * - 正文里能找到 tag 前面那一段：原样放回那一段后面（没改过的段落）
+     * - 找不到（这段改过了）：opts.changed !== false 时按在这一层里的大概位置放，否则不搬
+     * 图片文件不动，只把 tag 和 extra.bbiImage 里的路径搬过去；柏宝绘按 tag 原文哈希找图，所以照样能显示。
+     * @returns {{chat, stats:{layers, tags, images, exact, approx, dropped}}}
+     */
+    function carryBbiImages(newChat, oldChat, opts = {}) {
+        const allowApprox = opts.changed !== false;
+        const isFloor = (m) => m && typeof m.mes === 'string' && !m.is_user && !m.is_system;
+        const oldFloors = (oldChat || []).filter(isFloor);
+        const byLayer = new Map();
+        for (const m of oldFloors) {
+            const l = m.extra && m.extra.novel_importer ? m.extra.novel_importer.layer : undefined;
+            if (Number.isInteger(l) && !byLayer.has(l)) byLayer.set(l, m);
+        }
+        const useOrder = !byLayer.size;
+        const stats = { layers: 0, tags: 0, images: 0, exact: 0, approx: 0, dropped: 0 };
+        let floorNo = 0;
+        const chat = (newChat || []).map((msg) => {
+            if (!isFloor(msg)) return msg;
+            const myNo = floorNo++;
+            const layer = msg.extra && msg.extra.novel_importer ? msg.extra.novel_importer.layer : undefined;
+            const old = useOrder ? oldFloors[myNo] : byLayer.get(layer);
+            if (!old) return msg;
+            const slots = oldBbiSlots(old);
+            if (!slots.length) return msg;
+            // 新楼层：按行拆，记下已有的 tag（书内插图），后面重新编号
+            const lines = msg.mes.split('\n');
+            const norms = lines.map((l) => (/<bbi_image>/i.test(l) ? '' : carryNorm(l)));
+            const textIdx = norms.map((n, i) => (n ? i : -1)).filter((i) => i >= 0);
+            const inserts = new Map(); // 行号 -> [slot]（插在这一行后面；-1 表示最前面）
+            let last = -1;
+            let carried = 0;
+            for (const s of slots) {
+                let at = -2;
+                if (!s.anchor) at = textIdx.length ? textIdx[0] - 1 : -1;
+                else {
+                    for (let j = Math.max(0, last); j < lines.length; j++) if (norms[j] === s.anchor) { at = j; break; }
+                    if (at === -2) for (let j = 0; j < lines.length; j++) if (norms[j] === s.anchor) { at = j; break; }
+                }
+                if (at >= -1) stats.exact++;
+                else if (allowApprox && textIdx.length) {
+                    const k = Math.min(textIdx.length - 1, Math.max(0, Math.round(s.ratio * textIdx.length) - 1));
+                    at = Math.max(textIdx[k], last);
+                    stats.approx++;
+                } else {
+                    stats.dropped++;
+                    continue;
+                }
+                last = Math.max(last, at);
+                if (!inserts.has(at)) inserts.set(at, []);
+                inserts.get(at).push(s);
+                carried++;
+                stats.tags++;
+                stats.images += s.entries.length;
+            }
+            if (!carried) return msg;
+            stats.layers++;
+            const PH = '\u0000BBI';
+            const out = [];
+            const pending = [];
+            const pushSlots = (arr) => arr.forEach((s) => { out.push(`${PH}${pending.length}\u0000`); pending.push(s); });
+            if (inserts.has(-1)) pushSlots(inserts.get(-1));
+            lines.forEach((l, i) => {
+                out.push(l);
+                if (inserts.has(i)) pushSlots(inserts.get(i));
+            });
+            // 重新编号：楼层里所有 tag 按出现顺序排 slotSeq
+            const curStore = (msg.extra && msg.extra.bbiImage && msg.extra.bbiImage['0']) || {};
+            const store = {};
+            const srcs = {};
+            let seq = 0;
+            let existing = 0;
+            const mes = out.join('\n').replace(new RegExp(`${PH}(\\d+)\u0000|<bbi_image>[\\s\\S]+?<\\/bbi_image>`, 'gi'), (all, k) => {
+                const mySeq = seq++;
+                let tag;
+                let entries;
+                if (k !== undefined) {
+                    const s = pending[Number(k)];
+                    tag = s.tag;
+                    entries = s.entries;
+                    if (s.sources) srcs[s.hash] = s.sources;
+                } else {
+                    tag = all;
+                    entries = bbiEntriesOf(curStore, bbiHash(all), existing++);
+                }
+                const h = bbiHash(tag);
+                if (entries.length) (store[h] = store[h] || []).push(...entries.map((e) => ({ ...e, slotSeq: mySeq })));
+                return tag;
+            });
+            const extra = { ...(msg.extra || {}) };
+            extra.bbiImage = { ...(extra.bbiImage || {}), 0: store };
+            if (Object.keys(srcs).length) extra.bbiPassageSources = { ...(extra.bbiPassageSources || {}), 0: { ...((extra.bbiPassageSources || {})['0'] || {}), ...srcs } };
+            return { ...msg, mes, swipes: [mes], swipe_id: 0, extra };
+        });
+        return { chat, stats };
+    }
+
+    /** 酒馆导出的 .jsonl 聊天：第一行元数据，之后每行一条消息 */
+    function parseChatJsonl(text) {
+        return String(text || '')
+            .split(/\r?\n/)
+            .filter((l) => l.trim())
+            .map((l) => {
+                try {
+                    return JSON.parse(l);
+                } catch (e) {
+                    return null;
+                }
+            })
+            .filter(Boolean);
+    }
+
     function chatToJsonl(arr) {
         return arr.map((x) => JSON.stringify(x)).join('\n');
     }
@@ -3612,6 +3781,9 @@ ${sums}
         buildFloorText,
         buildChatArray,
         chatToJsonl,
+        bbiHash,
+        carryBbiImages,
+        parseChatJsonl,
         buildCharacterCard,
         parseTavernPreset,
         createEngine,
