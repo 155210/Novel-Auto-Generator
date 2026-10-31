@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.35';
+    const VERSION = '1.5.36';
 
     // ============================================
     // 默认配置
@@ -3090,6 +3090,7 @@ ${blocks}`;
                 `你是小说修改助手。下面是一部小说第 ${i + 1} 层已经${tr ? '译好' : '改好'}的定稿正文，用户审阅后提了修改意见。你自己判断意见涉及哪些段落，只改这些段落，其余段落一个字都不动，也不要输出。`,
             ];
             if ((s.rewritePrompt || '').trim()) parts.push(`## 用户的改写要求（改的时候文风照这个）\n${s.rewritePrompt.trim()}`);
+            if ((s.extraRules || '').trim()) parts.push(`## 其他规则\n${s.extraRules.trim()}`);
             if ((cfg.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，改出来的段落也要遵守）\n${cfg.outputRules.trim()}`);
             // 和正式处理一样带上剧情改写规则、事实账本、这层的改写安排和专属提示词，改的时候不能和它们冲突
             const div = buildDivergenceSection(s, st, tr);
@@ -3101,8 +3102,19 @@ ${blocks}`;
                 .join('\n');
             if (recap) parts.push(`## 前情提要（到上一层为止的剧情，改的时候要接得上）\n${recap}`);
             if ((layer.note || '').trim()) parts.push(`## 这一层的额外要求（用户提前为第 ${i + 1} 层写的）\n${layer.note.trim()}`);
+            const alias = buildAliasSection(s, st);
+            if (alias) parts.push(alias);
+            const layerText = layer.paras.map((p) => p.text).join('\n');
+            if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, st, layerText));
+            // 上一层结尾：改开头时要接得上
+            const prev = i > 0 ? E.results[i - 1] : null;
+            const tailN = Math.max(0, Number(s.prevTailChars) || 0);
+            const prevTail = prev && prev.status === 'done' && tailN && prev.finalParas ? tailText(splitBodyBlocks(prev.finalParas.join('\n'), s.bodyTag).body, tailN) : '';
+            if (prevTail) parts.push(`## 上一层正文的结尾（只用来承接，不要改、不要重复）\n<上一层结尾>\n${prevTail}\n</上一层结尾>`);
             const un = buildUserNameSection(s, st, tr);
             if (un) parts.push(un);
+            const wr = buildWordReplaceSection(s, tr);
+            if (wr) parts.push(wr);
             const custom = parseCustomTags(s.customTags).map((t) => t.tag);
             const curTags = custom
                 .map((tag) => {
@@ -3115,6 +3127,26 @@ ${blocks}`;
             parts.push(`## 本层定稿正文（第 ${i + 1} 层，每段前面的 [E段号] 只是编号，不是正文）\n<定稿>\n${paras.map((t, k) => `[E${k + 1}] ${t}`).join('\n')}\n</定稿>`);
             if (r.parsed && r.parsed.summary) parts.push(`## 本层现在的摘要\n${r.parsed.summary}`);
             if (curTags.length) parts.push(`## 本层现在的其他标签\n${curTags.join('\n')}`);
+            if (s.worldbookEnabled) {
+                const wbGuide = buildWorldbookSection(s);
+                if (wbGuide) parts.push(wbGuide);
+                const rel = selectRelevantEntries(st.worldbook || {}, split.body, s.worldbookContextChars);
+                if (rel.length) parts.push(`## 相关世界书条目（已有内容）\n` + rel.map((x) => `### ${x.category} / ${x.name}\n关键词：${(x.entry.关键词 || []).join('、')}\n${x.entry.内容}`).join('\n\n'));
+                const mine = r.parsed && r.parsed.worldbook && Object.keys(r.parsed.worldbook).length ? JSON.stringify(r.parsed.worldbook, null, 1) : '';
+                if (mine) parts.push(`## 这一层上次输出的世界书\n${mine}`);
+            }
+            const table = buildTableSection(s, st, split.body);
+            if (table) {
+                parts.push(table);
+                const tb = extractTag(r.raw, '表格');
+                parts.push(`## 这一层上次输出的表格操作\n${tb.closed && tb.content.trim() ? tb.content.trim() : '{}'}`);
+            }
+            const reminders = [];
+            if (aiUserName(s)) reminders.push(`指主角的名字和称呼一律写成 ${aliasTargetOf(s)}`);
+            const wrLines = aiReplaceLines(s);
+            if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
+            if ((cfg.outputRules || '').trim()) reminders.push('改出来的正文照「输出要求」里的每一条写');
+            if (reminders.length) parts.push(`提醒（改出来的段落也要做到）：${reminders.join('。')}`);
             parts.push(`## 用户的修改意见\n${feedback}`);
             parts.push(
                 [
@@ -3130,6 +3162,8 @@ ${blocks}`;
                     '- 只按修改意见改；意见没说的情节不要自己加。改出来的内容必须和上面的既成事实、改写安排、前情一致',
                     '- 改动导致本层剧情变了，再输出 <摘要>新的本层摘要</摘要>；没变就不写',
                     '- 改动让后面的剧情必须跟着变的（人物去向、关系、身份设定、谁知道了什么、物品数量），在 <新事实> 里每行写一条，后面的层会照着写；只是文字润色、没有影响后面的就不写',
+                    s.tablesEnabled && cfg.tableTemplate ? '- 意见要求改表格，或者这次修改让表格内容（时间地点、人物状态、事件）变了：输出完整的新一份本层 <表格>JSON</表格>（会整份替换上面「这一层上次输出的表格操作」，格式照表格要求）；不需要就不写' : '',
+                    s.worldbookEnabled ? '- 意见要求补充或修改世界书，或者这次修改让人物、地点、物品等资料变了：输出 <世界书>JSON</世界书>，格式和上面的世界书要求一样，只写新增或要更新的条目（更新的条目写完整的新内容）；不需要就不写。只改世界书、不用改正文时可以不输出 <修改>' : '',
                     custom.length ? `- ${custom.map((t) => `<${t}>`).join('、')} 的内容因为这次修改要变时，输出完整的新一份；不变就不写` : '',
                     '- 如果这条意见确实没法只改几段做到（比如要求整层换一种写法、整体重译、大段剧情推倒重来），就只输出 <整层重做>一句话说明原因</整层重做>，不要输出 <修改>',
                 ]
@@ -3172,13 +3206,24 @@ ${blocks}`;
                 const res = opts.review ? await redoLayer(i, extra) : await redoLayer(i, extra, { keepLater: opts.keepLater });
                 return { mode: 'full', result: res, reason: ed.full };
             }
-            if (!ed.ops.length) {
-                rec.problem = '回复里没有能用的 <修改>';
+            const wbBlock = extractTag(reply, '世界书');
+            let wbNew = null;
+            if (wbBlock.closed && wbBlock.content.trim()) {
+                try {
+                    const o = parseLooseJson(wbBlock.content);
+                    if (o && typeof o === 'object' && !Array.isArray(o) && Object.keys(o).length) wbNew = o;
+                } catch (e) {
+                    rec.problem = '<世界书> 不是合法 JSON，没用上';
+                }
+            }
+            const tbOut = extractTag(reply, '表格');
+            if (!ed.ops.length && !wbNew && !ed.summary && !ed.facts.length && !(tbOut.closed && tbOut.content.trim())) {
+                rec.problem = rec.problem || '回复里没有能用的 <修改>';
                 keepLog();
-                throw new Error(rec.problem);
+                throw new Error('回复里没有能用的 <修改>');
             }
             const ap = applyEditOps(paras, ed.ops);
-            if (!ap.applied) {
+            if (ed.ops.length && !ap.applied) {
                 rec.problem = '修改里的段号都对不上';
                 keepLog();
                 throw new Error(rec.problem);
@@ -3194,6 +3239,35 @@ ${blocks}`;
                 const x = extractTag(reply, t.tag);
                 if (!x.closed || !x.content.trim()) continue;
                 raw = extractTag(raw, t.tag).closed ? replaceTag(raw, t.tag, x.content.trim()) : `${raw}\n<${t.tag}>${x.content.trim()}</${t.tag}>`;
+            }
+            let tableChanged = false;
+            const tbBlock = extractTag(reply, '表格');
+            if (tbBlock.closed && tbBlock.content.trim() && settings.tablesEnabled) {
+                try {
+                    const o = parseLooseJson(tbBlock.content);
+                    if (o && typeof o === 'object') {
+                        parsed.tableOps = o;
+                        raw = extractTag(raw, '表格').closed ? replaceTag(raw, '表格', tbBlock.content.trim()) : `${raw}\n<表格>${tbBlock.content.trim()}</表格>`;
+                        tableChanged = true;
+                    }
+                } catch (e) {
+                    rec.problem = '<表格> 不是合法 JSON，没用上';
+                }
+            }
+            let wbCount = 0;
+            if (wbNew) {
+                const merged = clone((old.parsed && old.parsed.worldbook) || {});
+                for (const [cat, entries] of Object.entries(wbNew)) {
+                    if (!entries || typeof entries !== 'object') continue;
+                    merged[cat] = merged[cat] || {};
+                    for (const [name, entry] of Object.entries(entries)) {
+                        merged[cat][name] = entry;
+                        wbCount++;
+                    }
+                }
+                parsed.worldbook = merged;
+                const json = JSON.stringify(merged);
+                raw = extractTag(raw, '世界书').closed ? replaceTag(raw, '世界书', json) : `${raw}\n<世界书>${json}</世界书>`;
             }
             const finalParas = ap.paras.concat(extras);
             // 高亮：原来标的照留，这次改出来的段落整段标上
@@ -3216,7 +3290,7 @@ ${blocks}`;
                 E.reviewing = i;
                 emit('review', { index: i, result: r });
             } else emit('run-end', { done: E.results.filter((x) => x && x.status === 'done').length, total: E.layers.length });
-            return { mode: 'edit', result: r, applied: ap.applied, bad: ap.bad.length, facts: ed.facts };
+            return { mode: 'edit', result: r, applied: ap.applied, bad: ap.bad.length, facts: ed.facts, worldbook: wbCount, table: tableChanged };
         }
 
         /** 审阅里按意见改：照设置先只改相关段落，或者整层重做 */

@@ -932,6 +932,26 @@ describe('运行引擎', () => {
         expect(calls[0].messages.map((m) => m.content).join('\n')).toContain('奴隶制度已经废除');
     });
 
+    it('按意见只改几处：带世界书、表格、其他规则、上一层结尾、名称替换；能只补世界书和表格', async () => {
+        let editReply = '<世界书>{"角色": {"林晚": {"关键词": ["林晚"], "内容": "补上的林晚"}}}</世界书>\n<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "改后的事件"}}]}</表格>';
+        const { engine, calls } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? editReply : normal(layer)), { extraRules: '别写脏话', prevTailChars: 20, wordReplace: '路长远 → 远' });
+        await engine.run();
+        const res = await engine.editLayer(1, '补一下林晚的世界书');
+        const p = calls[calls.length - 1].messages.map((m) => m.content).join('\n');
+        expect(p).toContain('别写脏话');
+        expect(p).toContain('<上一层结尾>');
+        expect(p).toContain('这一层上次输出的世界书');
+        expect(p).toContain('路长远第2层');
+        expect(p).toContain('这一层上次输出的表格操作');
+        expect(res.mode).toBe('edit');
+        expect(res.worldbook).toBe(1);
+        expect(res.table).toBe(true);
+        const wb = engine.exportWorldbook();
+        expect(JSON.stringify(wb)).toContain('补上的林晚');
+        expect(JSON.stringify(wb)).toContain('{{user}}第2层');
+        expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toContain('改后的事件');
+    });
+
     it('审阅里按意见改：只改几处后回到审阅', async () => {
         const { engine } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? '<修改>\n[E0] 后面插入：开头加一段。\n</修改>' : normal(layer)), { reviewMode: 'every' });
         await engine.run();
