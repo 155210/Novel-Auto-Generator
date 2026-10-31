@@ -228,7 +228,8 @@
                     ['original', '用原文章节标题和章号'],
                 ],
             },
-            { key: 'titleFormat', label: '标题格式（写在 <bt> 里）', type: 'text', hint: '{n} 章号，{unit} 章或话，{title} 标题' },
+            { key: 'titleFormat', label: '楼层标题格式（写在 <bt> 里）', type: 'text', hint: '{n} 章号或层号，{unit} 章或话，{title} 标题；想要「第X层」就写 #第{n}层：{title}' },
+            { key: 'bodyTitleFormat', label: '正文里章节标题的格式', type: 'text', hint: '一层里有好几章时，正文中间的「第X话」用这个；空着跟楼层标题格式一样，楼层标题是「第X层」时自动用 #第{n}{unit}：{title}' },
             {
                 key: 'chapterUnit',
                 label: '用「章」还是「话」',
