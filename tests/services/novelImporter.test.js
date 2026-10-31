@@ -903,6 +903,30 @@ describe('运行引擎', () => {
         expect(engine.results[0]).toBe(cur);
     });
 
+    it('按意见只改几处：第一层也带上事实账本、改写安排和专属提示词', async () => {
+        const calls = [];
+        const engine = C.createEngine({
+            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1 },
+            tableTemplate: TEMPLATE,
+            ledgerManual: [{ from: 0, text: '奴隶制度已经废除' }],
+            planFor: (i) => (i === 0 ? { instruction: '主角不收奴隶' } : null),
+            callModel: async (messages, info) => {
+                calls.push({ messages, info });
+                return /你是小说修改助手/.test(messages[messages.length - 1].content) ? '<修改>\n[E1] 替换：新。\n</修改>' : normal(info.layer);
+            },
+        });
+        engine.prepare(NOVEL);
+        engine.setLayerNote(0, '这层要写雨');
+        await engine.run();
+        await engine.editLayer(0, '改一下');
+        const p = calls[calls.length - 1].messages.map((m) => m.content).join('\n');
+        expect(p).toContain('奴隶制度已经废除');
+        expect(p).toContain('主角不收奴隶');
+        expect(p).toContain('这层要写雨');
+        // 正式处理第一层本来就带
+        expect(calls[0].messages.map((m) => m.content).join('\n')).toContain('奴隶制度已经废除');
+    });
+
     it('审阅里按意见改：只改几处后回到审阅', async () => {
         const { engine } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? '<修改>\n[E0] 后面插入：开头加一段。\n</修改>' : normal(layer)), { reviewMode: 'every' });
         await engine.run();
