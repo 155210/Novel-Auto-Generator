@@ -348,6 +348,13 @@
                 button: { id: 'nim-wr-apply', label: '立即应用到已生成的层' },
             },
             {
+                key: 'customTags',
+                label: '自定义标签（每本书可以不一样，不要就清空）',
+                type: 'textarea',
+                rows: 4,
+                hint: '每行一个：标签名：要 AI 往里写什么。比如「StatusBlock：主角当前拥有的 DP（代币）数量和道具清单，按本层剧情更新」。AI 每层写在正文后面，自动放进楼层正文后面，并把最新的一份带给下一层接着更新；要求写不下可以换行接着写',
+            },
+            {
                 key: 'floorTagsBefore',
                 label: '楼层里额外放在正文前面的标签',
                 type: 'text',
