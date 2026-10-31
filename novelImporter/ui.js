@@ -2702,29 +2702,21 @@
     function addNamesFromScan(manual = false) {
         const e = mapEngine();
         if (!e) return 0;
-        const have = new Set(mapNames().flatMap((n) => n.aliases));
-        const count = new Map();
-        for (const l of e.layers) {
-            const sc = PM.layerPlan(State.plan, l.index).scan;
-            for (const c of (sc && sc.characters) || []) count.set(c, (count.get(c) || 0) + 1);
-        }
-        const hero = new Set([C.protagonistOf(State.settings, null), State.plan.hero, '{{user}}', '主角', '我'].filter(Boolean));
-        const add = [...count.entries()]
-            .filter(([n]) => n && n.length <= 12 && !have.has(n) && !hero.has(n))
-            .sort((a, b) => b[1] - a[1])
-            .map(([n]) => n);
-        if (!add.length) {
-            if (manual) toast(count.size ? '扫描结果里的人物都已经在名单里了' : '还没有扫描结果', 'info');
+        const scans = e.layers.map((l) => PM.layerPlan(State.plan, l.index).scan).filter(Boolean);
+        const hero = [C.protagonistOf(State.settings, null), State.plan.hero, '{{user}}', '主角', '我'];
+        const r = PM.mergeScanNames(State.plan.names, scans, hero);
+        if (!r.added && !r.extended) {
+            if (manual) toast(scans.length ? '扫描结果里的人物都已经在名单里了' : '还没有扫描结果', 'info');
             return 0;
         }
-        State.plan = { ...State.plan, names: [State.plan.names.trim(), ...add].filter(Boolean).join('\n') };
+        State.plan = { ...State.plan, names: r.text };
         if ($('nim-map-names')) $('nim-map-names').value = State.plan.names;
         savePlan();
         if (manual) {
             renderMap();
-            toast(`加了 ${add.length} 个人，同一个人的不同叫法可以合成一行，用 / 隔开`, 'success');
+            toast(`${r.added ? `加了 ${r.added} 个人。` : ''}${r.extended ? `${r.extended} 个人补上了原文写法。` : ''}同一个人的不同叫法可以合成一行，用 / 隔开`, 'success');
         }
-        return add.length;
+        return r.added;
     }
 
     // --------- 预扫描（B1 G5 C5，F1 F2 F3 F6）---------

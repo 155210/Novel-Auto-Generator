@@ -279,3 +279,16 @@ describe('剧情地图：AI 提议带摘要和主角', () => {
         expect(p).toContain('第2层：（没扫描）');
     });
 });
+
+describe('剧情地图：人物原文写法', () => {
+    it('扫描拆出原文写法；合进名单时新人带原文、老人补原文', () => {
+        const r = M.parseScanResponse('{"人物":["真田夜云/真田夜雲","希娜／ヒナ","沙耶香"]}', C.parseLooseJson);
+        expect(r.characters).toEqual(['真田夜云', '希娜', '沙耶香']);
+        expect(r.nameForms).toEqual({ 真田夜云: ['真田夜雲'], 希娜: ['ヒナ'] });
+        const m = M.mergeScanNames('沙耶香\n希娜', [r, { characters: ['希娜', '洛克'], nameForms: { 洛克: ['ロック'] } }], ['真田夜云']);
+        expect(m.text).toBe('沙耶香\n希娜 / ヒナ\n洛克 / ロック');
+        expect(m.added).toBe(1);
+        expect(m.extended).toBe(1);
+        expect(M.mergeScanNames(m.text, [r]).extended).toBe(0);
+    });
+});

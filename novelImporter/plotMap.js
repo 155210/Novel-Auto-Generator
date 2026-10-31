@@ -86,6 +86,40 @@
             .filter((x) => x.name);
     }
 
+    /** 把扫描出的人物合进名单：新人加一行；名单里已有的人，补上原文写法（热力图按原文数次数） */
+    function mergeScanNames(namesText, scans, exclude = []) {
+        const skip = new Set(exclude.filter(Boolean));
+        const count = new Map();
+        const forms = new Map();
+        for (const sc of scans) {
+            if (!sc) continue;
+            for (const c of sc.characters || []) count.set(c, (count.get(c) || 0) + 1);
+            for (const [n, list] of Object.entries(sc.nameForms || {})) {
+                if (!forms.has(n)) forms.set(n, new Set());
+                for (const f of list) forms.get(n).add(f);
+            }
+        }
+        const lines = String(namesText || '').split('\n');
+        let extended = 0;
+        const have = new Set();
+        for (let k = 0; k < lines.length; k++) {
+            const [entry] = parseNameList(lines[k]);
+            if (!entry) continue;
+            const extra = [...new Set(entry.aliases.flatMap((a) => [...(forms.get(a) || [])]))].filter((f) => !entry.aliases.includes(f));
+            if (extra.length) {
+                lines[k] = `${lines[k].replace(/\s+$/, '')} / ${extra.join(' / ')}`;
+                extended++;
+            }
+            for (const a of [...entry.aliases, ...extra]) have.add(a);
+        }
+        const add = [...count.entries()]
+            .filter(([n]) => n && n.length <= 12 && !have.has(n) && !skip.has(n))
+            .sort((a, b) => b[1] - a[1])
+            .map(([n]) => [n, ...[...(forms.get(n) || [])].filter((f) => f !== n)].join(' / '));
+        const text = [lines.join('\n').trim(), ...add].filter(Boolean).join('\n');
+        return { text, added: add.length, extended };
+    }
+
     function parseWordList(text) {
         return [
             ...new Set(
@@ -304,7 +338,7 @@
             opts.extra && String(opts.extra).trim() ? `## 额外要求\n${String(opts.extra).trim()}` : '',
             `## 原文\n<原文>\n${text}\n</原文>`,
             `## 输出格式（只输出这个 JSON，别的什么都不要写）
-{"一句话": "30 字以内概括本层主线", "摘要": "100 到 200 字，谁做了什么、结果如何", "人物": ["本层出场的主要人物，用规范名"], "关系": [{"甲": "人名", "乙": "人名", "变化": "比如 结拜、翻脸、订婚、表白"}], "毒点": [{"雷点": "命中的雷点", "涉及": "主角以外的那个人", "证据": "原文里的一句话"}], "标签": ["从 战斗 感情 日常 修炼 阴谋 转折 高潮 水章 里选，最多 3 个"], "主角": "主角的名字（看不出写空字符串）"}
+{"一句话": "30 字以内概括本层主线", "摘要": "100 到 200 字，谁做了什么、结果如何", "人物": ["本层出场的主要人物，用中文规范名；原文里写法不一样（日文假名、繁体或日文汉字、英文）时写成 中文名/原文写法，比如 真田夜云/真田夜雲、希娜/ヒナ"], "关系": [{"甲": "人名", "乙": "人名", "变化": "比如 结拜、翻脸、订婚、表白"}], "毒点": [{"雷点": "命中的雷点", "涉及": "主角以外的那个人", "证据": "原文里的一句话"}], "标签": ["从 战斗 感情 日常 修炼 阴谋 转折 高潮 水章 里选，最多 3 个"], "主角": "主角的名字（看不出写空字符串）"}
 键和字符串一律用英文双引号，没有的写空数组。
 所有内容用简体中文写：原文是日文、英文等外文也要翻成中文，人名用中文写法，不要照抄外文。`,
         ]
@@ -339,7 +373,14 @@
         return {
             oneLine: str(j.一句话 ?? j.oneLine),
             summary: str(j.摘要 ?? j.summary),
-            characters: arr(j.人物 ?? j.characters).map(str).filter(Boolean),
+            // 「中文名/原文写法」拆开：人物只留中文名，原文写法记在 nameForms，热力图按原文数
+            characters: [...new Set(arr(j.人物 ?? j.characters).map((x) => str(x).split(/[/／]/)[0].trim()).filter(Boolean))],
+            nameForms: Object.fromEntries(
+                arr(j.人物 ?? j.characters)
+                    .map((x) => str(x).split(/[/／]/).map((y) => y.trim()).filter(Boolean))
+                    .filter((p) => p.length > 1)
+                    .map((p) => [p[0], p.slice(1)]),
+            ),
             relations: arr(j.关系 ?? j.relations)
                 .map((r) => ({ a: str(r.甲 ?? r.a), b: str(r.乙 ?? r.b), change: str(r.变化 ?? r.change) }))
                 .filter((r) => r.a && r.change),
@@ -615,6 +656,7 @@ ${after || '（到结尾）'}
         countOf,
         guessNames,
         parseNameList,
+        mergeScanNames,
         parseWordList,
         nameCounts,
         analyze,
