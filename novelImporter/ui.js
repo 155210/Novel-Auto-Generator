@@ -944,7 +944,7 @@
                 description: State.meta.description,
                 scenario: State.meta.scenario,
                 avatar: State.meta.avatar,
-                chatArray: await attachImages(out.chat, out.cardName, true),
+                chatArray: applyCarry(await attachImages(out.chat, out.cardName, true)),
                 expectedTables: State.settings.tablesEnabled && State.tableTemplate ? out.tables : null,
                 onStep: (s) => {
                     log(`导入：${s}`);
@@ -1015,7 +1015,7 @@
             return toast(e.message, 'warning');
         }
         const n = out.cardName;
-        if (kind === 'chat') attachImages(out.chat, n, false).then((chat) => download(C.chatToJsonl(chat), `${n}.jsonl`, 'application/jsonl'));
+        if (kind === 'chat') attachImages(out.chat, n, false).then((chat) => download(C.chatToJsonl(applyCarry(chat)), `${n}.jsonl`, 'application/jsonl'));
         else if (kind === 'world') download(JSON.stringify(out.worldbook, null, 2), `${out.worldName}.json`);
         else if (kind === 'card')
             download(
@@ -1159,6 +1159,102 @@
             if (Object.keys(bucket).length) extra.bbiImage = { 0: bucket };
             return { ...m, mes, swipes: [mes], extra };
         });
+    }
+
+    // ============================================
+    // 从旧聊天搬柏宝绘插图
+    // ============================================
+
+    const Carry = { source: null, label: '', listed: false };
+
+    function carryInfo(text) {
+        const el = $('nim-carry-info');
+        if (el) el.textContent = text;
+        const b = $('nim-carry-badge');
+        if (b) b.textContent = Carry.source ? ` · 已选 ${Carry.label}` : '';
+    }
+
+    function fillCarryChars() {
+        const sel = $('nim-carry-char');
+        if (!sel) return;
+        let chars = [];
+        try {
+            chars = ST.listCharacters();
+        } catch (e) {
+            /* 不在酒馆里 */
+        }
+        const cur = sel.value || State.meta.avatar || '';
+        sel.innerHTML = `<option value="">选一张角色卡</option>` + chars.map((c) => `<option value="${esc(c.avatar)}">${esc(c.name)}</option>`).join('');
+        if (chars.some((c) => c.avatar === cur)) sel.value = cur;
+        Carry.listed = true;
+        fillCarryChats();
+    }
+
+    async function fillCarryChats() {
+        const sel = $('nim-carry-chat');
+        const avatar = $('nim-carry-char')?.value;
+        if (!sel) return;
+        if (!avatar) {
+            sel.innerHTML = '<option value="">先选角色卡</option>';
+            return;
+        }
+        sel.innerHTML = '<option value="">读取中…</option>';
+        try {
+            const list = await ST.listChats(avatar);
+            sel.innerHTML = list.length ? list.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}${c.count ? `（${c.count} 楼）` : ''}</option>`).join('') : '<option value="">这张卡没有聊天</option>';
+        } catch (e) {
+            sel.innerHTML = '<option value="">读取失败</option>';
+            carryInfo(e.message);
+        }
+    }
+
+    /** 用当前处理结果试搬一次，告诉用户能搬多少 */
+    function previewCarry() {
+        if (!Carry.source) return;
+        try {
+            const out = buildOutputs();
+            const r = C.carryBbiImages(out.chat, Carry.source, { changed: $('nim-carry-changed')?.checked !== false });
+            const st = r.stats;
+            carryInfo(st.tags ? `能搬 ${st.layers} 层、${st.images} 张图（${st.tags} 个插图位）：${st.exact} 个原样放回，${st.approx} 个按大概位置放${st.dropped ? `，${st.dropped} 个对不上不搬` : ''}。导入或下载聊天时自动带上。` : `「${Carry.label}」里没找到能对上的柏宝绘插图`);
+        } catch (e) {
+            carryInfo(`已读取「${Carry.label}」，处理结果还没好，导入时再搬：${e.message}`);
+        }
+    }
+
+    async function loadCarry() {
+        const avatar = $('nim-carry-char')?.value;
+        const name = $('nim-carry-chat')?.value;
+        if (!avatar || !name) return toast('先选旧角色卡和聊天', 'warning');
+        const ch = ST.listCharacters().find((c) => c.avatar === avatar);
+        carryInfo('读取中…');
+        try {
+            Carry.source = await ST.getChat(avatar, ch ? ch.name : '', name);
+            Carry.label = name;
+            previewCarry();
+        } catch (e) {
+            Carry.source = null;
+            carryInfo(`读取失败：${e.message}`);
+        }
+    }
+
+    async function loadCarryFile(file) {
+        try {
+            const arr = C.parseChatJsonl(await readFileText(file));
+            if (!arr.length) throw new Error('文件里没有聊天');
+            Carry.source = arr;
+            Carry.label = file.name;
+            previewCarry();
+        } catch (e) {
+            carryInfo(`读取失败：${e.message}`);
+        }
+    }
+
+    function applyCarry(chat) {
+        if (!Carry.source) return chat;
+        const r = C.carryBbiImages(chat, Carry.source, { changed: $('nim-carry-changed')?.checked !== false });
+        const st = r.stats;
+        log(st.tags ? `从「${Carry.label}」搬了 ${st.layers} 层、${st.images} 张柏宝绘插图：${st.exact} 个原样放回，${st.approx} 个按大概位置放${st.dropped ? `，${st.dropped} 个对不上没搬` : ''}` : `「${Carry.label}」里没有能对上的柏宝绘插图`);
+        return r.chat;
     }
 
     /** 先用酒馆自带的 JSZip（不用联网），没有再走 CDN */
@@ -4823,6 +4919,14 @@
         </div>
         <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn ghost xs">AI 生成</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="5"></textarea></div>
         <div id="nim-card-avatar" class="nim-muted"></div>
+        <details class="nim-fold" id="nim-carry"><summary>从旧聊天搬插图（柏宝绘画的图）<span id="nim-carry-badge" class="nim-muted"></span></summary>
+          <div class="nim-muted">改了剧情重新导入时，把旧聊天里柏宝绘画的图搬到新聊天：没改过的段落原样放回去，改过的段落按这一层里的大概位置放。图片文件不动，旧聊天也不动。</div>
+          <div class="nim-field"><label>旧角色卡</label><select id="nim-carry-char" class="nim-input"></select></div>
+          <div class="nim-field"><label>旧聊天</label><select id="nim-carry-chat" class="nim-input"></select></div>
+          <label class="nim-check"><input type="checkbox" id="nim-carry-changed" checked><span class="nim-switch"></span><span>改过的段落也按大概位置搬<span class="nim-hint">不勾就只搬能对上原段落的图，改过的地方之后自己重画</span></span></label>
+          <div class="nim-row"><button id="nim-carry-load" class="nim-btn sm">读取并预览</button><label class="nim-btn sm">从文件选 .jsonl<input type="file" id="nim-carry-file" accept=".jsonl,.json" hidden></label><button id="nim-carry-clear" class="nim-btn ghost sm">不搬了</button></div>
+          <div id="nim-carry-info" class="nim-muted"></div>
+        </details>
         <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
         <div id="nim-import-result" class="nim-alert" hidden></div>
         <div class="nim-muted nim-center">角色卡 + 世界书 + 聊天楼层 + 插图，然后让记忆插件逐层重建表格并核对</div>
@@ -5623,6 +5727,18 @@ button.nim-step:hover{background:var(--surface2);}
             genCardInfo();
         });
         on('nim-import', 'click', importToTavern);
+        $('nim-carry')?.addEventListener('toggle', () => {
+            if ($('nim-carry').open && !Carry.listed) fillCarryChars();
+        });
+        on('nim-carry-char', 'change', fillCarryChats);
+        on('nim-carry-load', 'click', loadCarry);
+        on('nim-carry-changed', 'change', previewCarry);
+        onFile('nim-carry-file', loadCarryFile);
+        on('nim-carry-clear', 'click', () => {
+            Carry.source = null;
+            Carry.label = '';
+            carryInfo('不搬插图');
+        });
         on('nim-rebuild', 'click', rebuildOnly);
         on('nim-persona', 'click', writePersona);
         document.querySelectorAll('#nim-modal [data-export]').forEach((b) => b.addEventListener('click', () => exportFile(b.dataset.export)));

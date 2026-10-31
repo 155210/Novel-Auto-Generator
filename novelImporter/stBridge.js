@@ -112,6 +112,41 @@
         return fileName;
     }
 
+    /** 列出一张角色卡的所有聊天（文件名不带 .jsonl），新的在前 */
+    async function listChats(avatar) {
+        const c = ctx();
+        const resp = await fetch('/api/characters/chats', {
+            method: 'POST',
+            headers: c.getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar }),
+        });
+        if (!resp.ok) throw new Error(`读取聊天列表失败：HTTP ${resp.status}`);
+        const data = await resp.json();
+        const list = Array.isArray(data) ? data : Object.values(data || {});
+        return list
+            .filter((x) => x && x.file_name)
+            .map((x) => ({ name: String(x.file_name).replace(/\.jsonl$/i, ''), count: Number(x.chat_items) || 0, last: x.last_mes || '' }))
+            .sort((a, b) => String(b.last).localeCompare(String(a.last)));
+    }
+
+    /** 读一张角色卡的某个聊天（整份，含第一行元数据） */
+    async function getChat(avatar, charName, fileName) {
+        const c = ctx();
+        const resp = await fetch('/api/chats/get', {
+            method: 'POST',
+            headers: c.getRequestHeaders(),
+            body: JSON.stringify({ ch_name: charName, file_name: String(fileName).replace(/\.jsonl$/i, ''), avatar_url: avatar }),
+        });
+        if (!resp.ok) throw new Error(`读取聊天失败：HTTP ${resp.status}`);
+        const data = await resp.json();
+        return Array.isArray(data) ? data : [];
+    }
+
+    /** 酒馆里的角色卡列表（搬插图时选旧卡用） */
+    function listCharacters() {
+        return (ctx().characters || []).filter((ch) => ch && ch.avatar).map((ch) => ({ avatar: ch.avatar, name: ch.name || ch.avatar }));
+    }
+
     async function openChat(avatar, fileName) {
         const c = ctx();
         const idx = findCharacterIndex(avatar);
@@ -524,6 +559,9 @@
     }
 
     root.NovelImporterST = {
+        listChats,
+        getChat,
+        listCharacters,
         ctx,
         saveWorldbook,
         listActiveWorldbooks,

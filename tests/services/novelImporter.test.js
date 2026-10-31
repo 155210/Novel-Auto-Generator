@@ -1478,3 +1478,60 @@ describe('小说导入：数字开头的列表不当章节', () => {
         expect(C.isChapterTitle('12、重逢', re)).toBe(true);
     });
 });
+
+describe('从旧聊天搬柏宝绘插图', () => {
+    const tagA = '<bbi_image>少女站在雨中</bbi_image>';
+    const tagB = '<bbi_image>城门夜景</bbi_image>';
+    const tagC = '<bbi_image>结尾的山</bbi_image>';
+    const book = '<bbi_image>插图1</bbi_image>';
+    const entry = (path, seq) => ({ generationId: path, path, prompt: '', seed: null, status: 'ready', createdAt: 1, slotSeq: seq });
+    const oldMsg = (layer, mes, store) => ({ name: '书', is_user: false, mes, swipe_id: 0, swipes: [mes], extra: { novel_importer: { layer }, bbiImage: { 0: store } } });
+    const newMsg = (layer, mes, extra = {}) => ({ name: '书', is_user: false, mes, swipe_id: 0, swipes: [mes], extra: { novel_importer: { layer }, ...extra } });
+
+    const oldChat = [
+        { user_name: 'u', character_name: '书' },
+        oldMsg(0, `<bt>\n第一章\n</bt>\n<content>\n第一段。\n${tagA}\n第二段。\n${book}\n第三段。\n${tagB}\n</content>`, {
+            [C.bbiHash(tagA)]: [entry('/user/images/a.png', 0)],
+            [C.bbiHash(book)]: [entry('/user/images/book.png', 1)],
+            [C.bbiHash(tagB)]: [entry('/user/images/b.png', 2)],
+        }),
+        oldMsg(1, `<content>\n甲。\n乙。\n丙。\n丁。\n${tagC}\n</content>`, { [C.bbiHash(tagC)]: [entry('/user/images/c.png', 0)] }),
+    ];
+
+    it('没改过的段落原样放回，书内插图不重复搬，slotSeq 按新顺序重排', () => {
+        const fresh = [
+            { user_name: 'u' },
+            newMsg(0, `<bt>\n第一章\n</bt>\n<content>\n第一段。\n第二段。\n${book}\n第三段。\n</content>`, { bbiImage: { 0: { [C.bbiHash(book)]: [entry('/user/images/book2.png', 0)] } } }),
+        ];
+        const { chat, stats } = C.carryBbiImages(fresh, oldChat);
+        const m = chat[1];
+        expect(m.mes).toBe(`<bt>\n第一章\n</bt>\n<content>\n第一段。\n${tagA}\n第二段。\n${book}\n第三段。\n${tagB}\n</content>`);
+        expect(m.swipes[0]).toBe(m.mes);
+        const st = m.extra.bbiImage['0'];
+        expect(st[C.bbiHash(tagA)]).toEqual([entry('/user/images/a.png', 0)]);
+        expect(st[C.bbiHash(book)]).toEqual([entry('/user/images/book2.png', 1)]);
+        expect(st[C.bbiHash(tagB)]).toEqual([entry('/user/images/b.png', 2)]);
+        expect(stats).toEqual({ layers: 1, tags: 2, images: 2, exact: 2, approx: 0, dropped: 0 });
+        expect(m.extra.novel_importer.layer).toBe(0);
+    });
+
+    it('改过的段落按大概位置放；关掉就不搬', () => {
+        const fresh = [{ user_name: 'u' }, newMsg(1, `<content>\n新甲。\n新乙。\n新丙。\n新丁。\n</content>`)];
+        const r = C.carryBbiImages(fresh, oldChat);
+        expect(r.chat[1].mes).toBe(`<content>\n新甲。\n新乙。\n新丙。\n新丁。\n${tagC}\n</content>`);
+        expect([r.stats.approx, r.stats.exact]).toEqual([1, 0]);
+        const off = C.carryBbiImages(fresh, oldChat, { changed: false });
+        expect(off.chat[1]).toBe(fresh[1]);
+        expect(off.stats.dropped).toBe(1);
+    });
+
+    it('旧聊天没有层号时按楼层顺序对；能读酒馆导出的 jsonl', () => {
+        const plainOld = oldChat.map((m, i) => (i ? { ...m, extra: { bbiImage: m.extra.bbiImage } } : m));
+        const text = plainOld.map((x) => JSON.stringify(x)).join('\n') + '\n';
+        const parsed = C.parseChatJsonl(text);
+        expect(parsed.length).toBe(3);
+        const fresh = [{ user_name: 'u' }, newMsg(0, `<content>\n第一段。\n</content>`)];
+        const { chat } = C.carryBbiImages(fresh, parsed);
+        expect(chat[1].mes).toContain(`第一段。\n${tagA}`);
+    });
+});
