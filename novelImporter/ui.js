@@ -4691,7 +4691,7 @@
             if (!res) log(`第 ${i + 1} 层：已停止，这层没动`);
             else if (res.mode === 'full') log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），已整层重做`);
             else {
-                log(`第 ${i + 1} 层：只改了 ${res.applied} 处${res.bad ? `，${res.bad} 处段号对不上没用上` : ''}，其余正文没动`);
+                log(`第 ${i + 1} 层：正文改了 ${res.applied} 处${res.bad ? `，${res.bad} 处段号对不上没用上` : ''}${res.worldbook ? `，世界书新增或更新 ${res.worldbook} 条` : ''}${res.table ? '，表格换成新的' : ''}，其余没动`);
                 // 改动带出来的新事实记进事实账本，从下一层起生效
                 const have = new Set((State.ledgerManual || []).map((m) => m.text));
                 const add = (res.facts || []).filter((f) => !have.has(f));
@@ -4700,7 +4700,7 @@
                     log(`第 ${i + 1} 层改动带出的新事实，已记进事实账本（第 ${i + 2} 层起生效）：${add.join('；')}`);
                     if (!State.settings.divergenceEnabled) log('提醒：设置里「启用剧情改写强规则」没开，事实账本不会发给 AI');
                 }
-                toast(`改了 ${res.applied} 处`, 'success');
+                toast(`正文改了 ${res.applied} 处${res.worldbook ? `，世界书 ${res.worldbook} 条` : ''}`, 'success');
             }
         } catch (err) {
             log(`第 ${i + 1} 层按意见修改失败：${err.message}`);
