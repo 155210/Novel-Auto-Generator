@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.36';
+    const VERSION = '1.5.37';
 
     // ============================================
     // 默认配置
@@ -1003,6 +1003,33 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
      * </修改>
      * @returns {{ops: {n:number, op:string, lines:string[]}[], full: string|null, summary: string|null}}
      */
+    /**
+     * 按意见修改时 AI 给的 <表格>：默认合并进这一层原来的表格操作（同一张表的操作接在后面，
+     * 同主键的插入/更新在计划时会合并成一条）；只能插入的表跳过和原来完全一样的行，免得 AI 照抄一遍变重复。
+     * JSON 里写 "整份替换": true 时才整份换掉。
+     */
+    function mergeTableOps(oldOps, newOps, appendOnly = DEFAULT_TABLE_ROLES.appendOnly) {
+        const add = { ...(newOps || {}) };
+        const replace = add['整份替换'] === true || add.replace === true;
+        delete add['整份替换'];
+        delete add.replace;
+        if (replace) return add;
+        const out = {};
+        const asList = (v) => (Array.isArray(v) ? v : v && typeof v === 'object' ? [v] : []);
+        for (const [k, v] of Object.entries(oldOps || {})) out[k] = asList(v).slice();
+        const sig = (op) => JSON.stringify(op && (op.数据 || op.data || {}));
+        for (const [k, v] of Object.entries(add)) {
+            const list = (out[k] = out[k] || []);
+            const isAppend = appendOnly.some((n) => n === k || n.includes(k) || k.includes(n));
+            const seen = new Set(isAppend ? list.map(sig) : []);
+            for (const op of asList(v)) {
+                if (isAppend && seen.has(sig(op))) continue;
+                list.push(op);
+            }
+        }
+        return out;
+    }
+
     function parseEditResponse(reply) {
         const text = String(reply || '');
         const full = extractTag(text, '整层重做');
@@ -3162,7 +3189,7 @@ ${blocks}`;
                     '- 只按修改意见改；意见没说的情节不要自己加。改出来的内容必须和上面的既成事实、改写安排、前情一致',
                     '- 改动导致本层剧情变了，再输出 <摘要>新的本层摘要</摘要>；没变就不写',
                     '- 改动让后面的剧情必须跟着变的（人物去向、关系、身份设定、谁知道了什么、物品数量），在 <新事实> 里每行写一条，后面的层会照着写；只是文字润色、没有影响后面的就不写',
-                    s.tablesEnabled && cfg.tableTemplate ? '- 意见要求改表格，或者这次修改让表格内容（时间地点、人物状态、事件）变了：输出完整的新一份本层 <表格>JSON</表格>（会整份替换上面「这一层上次输出的表格操作」，格式照表格要求）；不需要就不写' : '',
+                    s.tablesEnabled && cfg.tableTemplate ? '- 意见要求改表格，或者这次修改让表格内容（时间地点、人物状态、事件）变了：输出 <表格>JSON</表格>，格式照表格要求，只写要新增或要改的行（会合并进上面「这一层上次输出的表格操作」，原来的不用重抄）；确实要推翻上次的表格操作重来时，在 JSON 最外层加 "整份替换": true 并写完整的一份；不需要就不写' : '',
                     s.worldbookEnabled ? '- 意见要求补充或修改世界书，或者这次修改让人物、地点、物品等资料变了：输出 <世界书>JSON</世界书>，格式和上面的世界书要求一样，只写新增或要更新的条目（更新的条目写完整的新内容）；不需要就不写。只改世界书、不用改正文时可以不输出 <修改>' : '',
                     custom.length ? `- ${custom.map((t) => `<${t}>`).join('、')} 的内容因为这次修改要变时，输出完整的新一份；不变就不写` : '',
                     '- 如果这条意见确实没法只改几段做到（比如要求整层换一种写法、整体重译、大段剧情推倒重来），就只输出 <整层重做>一句话说明原因</整层重做>，不要输出 <修改>',
@@ -3246,8 +3273,9 @@ ${blocks}`;
                 try {
                     const o = parseLooseJson(tbBlock.content);
                     if (o && typeof o === 'object') {
-                        parsed.tableOps = o;
-                        raw = extractTag(raw, '表格').closed ? replaceTag(raw, '表格', tbBlock.content.trim()) : `${raw}\n<表格>${tbBlock.content.trim()}</表格>`;
+                        parsed.tableOps = mergeTableOps(parsed.tableOps, o, { ...DEFAULT_TABLE_ROLES, ...(settings.tableRoles || {}) }.appendOnly);
+                        const tbText = JSON.stringify(parsed.tableOps);
+                        raw = extractTag(raw, '表格').closed ? replaceTag(raw, '表格', tbText) : `${raw}\n<表格>${tbText}</表格>`;
                         tableChanged = true;
                     }
                 } catch (e) {
@@ -4097,6 +4125,7 @@ ${sums}
         splitTagList,
         parseCustomTags,
         parseEditResponse,
+        mergeTableOps,
         layerDelayMs,
         applyEditOps,
         outputRuleItems,

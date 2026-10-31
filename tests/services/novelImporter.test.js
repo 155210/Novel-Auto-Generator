@@ -949,7 +949,21 @@ describe('运行引擎', () => {
         const wb = engine.exportWorldbook();
         expect(JSON.stringify(wb)).toContain('补上的林晚');
         expect(JSON.stringify(wb)).toContain('{{user}}第2层');
-        expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toContain('改后的事件');
+        // 合并进原来的表格操作：这一层原来的事件还在
+        expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toEqual(['事件1', '事件2', '改后的事件', '事件3']);
+        // 写了整份替换才换掉
+        editReply = '<表格>{"整份替换": true, "事件历史": [{"操作": "插入", "数据": {"事件": "只要这条"}}]}</表格>';
+        await engine.editLayer(1, '表格重来');
+        expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toEqual(['事件1', '只要这条', '事件3']);
+    });
+
+    it('合并修改给的表格操作', () => {
+        const old = { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '甲', 身份: '学生' } }] };
+        const m = C.mergeTableOps(old, { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }, { 操作: '插入', 数据: { 事件: 'B' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '乙' } }] });
+        expect(m.事件历史.map((o) => o.数据.事件)).toEqual(['A', 'B']);
+        expect(m.角色特征表格.map((o) => o.数据.角色名)).toEqual(['甲', '乙']);
+        expect(old.事件历史.length).toBe(1);
+        expect(C.mergeTableOps(old, { 整份替换: true, 事件历史: [] })).toEqual({ 事件历史: [] });
     });
 
     it('审阅里按意见改：只改几处后回到审阅', async () => {
