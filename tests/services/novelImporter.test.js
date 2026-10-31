@@ -956,6 +956,8 @@ describe('运行引擎', () => {
             { n: 7, op: 'delete', lines: [] },
         ]);
         expect(C.applyEditOps(['a', 'b', 'c'], [{ n: 2, op: 'replace', lines: ['B'] }, { n: 2, op: 'delete', lines: [] }]).paras).toEqual(['a', 'B', 'c']);
+        expect(C.parseEditResponse('<修改>\n[E1] 删除\n</修改>\n<新事实>\n- 林晚没有被卖掉\n2. 主角持有 500 DP\n</新事实>').facts).toEqual(['林晚没有被卖掉', '主角持有 500 DP']);
+        expect(C.parseEditResponse('<新事实>无</新事实>').facts).toEqual([]);
     });
 
     it('层与层之间按设置等待，第一层不等', async () => {

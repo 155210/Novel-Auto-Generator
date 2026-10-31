@@ -4692,6 +4692,14 @@
             else if (res.mode === 'full') log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），已整层重做`);
             else {
                 log(`第 ${i + 1} 层：只改了 ${res.applied} 处${res.bad ? `，${res.bad} 处段号对不上没用上` : ''}，其余正文没动`);
+                // 改动带出来的新事实记进事实账本，从下一层起生效
+                const have = new Set((State.ledgerManual || []).map((m) => m.text));
+                const add = (res.facts || []).filter((f) => !have.has(f));
+                if (add.length) {
+                    State.ledgerManual = [...(State.ledgerManual || []), ...add.map((text) => ({ from: i + 1, text }))];
+                    log(`第 ${i + 1} 层改动带出的新事实，已记进事实账本（第 ${i + 2} 层起生效）：${add.join('；')}`);
+                    if (!State.settings.divergenceEnabled) log('提醒：设置里「启用剧情改写强规则」没开，事实账本不会发给 AI');
+                }
                 toast(`改了 ${res.applied} 处`, 'success');
             }
         } catch (err) {

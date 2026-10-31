@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.34';
+    const VERSION = '1.5.35';
 
     // ============================================
     // 默认配置
@@ -1007,7 +1007,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const text = String(reply || '');
         const full = extractTag(text, '整层重做');
         const sum = extractTag(text, '摘要');
-        const res = { ops: [], full: full.closed ? full.content.trim() || '需要整层重做' : null, summary: sum.closed && sum.content.trim() ? sum.content.trim() : null };
+        const nf = extractTag(text, '新事实');
+        const facts = nf.closed ? nf.content.split('\n').map((l) => l.replace(/^\s*(?:[-*•·]|\d+[.、)])\s*/, '').trim()).filter((l) => l && !/^(无|没有|none)$/i.test(l)) : [];
+        const res = { ops: [], full: full.closed ? full.content.trim() || '需要整层重做' : null, summary: sum.closed && sum.content.trim() ? sum.content.trim() : null, facts };
         const block = extractTag(text, '修改');
         if (!block.closed) return res;
         let cur = null;
@@ -3127,6 +3129,7 @@ ${blocks}`;
                     '- 新写的段落直接写正文，不要带 [E段号]，也不要写「原文：」「改为：」这类说明',
                     '- 只按修改意见改；意见没说的情节不要自己加。改出来的内容必须和上面的既成事实、改写安排、前情一致',
                     '- 改动导致本层剧情变了，再输出 <摘要>新的本层摘要</摘要>；没变就不写',
+                    '- 改动让后面的剧情必须跟着变的（人物去向、关系、身份设定、谁知道了什么、物品数量），在 <新事实> 里每行写一条，后面的层会照着写；只是文字润色、没有影响后面的就不写',
                     custom.length ? `- ${custom.map((t) => `<${t}>`).join('、')} 的内容因为这次修改要变时，输出完整的新一份；不变就不写` : '',
                     '- 如果这条意见确实没法只改几段做到（比如要求整层换一种写法、整体重译、大段剧情推倒重来），就只输出 <整层重做>一句话说明原因</整层重做>，不要输出 <修改>',
                 ]
@@ -3213,7 +3216,7 @@ ${blocks}`;
                 E.reviewing = i;
                 emit('review', { index: i, result: r });
             } else emit('run-end', { done: E.results.filter((x) => x && x.status === 'done').length, total: E.layers.length });
-            return { mode: 'edit', result: r, applied: ap.applied, bad: ap.bad.length };
+            return { mode: 'edit', result: r, applied: ap.applied, bad: ap.bad.length, facts: ed.facts };
         }
 
         /** 审阅里按意见改：照设置先只改相关段落，或者整层重做 */
