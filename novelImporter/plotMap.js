@@ -460,12 +460,17 @@ ${mapLines(layers, plan, { detail: true })}
     }
 
     /** 整体改写：AI 通读全书剧情地图，按用户要求（比如改掉某个底层设定）出新设定和要跟着改的层 */
-    function buildOverallPrompt(layers, plan, { request = '', protagonist = '' } = {}) {
-        return `你是网文编辑。下面是一部长篇小说按层整理的剧情地图（每层一句话概括和摘要）。读者想对整本书做一个整体改动，请通读全书，想清楚这个改动会牵连哪些剧情，出一份整体改写方案。
+    function buildOverallPrompt(layers, plan, { request = '', protagonist = '', prev = null, feedback = [] } = {}) {
+        // prev：上一版方案；feedback：读者对方案提过的意见（按先后，最后一条是这次的）
+        const revise = !!(prev && feedback.length);
+        const prevText = revise
+            ? `\n## 上一版方案\n思路：${prev.idea || '（无）'}\n新设定：\n${(prev.facts || []).map((f) => `- ${f}`).join('\n') || '- （无）'}\n改写点：\n${(prev.points || []).map((x) => `- 第${x.layer + 1}层${x.resume !== null && x.resume !== undefined ? `（第${x.resume + 1}层接回）` : ''}：${x.change}${x.reason ? `（原因：${x.reason}）` : ''}`).join('\n') || '- （无）'}\n\n## 读者对方案的意见（按先后，最后一条是这次要改的）\n${feedback.map((f, k) => `${k + 1}. ${f}`).join('\n')}\n`
+            : '';
+        return `你是网文编辑。下面是一部长篇小说按层整理的剧情地图（每层一句话概括和摘要）。读者想对整本书做一个整体改动，请通读全书，想清楚这个改动会牵连哪些剧情，出一份整体改写方案。${revise ? '\n这次是修改方案：上一版方案和读者的意见在下面，按意见改，意见没提到的部分保持上一版的样子，输出修改后的完整方案。' : ''}
 ${protagonist ? `\n本书主角是「${protagonist}」。\n` : ''}
 ## 读者想怎么改
 ${request}
-
+${prevText}
 ## 剧情地图
 ${mapLines(layers, plan, { detail: true })}
 

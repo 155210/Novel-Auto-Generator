@@ -308,3 +308,18 @@ describe('剧情地图：整体改写', () => {
         expect(M.parseOverallResponse('{"思路":"x"}', C.parseLooseJson).points).toEqual([]);
     });
 });
+
+describe('剧情地图：整体方案按意见改', () => {
+    it('改方案时带上上一版和历次意见', () => {
+        const layers = [{ index: 0, paras: [] }];
+        const plan = { layers: { 0: { scan: { oneLine: '签契约', summary: '', characters: [], relations: [], toxic: [], tags: [] } } } };
+        const prev = { idea: '改成伙伴', facts: ['契约改为雇佣'], points: [{ layer: 0, resume: 2, reason: '签契约', change: '改成雇佣' }] };
+        const p = M.buildOverallPrompt(layers, plan, { request: '去掉奴隶', prev, feedback: ['保留主仆但要自愿', '第1层过渡自然点'] });
+        expect(p).toContain('这次是修改方案');
+        expect(p).toContain('## 上一版方案');
+        expect(p).toContain('- 契约改为雇佣');
+        expect(p).toContain('第1层（第3层接回）：改成雇佣');
+        expect(p).toContain('2. 第1层过渡自然点');
+        expect(M.buildOverallPrompt(layers, plan, { request: '去掉奴隶' })).not.toContain('上一版方案');
+    });
+});
