@@ -380,26 +380,32 @@
     // AI 提议改写点（D4）、先改大纲（D5）、多方案（D8）
     // ============================================
 
-    function mapLines(layers, plan, { from = 0, to = Infinity } = {}) {
+    /** detail：带上摘要和雷点的涉及人、证据（AI 提议、出新大纲用） */
+    function mapLines(layers, plan, { from = 0, to = Infinity, detail = false } = {}) {
         return layers
             .filter((l) => l.index >= from && l.index <= to)
             .map((l) => {
                 const s = layerPlan(plan, l.index).scan;
                 if (!s) return `第${l.index + 1}层：（没扫描）`;
-                const tox = s.toxic.length ? ` 【雷点：${s.toxic.map((t) => t.rule).join('、')}】` : '';
-                return `第${l.index + 1}层：${s.oneLine || s.summary.slice(0, 60)}${tox}`;
+                if (!detail) {
+                    const tox = s.toxic.length ? ` 【雷点：${s.toxic.map((t) => t.rule).join('、')}】` : '';
+                    return `第${l.index + 1}层：${s.oneLine || s.summary.slice(0, 60)}${tox}`;
+                }
+                const tox = s.toxic.length ? `\n  雷点：${s.toxic.map((t) => `${t.rule}${t.who ? `（${t.who}）` : ''}${t.evidence ? `：${t.evidence}` : ''}`).join('；')}` : '';
+                const sum = s.summary && s.summary !== s.oneLine ? `\n  ${s.summary}` : '';
+                return `第${l.index + 1}层：${s.oneLine || s.summary.slice(0, 60)}${sum}${tox}`;
             })
             .join('\n');
     }
 
-    function buildSuggestPrompt(layers, plan, { preference = '', toxicRules = '' } = {}) {
-        return `你是网文编辑。下面是一部长篇小说按层整理的剧情地图（每层一句话，标了读者的雷点）。读者想改掉不喜欢的剧情，请找出最值得改的层，给出具体改法。
-
+    function buildSuggestPrompt(layers, plan, { preference = '', toxicRules = '', protagonist = '', judgeNotes = '' } = {}) {
+        return `你是网文编辑。下面是一部长篇小说按层整理的剧情地图（每层一句话概括、摘要，标了读者的雷点和涉及的人）。读者想改掉不喜欢的剧情，请找出最值得改的层，给出具体改法。
+${protagonist ? `\n本书主角是「${protagonist}」。主角自己的感情戏、亲热戏不是雷点。\n` : ''}
 ## 读者的偏好和雷点
-${preference || toxicRules || DEFAULT_TOXIC}
+${preference || toxicRules || DEFAULT_TOXIC}${judgeNotes ? `\n${judgeNotes}` : ''}
 
 ## 剧情地图
-${mapLines(layers, plan)}
+${mapLines(layers, plan, { detail: true })}
 
 ## 要求
 - 只挑真正需要改的层，按层号从小到大，最多 30 条
@@ -429,7 +435,7 @@ ${mapLines(layers, plan)}
     /** D5/D8：按指令给一段层出新大纲，variants 个方案 */
     function buildOutlinePrompt(layers, plan, from, to, { instruction = '', facts = [], variants = 1 } = {}) {
         const before = mapLines(layers, plan, { from: Math.max(0, from - 3), to: from - 1 });
-        const span = mapLines(layers, plan, { from, to });
+        const span = mapLines(layers, plan, { from, to, detail: true });
         const after = mapLines(layers, plan, { from: to + 1, to: to + 2 });
         return `你是网文编辑。读者要改一段剧情，请先只写改写后的新大纲（不写正文）。
 

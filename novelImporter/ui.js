@@ -2953,6 +2953,17 @@
     }
 
     /** 剧情地图顶部显示主角是谁、从哪来的 */
+    /** 剧情地图用的主角：设置里填的 > 处理时认出的 > 扫描投票的 */
+    function mapHero() {
+        let fs = null;
+        try {
+            fs = State.engine && State.engine.finalState();
+        } catch (err) {
+            /* 没有 */
+        }
+        return C.protagonistOf(State.settings, fs) || State.plan.hero || '';
+    }
+
     function heroLine() {
         if ((State.settings.protagonistName || '').trim()) return ` · 主角：${esc(State.settings.protagonistName.trim())}（设置里填的）`;
         let fs = null;
@@ -3007,7 +3018,7 @@
         setStatus('AI 正在通读剧情地图、找要改的地方…');
         try {
             const pref = (State.settings.mapToxic || '') + (State.settings.divergenceDirection ? `\n改写方向：${State.settings.divergenceDirection}` : '');
-            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules }), { signal: mapUi.busyCtl.signal, maxTokens: 4000, onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
+            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules, protagonist: mapHero(), judgeNotes: C.TOXIC_JUDGE_NOTES }), { signal: mapUi.busyCtl.signal, maxTokens: 4000, onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
             mapLive('AI 提议改写点', res.text, false, true);
             const list = PM.parseSuggestResponse(res.text, C.parseLooseJson);
             State.plan = { ...State.plan, suggestions: list };

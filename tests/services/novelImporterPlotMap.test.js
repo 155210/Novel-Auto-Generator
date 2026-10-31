@@ -266,3 +266,16 @@ describe('剧情地图：日文总结', () => {
         expect(p).toContain('## 额外要求\n人名翻成中文');
     });
 });
+
+describe('剧情地图：AI 提议带摘要和主角', () => {
+    it('提示词里有摘要、雷点涉及人和证据、主角', () => {
+        const layers = [{ index: 0, paras: [] }, { index: 1, paras: [] }];
+        const plan = { layers: { 0: { scan: { oneLine: '一句话甲', summary: '详细摘要甲', characters: [], relations: [], toxic: [{ rule: 'NTR', who: '王二', evidence: '王二抱住林晚' }], tags: [] } } } };
+        const p = M.buildSuggestPrompt(layers, plan, { protagonist: '路长远', judgeNotes: '判断标准X' });
+        expect(p).toContain('本书主角是「路长远」');
+        expect(p).toContain('详细摘要甲');
+        expect(p).toContain('NTR（王二）：王二抱住林晚');
+        expect(p).toContain('判断标准X');
+        expect(p).toContain('第2层：（没扫描）');
+    });
+});
