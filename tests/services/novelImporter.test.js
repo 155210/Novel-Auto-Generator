@@ -872,6 +872,59 @@ describe('运行引擎', () => {
         expect(C.splitTagList('Calculated data, <Calculated_data>')).toEqual(['Calculated data', 'Calculated_data']);
     });
 
+    it('按意见只改几处：AI 自己找段落，只换那几段，后面的层保留', async () => {
+        let editReply = '<修改>\n[E1] 替换：改好的第一段。\n第二行也算新段。\n[E2] 删除\n[E99] 删除\n</修改>\n<摘要>新摘要</摘要>';
+        const { engine, calls } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? editReply : normal(layer)));
+        await engine.run();
+        const before = engine.results[0].finalParas.slice();
+        const later = engine.results[1];
+        const res = await engine.editLayer(0, '第一段改一下');
+        expect(res.mode).toBe('edit');
+        expect([res.applied, res.bad]).toEqual([2, 1]);
+        const req = calls[calls.length - 1];
+        expect(req.info.purpose).toBe('edit');
+        expect(req.messages.map((m) => m.content).join('\n')).toContain(`[E1] ${before[0]}`);
+        const after = engine.results[0].finalParas;
+        expect(after.slice(0, 2)).toEqual(['改好的第一段。', '第二行也算新段。']);
+        expect(after.slice(2)).toEqual(before.slice(2));
+        expect(engine.results[0].parsed.summary).toBe('新摘要');
+        expect(engine.results[1]).toBe(later);
+        // AI 说要整层重做：退回整层重做
+        editReply = '<整层重做>要整体换写法</整层重做>';
+        const n = calls.length;
+        const res2 = await engine.editLayer(0, '整体换成第一人称', { keepLater: true });
+        expect(res2.mode).toBe('full');
+        expect(calls[n + 1].info.purpose).not.toBe('edit');
+        expect(engine.results[0].status).toBe('done');
+        // 没有能用的修改：报错，原结果不变
+        editReply = '我不知道';
+        const cur = engine.results[0];
+        await expect(engine.editLayer(0, 'x')).rejects.toThrow('没有能用的');
+        expect(engine.results[0]).toBe(cur);
+    });
+
+    it('审阅里按意见改：只改几处后回到审阅', async () => {
+        const { engine } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? '<修改>\n[E0] 后面插入：开头加一段。\n</修改>' : normal(layer)), { reviewMode: 'every' });
+        await engine.run();
+        expect(engine.reviewing).toBe(0);
+        const old = engine.results[0].finalParas.slice();
+        const res = await engine.rejectSmart('开头加点东西');
+        expect(res.mode).toBe('edit');
+        expect(engine.reviewing).toBe(0);
+        expect(engine.results[0].finalParas).toEqual(['开头加一段。', ...old]);
+    });
+
+    it('解析修改回复', () => {
+        const r = C.parseEditResponse('<修改>\n[E3] 改成：甲\nE5 后面插入：乙\n丙\n[E2] 前面插入:丁\n[E7] 删掉\n[E4] 替换：\n</修改>');
+        expect(r.ops).toEqual([
+            { n: 3, op: 'replace', lines: ['甲'] },
+            { n: 5, op: 'after', lines: ['乙', '丙'] },
+            { n: 2, op: 'before', lines: ['丁'] },
+            { n: 7, op: 'delete', lines: [] },
+        ]);
+        expect(C.applyEditOps(['a', 'b', 'c'], [{ n: 2, op: 'replace', lines: ['B'] }, { n: 2, op: 'delete', lines: [] }]).paras).toEqual(['a', 'B', 'c']);
+    });
+
     it('自定义标签：加进输出格式、放进楼层、最新一份带给下一层', async () => {
         const { engine, calls } = makeEngine((layer) => normal(layer) + (layer === 0 ? '\n<StatusBlock>DP: 100\n道具：柴刀</StatusBlock>' : ''), { customTags: 'StatusBlock：DP 数量和道具' });
         await engine.run();

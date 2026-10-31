@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.30';
+    const VERSION = '1.5.31';
 
     // ============================================
     // 默认配置
@@ -224,7 +224,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         // 承接上一层：带上一层正文最后多少字（0 不带），以及上一层回复里哪些标签原样一起发（逗号分隔）
         prevTailChars: 300,
         carryTags: '',
-        customTags: '', // 自定义标签：每行「标签名：要AI写什么」，AI 写在正文后面，自动放进楼层、带给下一层
+        customTags: '',
+        feedbackEditMode: 'smart', // 按意见改这层：smart 先让 AI 只改相关段落（需要时自己要求整层重做）；full 整层重新输出 // 自定义标签：每行「标签名：要AI写什么」，AI 写在正文后面，自动放进楼层、带给下一层
         plotPosition: 0,
         plotDepth: 4,
         plotOrder: 50,
@@ -981,6 +982,69 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /** 「Plotline, <摘要>，Calculated data」→ ['Plotline','摘要','Calculated data']（标签名里可以有空格） */
+    /**
+     * 解析「只改这几处」的回复：
+     * <修改>
+     * [E3] 替换：新段落（下一行不是 [E..] 开头就接着算新段落）
+     * [E5] 后面插入：新段落
+     * [E2] 前面插入：新段落
+     * [E8] 删除
+     * </修改>
+     * @returns {{ops: {n:number, op:string, lines:string[]}[], full: string|null, summary: string|null}}
+     */
+    function parseEditResponse(reply) {
+        const text = String(reply || '');
+        const full = extractTag(text, '整层重做');
+        const sum = extractTag(text, '摘要');
+        const res = { ops: [], full: full.closed ? full.content.trim() || '需要整层重做' : null, summary: sum.closed && sum.content.trim() ? sum.content.trim() : null };
+        const block = extractTag(text, '修改');
+        if (!block.closed) return res;
+        let cur = null;
+        for (const raw of block.content.split('\n')) {
+            const line = raw.replace(/\s+$/, '');
+            const m = line.match(/^\s*\[?E(\d+)\]?\s*(替换|改成|后面插入|之后插入|前面插入|之前插入|删除|删掉)\s*[:：]?\s*(.*)$/);
+            if (m) {
+                const op = /替换|改成/.test(m[2]) ? 'replace' : /后|之后/.test(m[2]) ? 'after' : /前|之前/.test(m[2]) ? 'before' : 'delete';
+                cur = { n: Number(m[1]), op, lines: m[3].trim() ? [m[3].trim()] : [] };
+                res.ops.push(cur);
+            } else if (cur && cur.op !== 'delete' && line.trim()) cur.lines.push(line.trim());
+        }
+        res.ops = res.ops.filter((o) => o.op === 'delete' || o.lines.length);
+        return res;
+    }
+
+    /** 把修改用到段落上（段号从 1 开始；E0 后面插入 = 插在最前面）。返回新段落和用上/没用上的条数 */
+    function applyEditOps(paras, ops) {
+        const n = paras.length;
+        const by = new Map();
+        const bad = [];
+        for (const o of ops) {
+            if (o.n < (o.op === 'after' ? 0 : 1) || o.n > n) {
+                bad.push(o);
+                continue;
+            }
+            const k = by.get(o.n) || {};
+            if (o.op === 'replace' || o.op === 'delete') {
+                if (k.main) {
+                    bad.push(o);
+                    continue;
+                }
+                k.main = o;
+            } else (k[o.op] = k[o.op] || []).push(...o.lines);
+            by.set(o.n, k);
+        }
+        const out = [];
+        if (by.has(0)) out.push(...(by.get(0).after || []));
+        for (let i = 1; i <= n; i++) {
+            const k = by.get(i) || {};
+            if (k.before) out.push(...k.before);
+            if (!k.main) out.push(paras[i - 1]);
+            else if (k.main.op === 'replace') out.push(...k.main.lines);
+            if (k.after) out.push(...k.after);
+        }
+        return { paras: out, applied: ops.length - bad.length, bad };
+    }
+
     /**
      * 自定义标签：每行「标签名：要 AI 往里写什么」，下一行不是「标签名：」开头就接在上一条要求后面。
      * @returns {{tag:string, rule:string}[]}
@@ -2982,6 +3046,136 @@ ${blocks}`;
             return res;
         }
 
+        /** 「只改这几处」的提示词：带上这层定稿正文（每段标段号）和修改意见，让 AI 自己找出要改的段落 */
+        function buildEditPrompt(i, feedback) {
+            const s = { ...DEFAULT_SETTINGS, ...settings };
+            const r = E.results[i];
+            const layer = E.layers[i];
+            const st = replay(i);
+            const tr = !!layer.translate;
+            const split = splitBodyBlocks(r.finalParas.join('\n'), s.bodyTag);
+            const paras = split.body.split('\n');
+            const parts = [
+                `你是小说修改助手。下面是一部小说第 ${i + 1} 层已经${tr ? '译好' : '改好'}的定稿正文，用户审阅后提了修改意见。你自己判断意见涉及哪些段落，只改这些段落，其余段落一个字都不动，也不要输出。`,
+            ];
+            if ((s.rewritePrompt || '').trim()) parts.push(`## 用户的改写要求（改的时候文风照这个）\n${s.rewritePrompt.trim()}`);
+            if ((cfg.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，改出来的段落也要遵守）\n${cfg.outputRules.trim()}`);
+            const un = buildUserNameSection(s, st, tr);
+            if (un) parts.push(un);
+            const custom = parseCustomTags(s.customTags).map((t) => t.tag);
+            const curTags = custom
+                .map((tag) => {
+                    const x = extractTag(r.raw, tag);
+                    return x.closed && x.content ? `<${tag}>\n${x.content}\n</${tag}>` : '';
+                })
+                .filter(Boolean);
+            parts.push(`## 本层定稿正文（第 ${i + 1} 层，每段前面的 [E段号] 只是编号，不是正文）\n<定稿>\n${paras.map((t, k) => `[E${k + 1}] ${t}`).join('\n')}\n</定稿>`);
+            if (r.parsed && r.parsed.summary) parts.push(`## 本层现在的摘要\n${r.parsed.summary}`);
+            if (curTags.length) parts.push(`## 本层现在的其他标签\n${curTags.join('\n')}`);
+            parts.push(`## 用户的修改意见\n${feedback}`);
+            parts.push(
+                [
+                    '## 输出格式（只输出要改的地方，不要输出整层正文）',
+                    '<修改>',
+                    '[E3] 替换：改好的这一段（要拆成几段就换行接着写，每行一段）',
+                    '[E5] 后面插入：新加的段落（多段就换行接着写）',
+                    '[E2] 前面插入：新加的段落',
+                    '[E8] 删除',
+                    '</修改>',
+                    '- 段号用上面定稿里的；同一段只「替换」或「删除」一次；没写到的段落保持原样',
+                    '- 新写的段落直接写正文，不要带 [E段号]，也不要写「原文：」「改为：」这类说明',
+                    '- 改动导致本层剧情变了，再输出 <摘要>新的本层摘要</摘要>；没变就不写',
+                    custom.length ? `- ${custom.map((t) => `<${t}>`).join('、')} 的内容因为这次修改要变时，输出完整的新一份；不变就不写` : '',
+                    '- 如果这条意见确实没法只改几段做到（比如要求整层换一种写法、整体重译、大段剧情推倒重来），就只输出 <整层重做>一句话说明原因</整层重做>，不要输出 <修改>',
+                ]
+                    .filter(Boolean)
+                    .join('\n'),
+            );
+            return { prompt: parts.join('\n\n'), paras, extras: split.extras };
+        }
+
+        /**
+         * 按意见只改这几处：AI 自己找段落改，正文其余部分、世界书、表格都不动。
+         * AI 回 <整层重做> 时退回整层重做（opts.review 时和审阅里的「按意见重做」一样，之后的层作废）。
+         * @returns {Promise<{mode:'edit'|'full', result, applied?:number, bad?:number, reason?:string}>}
+         */
+        async function editLayer(i, feedback, opts = {}) {
+            return runSingle(() => editLayerInner(i, feedback, opts));
+        }
+
+        async function editLayerInner(i, feedback, opts) {
+            const old = E.results[i];
+            if (!old || old.status !== 'done' || !old.finalParas) throw new Error('这一层还没完成');
+            const { prompt, paras, extras } = buildEditPrompt(i, feedback);
+            const messages = buildMessages(prompt);
+            const r = { ...old, calls: (old.calls || []).slice(), tokens: old.tokens ? { ...old.tokens } : undefined };
+            const keepLog = () => Object.assign(old, { calls: r.calls, tokens: r.tokens });
+            let reply;
+            try {
+                reply = await callAndLog(r, messages, { layer: i, attempt: 0, prompt, purpose: 'edit' }, true);
+            } catch (err) {
+                keepLog();
+                if (err.message === 'ABORTED') return null;
+                throw err;
+            }
+            const rec = r.calls[r.calls.length - 1];
+            const ed = parseEditResponse(reply);
+            if (ed.full && !ed.ops.length) {
+                rec.problem = `AI 认为要整层重做：${ed.full}`;
+                keepLog();
+                const extra = { feedback, previousRaw: old.raw };
+                const res = opts.review ? await redoLayer(i, extra) : await redoLayer(i, extra, { keepLater: opts.keepLater });
+                return { mode: 'full', result: res, reason: ed.full };
+            }
+            if (!ed.ops.length) {
+                rec.problem = '回复里没有能用的 <修改>';
+                keepLog();
+                throw new Error(rec.problem);
+            }
+            const ap = applyEditOps(paras, ed.ops);
+            if (!ap.applied) {
+                rec.problem = '修改里的段号都对不上';
+                keepLog();
+                throw new Error(rec.problem);
+            }
+            if (ap.bad.length) rec.problem = `${ap.bad.length} 条修改段号对不上，没用上`;
+            let raw = old.raw;
+            const parsed = { ...old.parsed };
+            if (ed.summary) {
+                parsed.summary = ed.summary;
+                raw = extractTag(raw, '摘要').closed ? replaceTag(raw, '摘要', ed.summary) : `${raw}\n<摘要>${ed.summary}</摘要>`;
+            }
+            for (const t of parseCustomTags(settings.customTags)) {
+                const x = extractTag(reply, t.tag);
+                if (!x.closed || !x.content.trim()) continue;
+                raw = extractTag(raw, t.tag).closed ? replaceTag(raw, t.tag, x.content.trim()) : `${raw}\n<${t.tag}>${x.content.trim()}</${t.tag}>`;
+            }
+            const finalParas = ap.paras.concat(extras);
+            Object.assign(r, { raw, parsed, finalParas, edited: (old.edited || 0) + 1 });
+            const st = replay(i);
+            const c = commit(st, i, r);
+            r.tableActions = c.out.tableActions;
+            r.tableLog = c.out.tableLog;
+            r.divergenceStart = c.out.divergenceStart;
+            r.inDivergence = c.out.inDivergence;
+            // 换成新对象，重放缓存会从这层往后重新算
+            E.results[i] = r;
+            emit('layer-done', { index: i, result: r });
+            if (opts.review) {
+                E.reviewing = i;
+                emit('review', { index: i, result: r });
+            } else emit('run-end', { done: E.results.filter((x) => x && x.status === 'done').length, total: E.layers.length });
+            return { mode: 'edit', result: r, applied: ap.applied, bad: ap.bad.length };
+        }
+
+        /** 审阅里按意见改：照设置先只改相关段落，或者整层重做 */
+        async function rejectSmart(feedback) {
+            const i = E.reviewing;
+            if (i === null) return null;
+            if (settings.feedbackEditMode === 'full') return { mode: 'full', result: await reject(feedback) };
+            return editLayer(i, feedback, { review: true });
+        }
+
         /** 只重 roll 第 i 层（同样的提示词再要一次），默认保留后面的层 */
         async function rerollLayer(i, opts = { keepLater: true }) {
             return runSingle(() => (E.layers[i] ? redoLayer(i, {}, opts) : null));
@@ -3437,6 +3631,8 @@ ${sums}
             run,
             accept,
             reject,
+            rejectSmart,
+            editLayer,
             redoWithPrompt,
             redoWithFeedback,
             regenJson,
@@ -3766,6 +3962,8 @@ ${sums}
         tailText,
         splitTagList,
         parseCustomTags,
+        parseEditResponse,
+        applyEditOps,
         outputRuleItems,
         stripEchoedSource,
         protagonistOf,
