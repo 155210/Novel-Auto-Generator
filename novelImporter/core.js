@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.25';
+    const VERSION = '1.5.26';
 
     // ============================================
     // 默认配置
@@ -1021,6 +1021,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         }
         if ((s.extraRules || '').trim()) parts.push(`## 其他规则\n${s.extraRules.trim()}`);
         if (!tr) parts.push(PATCH_RULES.replace('{MAX_PATCH}', String(s.maxPatchChars)));
+        if ((extra.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守；补丁的补充内容、<改写正文>、译文都算正文）\n${extra.outputRules.trim()}`);
         const div = buildDivergenceSection(s, state, tr);
         if (div) parts.push(div);
         const alias = buildAliasSection(s, state);
@@ -1069,7 +1070,6 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const wr = buildWordReplaceSection(s, tr);
         if (wr) parts.push(wr);
         // 酒馆世界书的输出要求放在原文前面、剧情改写规则后面：放太前面会被后面的「强规则」「最优先」压过去，改写正文时就不照着写了
-        if ((extra.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守；补丁的补充内容、<改写正文>、译文都算正文）\n${extra.outputRules.trim()}`);
         if (extra.feedback && extra.previousRaw) parts.push(`## 你上一次的输出（用户不满意，要按最后的修改要求重做）\n<上一次输出>\n${extra.previousRaw}\n</上一次输出>`);
         // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);

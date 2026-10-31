@@ -1425,8 +1425,8 @@ describe('酒馆世界书当作输出要求', () => {
         await engine.run();
         const text = seen.map((m) => m.content).join('\n');
         expect(text).toContain('## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守；补丁的补充内容、<改写正文>、译文都算正文）\n### 《文风》');
-        // 放在剧情改写规则后面、原文前面，结尾再提醒一次
-        expect(text.indexOf('## 输出要求')).toBeGreaterThan(text.indexOf('## 剧情改写规则'));
+        // 放在剧情改写规则前面（用户要求），结尾再提醒一次
+        expect(text.indexOf('## 输出要求')).toBeLessThan(text.indexOf('## 剧情改写规则'));
         expect(text.indexOf('## 输出要求')).toBeLessThan(text.indexOf('## 本层正文'));
         expect(text).toContain('照「输出要求（来自酒馆里开着的世界书）」里的每一条写');
     });
