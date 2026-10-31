@@ -2559,6 +2559,10 @@
                 ${ov.idea ? `<div>${esc(ov.idea)}</div>` : ''}
                 ${ov.facts && ov.facts.length ? `<div class="nim-sub">新设定（全书生效）</div><ul>${ov.facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
                 <div class="nim-row">${ov.facts && ov.facts.length ? `<button class="nim-btn sm ${ov.applied ? '' : 'primary'}" data-map-act="overall-facts" ${ov.applied ? 'disabled' : ''}>${ov.applied ? '新设定已加进事实账本' : '把新设定加进事实账本'}</button>` : ''}<button class="nim-btn sm ghost" data-map-act="overall-drop">不要这个方案</button></div>
+                ${ov.rounds && ov.rounds.length ? `<details class="nim-fold nim-subfold"><summary>已按你的意见改了 ${ov.rounds.length} 轮</summary><ol>${ov.rounds.map((f) => `<li>${esc(f)}</li>`).join('')}</ol></details>` : ''}
+                <div class="nim-field nim-mt"><label>对这个方案的意见（AI 按意见接着改）</label>
+                  <textarea id="nim-map-overall-fb" class="nim-input nim-textarea" rows="3" placeholder="比如：沙耶香和主角的关系保留主仆，但要是她自愿的；第 3 层的改法太突兀，换个过渡">${esc(mapUi.overallFb || '')}</textarea>
+                  <div class="nim-row"><button class="nim-btn sm" data-map-act="overall-revise">按意见改方案</button><span class="nim-muted">改写点会换成新的一版</span></div></div>
               </div>`
             : '';
         const sg = plan.suggestions.length
@@ -3039,27 +3043,41 @@
         }
     }
 
-    async function overallPlan() {
+    /** revise：按意见改当前方案（带上上一版和历次意见），否则从头出方案 */
+    async function overallPlan(revise = false) {
         const e = mapEngine();
         if (!e) return toast('先选一本小说', 'warning');
-        const request = (($('nim-map-overall-req') && $('nim-map-overall-req').value) || State.plan.overallReq || '').trim();
+        const ov = State.plan.overall;
+        const fb = revise ? String(mapUi.overallFb || '').trim() : '';
+        if (revise && (!ov || !fb)) return toast('先写你对方案的意见', 'warning');
+        const request = revise ? ov.request : (($('nim-map-overall-req') && $('nim-map-overall-req').value) || State.plan.overallReq || '').trim();
         if (!request) return toast('先写你想怎么改', 'warning');
         const scanned = e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length;
         if (!scanned) return toast('先预扫描，AI 要看着全书大纲出方案', 'warning');
-        if (scanned < e.layers.length && !confirm(`还有 ${e.layers.length - scanned} 层没扫描，AI 看不到这些层的剧情。还是现在出方案？`)) return;
+        if (!revise && scanned < e.layers.length && !confirm(`还有 ${e.layers.length - scanned} 层没扫描，AI 看不到这些层的剧情。还是现在出方案？`)) return;
         if (mapUi.busy) return;
+        const rounds = revise ? [...(ov.rounds || []), fb] : [];
         mapUi.busy = 'overall';
         mapUi.busyCtl = new AbortController();
         renderScanState();
         setStatus('AI 正在通读全书大纲、想整体怎么改…');
         const key = '整体改写方案';
         try {
-            const res = await callSideAPI(PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero() }), { signal: mapUi.busyCtl.signal, maxTokens: 8000, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
+            const prev = revise ? { idea: ov.idea, facts: ov.facts, points: ov.points || State.plan.suggestions } : null;
+            const res = await callSideAPI(PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero(), prev, feedback: rounds }), { signal: mapUi.busyCtl.signal, maxTokens: 8000, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
             mapLive(key, res.text, false, true);
             const r = PM.parseOverallResponse(res.text, C.parseLooseJson);
-            State.plan = { ...State.plan, overallReq: request, overall: { request, idea: r.idea, facts: r.facts, applied: false }, suggestions: r.points };
+            // 新设定没变就保持「已加进账本」；变了要重新加（加的时候会换掉旧的那几条）
+            const sameFacts = ov && ov.applied && JSON.stringify(ov.facts) === JSON.stringify(r.facts);
+            State.plan = {
+                ...State.plan,
+                overallReq: request,
+                overall: { request, idea: r.idea, facts: r.facts, points: r.points, rounds, applied: !!sameFacts, appliedFacts: (ov && ov.appliedFacts) || [] },
+                suggestions: r.points,
+            };
+            if (revise) mapUi.overallFb = '';
             savePlan();
-            toast(`整体方案出来了：${r.facts.length} 条新设定，${r.points.length} 个改写点，在地图上方`, 'success');
+            toast(`${revise ? `方案改好了（第 ${rounds.length} 轮）` : '整体方案出来了'}：${r.facts.length} 条新设定，${r.points.length} 个改写点${ov && ov.applied && !sameFacts ? '。新设定变了，要重新点「把新设定加进事实账本」' : ''}`, 'success');
         } catch (err) {
             if (String(err.message) === 'ABORTED') toast('已停止', 'info');
             else toast(`出方案失败：${err.message}`, 'error');
@@ -3076,14 +3094,17 @@
     function applyOverallFacts() {
         const ov = State.plan.overall;
         if (!ov || !ov.facts || !ov.facts.length) return;
-        const have = new Set((State.ledgerManual || []).map((m) => m.text));
+        // 改过方案的话，先撤掉上一版加进去的新设定
+        const old = new Set(ov.appliedFacts || []);
+        const kept = (State.ledgerManual || []).filter((m) => !(Number(m.from) === 0 && old.has(m.text)));
+        const have = new Set(kept.map((m) => m.text));
         const add = ov.facts.filter((f) => !have.has(f)).map((text) => ({ from: 0, text }));
-        State.ledgerManual = [...(State.ledgerManual || []), ...add];
+        State.ledgerManual = [...kept, ...add];
         if (!State.settings.divergenceEnabled) {
             State.settings.divergenceEnabled = true;
             saveSettings();
         }
-        State.plan = { ...State.plan, overall: { ...ov, applied: true } };
+        State.plan = { ...State.plan, overall: { ...ov, applied: true, appliedFacts: [...ov.facts] } };
         savePlan();
         renderAll();
         toast(`加了 ${add.length} 条新设定进事实账本。正式处理时每层都会带上，原文和它冲突的地方会改写`, 'success');
@@ -3243,6 +3264,10 @@
             } else if (act === 'sugg-take') takeSuggestion(Number(b.dataset.k));
             else if (act === 'sugg-all') takeAllSuggestions();
             else if (act === 'overall-facts') applyOverallFacts();
+            else if (act === 'overall-revise') {
+                mapUi.overallFb = ($('nim-map-overall-fb') && $('nim-map-overall-fb').value) || '';
+                overallPlan(true);
+            }
             else if (act === 'overall-drop') {
                 if (!confirm('不要这个整体方案？（已经加进账本的新设定和已采用的改写点不会撤回）')) return;
                 State.plan = { ...State.plan, overall: null };
@@ -3318,7 +3343,11 @@
         });
         on('nim-foot-scanstop', 'click', stopMapWork);
         on('nim-map-suggest', 'click', suggestPoints);
-        on('nim-map-overall', 'click', overallPlan);
+        on('nim-map-overall', 'click', () => overallPlan(false));
+        // 意见框在地图里，地图重画时靠 mapUi 里存的草稿填回去
+        document.addEventListener('input', (ev) => {
+            if (ev.target && ev.target.id === 'nim-map-overall-fb') mapUi.overallFb = ev.target.value;
+        });
         on('nim-map-export', 'click', exportPlan);
         on('nim-map-apply-toxic', 'click', applyToxicToRules);
     }
