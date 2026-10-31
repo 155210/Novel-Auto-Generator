@@ -292,3 +292,19 @@ describe('剧情地图：人物原文写法', () => {
         expect(M.mergeScanNames(m.text, [r]).extended).toBe(0);
     });
 });
+
+describe('剧情地图：整体改写', () => {
+    it('提示词带要求和摘要；解析出思路、新设定、改写点', () => {
+        const layers = [{ index: 0, paras: [] }];
+        const plan = { layers: { 0: { scan: { oneLine: '签契约', summary: '夜云和沙耶香签奴隶契约', characters: [], relations: [], toxic: [], tags: [] } } } };
+        const p = M.buildOverallPrompt(layers, plan, { request: '去掉奴隶设定', protagonist: '夜云' });
+        expect(p).toContain('去掉奴隶设定');
+        expect(p).toContain('夜云和沙耶香签奴隶契约');
+        expect(p).toContain('本书主角是「夜云」');
+        const r = M.parseOverallResponse('{"思路":"改成伙伴","新设定":["契约改为雇佣"],"改写点":[{"层":1,"接回":3,"原因":"签契约","改法":"改成雇佣"}]}', C.parseLooseJson);
+        expect(r.idea).toBe('改成伙伴');
+        expect(r.facts).toEqual(['契约改为雇佣']);
+        expect(r.points).toEqual([{ layer: 0, resume: 2, reason: '签契约', change: '改成雇佣' }]);
+        expect(M.parseOverallResponse('{"思路":"x"}', C.parseLooseJson).points).toEqual([]);
+    });
+});

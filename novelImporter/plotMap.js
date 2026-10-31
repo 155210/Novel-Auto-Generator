@@ -257,6 +257,8 @@
             layers: p.layers && typeof p.layers === 'object' ? p.layers : {},
             suggestions: Array.isArray(p.suggestions) ? p.suggestions : [],
             hero: typeof p.hero === 'string' ? p.hero : '', // 预扫描投票认出的主角
+            overallReq: typeof p.overallReq === 'string' ? p.overallReq : '', // 整体改写：用户想怎么改
+            overall: p.overall && typeof p.overall === 'object' ? p.overall : null, // 整体改写：AI 出的方案 {idea, facts}
         };
     }
 
@@ -455,6 +457,37 @@ ${mapLines(layers, plan, { detail: true })}
 
 ## 输出格式（只输出这个 JSON 数组）
 [{"层": 12, "接回": 15, "原因": "原剧情是什么、为什么要改", "改法": "具体改成什么"}]`;
+    }
+
+    /** 整体改写：AI 通读全书剧情地图，按用户要求（比如改掉某个底层设定）出新设定和要跟着改的层 */
+    function buildOverallPrompt(layers, plan, { request = '', protagonist = '' } = {}) {
+        return `你是网文编辑。下面是一部长篇小说按层整理的剧情地图（每层一句话概括和摘要）。读者想对整本书做一个整体改动，请通读全书，想清楚这个改动会牵连哪些剧情，出一份整体改写方案。
+${protagonist ? `\n本书主角是「${protagonist}」。\n` : ''}
+## 读者想怎么改
+${request}
+
+## 剧情地图
+${mapLines(layers, plan, { detail: true })}
+
+## 要求
+- 先想清楚：原来的设定是什么、改成什么，哪些人物关系、情节动机、后续事件要跟着变，怎样改动最小又前后自洽
+- "新设定"：改动后全书都要遵守、和原文不一样的事实，一条一句，写清楚，比如「奴隶契约改为雇佣契约，双方可以解约」；这些会在正式处理每一层时都带上，原文和它冲突的地方都会被改写
+- "改写点"：原文和新设定冲突、需要具体改法的层，按层号从小到大，最多 40 条；每条写清从哪层开始改、怎么改、到第几层可以接回原文（一直要改就不写接回）
+- 改法要具体到人物和事件，让后面的剧情顺得下去
+
+## 输出格式（只输出这个 JSON）
+{"思路": "100 到 300 字，整体怎么改、为什么这样改", "新设定": ["一条一句"], "改写点": [{"层": 12, "接回": 15, "原因": "原剧情是什么、和新设定哪里冲突", "改法": "具体改成什么"}]}`;
+    }
+
+    function parseOverallResponse(raw, parseLooseJson) {
+        const j = parseLooseJsonObject(raw, parseLooseJson);
+        const str = (v) => String(v ?? '').trim();
+        const arr = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+        return {
+            idea: str(j.思路 ?? j.idea),
+            facts: arr(j.新设定 ?? j.facts).map(str).filter(Boolean),
+            points: parseSuggestResponse(JSON.stringify(arr(j.改写点 ?? j.points))),
+        };
     }
 
     function parseSuggestResponse(raw, parseLooseJson) {
@@ -672,6 +705,8 @@ ${after || '（到结尾）'}
         runPool,
         mapLines,
         buildSuggestPrompt,
+        buildOverallPrompt,
+        parseOverallResponse,
         parseSuggestResponse,
         buildOutlinePrompt,
         parseOutlineResponse,
