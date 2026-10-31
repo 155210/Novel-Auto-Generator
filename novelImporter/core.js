@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.31';
+    const VERSION = '1.5.32';
 
     // ============================================
     // 默认配置
@@ -3060,6 +3060,16 @@ ${blocks}`;
             ];
             if ((s.rewritePrompt || '').trim()) parts.push(`## 用户的改写要求（改的时候文风照这个）\n${s.rewritePrompt.trim()}`);
             if ((cfg.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，改出来的段落也要遵守）\n${cfg.outputRules.trim()}`);
+            // 和正式处理一样带上剧情改写规则、事实账本、这层的改写安排和专属提示词，改的时候不能和它们冲突
+            const div = buildDivergenceSection(s, st, tr);
+            if (div) parts.push(div);
+            const up = userPlanOf(i);
+            if (up) parts.push(buildUserPlanSection(up, tr));
+            const recap = recapOf(st, s)
+                .map((x) => `- 第 ${x.layer + 1} 层 ${x.title}：${x.summary}`)
+                .join('\n');
+            if (recap) parts.push(`## 前情提要（到上一层为止的剧情，改的时候要接得上）\n${recap}`);
+            if ((layer.note || '').trim()) parts.push(`## 这一层的额外要求（用户提前为第 ${i + 1} 层写的）\n${layer.note.trim()}`);
             const un = buildUserNameSection(s, st, tr);
             if (un) parts.push(un);
             const custom = parseCustomTags(s.customTags).map((t) => t.tag);
@@ -3069,6 +3079,8 @@ ${blocks}`;
                     return x.closed && x.content ? `<${tag}>\n${x.content}\n</${tag}>` : '';
                 })
                 .filter(Boolean);
+            // 翻译的层带上原文：改译文时对照原文，不凭空编
+            if (tr) parts.push(`## 本层原文（只用来对照，改译文要忠于原文和上面的改写安排，不要编原文和意见里都没有的内容）\n<原文>\n${layer.paras.map((p) => p.text).join('\n')}\n</原文>`);
             parts.push(`## 本层定稿正文（第 ${i + 1} 层，每段前面的 [E段号] 只是编号，不是正文）\n<定稿>\n${paras.map((t, k) => `[E${k + 1}] ${t}`).join('\n')}\n</定稿>`);
             if (r.parsed && r.parsed.summary) parts.push(`## 本层现在的摘要\n${r.parsed.summary}`);
             if (curTags.length) parts.push(`## 本层现在的其他标签\n${curTags.join('\n')}`);
@@ -3084,6 +3096,7 @@ ${blocks}`;
                     '</修改>',
                     '- 段号用上面定稿里的；同一段只「替换」或「删除」一次；没写到的段落保持原样',
                     '- 新写的段落直接写正文，不要带 [E段号]，也不要写「原文：」「改为：」这类说明',
+                    '- 只按修改意见改；意见没说的情节不要自己加。改出来的内容必须和上面的既成事实、改写安排、前情一致',
                     '- 改动导致本层剧情变了，再输出 <摘要>新的本层摘要</摘要>；没变就不写',
                     custom.length ? `- ${custom.map((t) => `<${t}>`).join('、')} 的内容因为这次修改要变时，输出完整的新一份；不变就不写` : '',
                     '- 如果这条意见确实没法只改几段做到（比如要求整层换一种写法、整体重译、大段剧情推倒重来），就只输出 <整层重做>一句话说明原因</整层重做>，不要输出 <修改>',
