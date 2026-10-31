@@ -2325,7 +2325,7 @@
     // ============================================
 
     const PM = window.NovelImporterPlotMap;
-    const mapUi = { stats: null, statsKey: '', openVol: new Set([0]), openLayer: null, filter: 'all', char: '', scan: null, busy: '', busyCtl: null, live: new Map(), liveDone: new Set() };
+    const mapUi = { stats: null, statsKey: '', openVol: new Set([0]), openLayer: null, filter: 'all', char: '', brief: false, editOpen: false, scan: null, busy: '', busyCtl: null, live: new Map(), liveDone: new Set() };
 
     function mapEngine() {
         const e = State.engine;
@@ -2514,7 +2514,7 @@
         for (let v = 0; v < vols; v++) {
             const from = v * plan.volumeSize;
             const to = Math.min(n, from + plan.volumeSize) - 1;
-            const open = mapUi.openVol.has(v) || mapUi.filter !== 'all' || mapUi.char;
+            const open = mapUi.openVol.has(v) || mapUi.filter !== 'all' || mapUi.char || mapUi.brief;
             let rows = '';
             if (open) {
                 for (let i = from; i <= to; i++) {
@@ -2526,6 +2526,7 @@
                           <span class="nim-map-no">${i + 1}</span>
                           <span class="nim-map-main"><span class="nim-map-title">${esc(layerTitle(i, row, lp))}</span><span class="nim-map-chips">${mapChips(i, row, lp, conflicts)}</span>${row && Object.keys(row.names).length ? `<span class="nim-muted">${topNames(row)}</span>` : ''}</span>
                         </button>
+                        ${mapUi.brief && mapUi.openLayer !== i && lp.scan && lp.scan.summary ? `<div class="nim-map-brief" data-map-act="toggle" data-i="${i}">${esc(lp.scan.summary)}</div>` : ''}
                         ${mapUi.openLayer === i ? layerDetailHtml(i, row, lp, conflicts) : ''}
                       </li>`;
                 }
@@ -2547,7 +2548,7 @@
           <div class="nim-map-summary">共 ${n} 层 · 已扫描 ${scanned} 层 · 有改写安排 ${planned} 层${ledgerFacts().length ? ` · 账本 ${ledgerFacts().length} 条事实` : ''}${heroLine()}</div>
           <div class="nim-vol-cards">${cards.join('')}</div>
           ${sg}
-          <div class="nim-row nim-map-filters">${filters.map(([k, t]) => `<button class="nim-chip ${mapUi.filter === k ? 'on' : ''}" data-map-filter="${k}">${t}</button>`).join('')}
+          <div class="nim-row nim-map-filters"><button class="nim-chip ${mapUi.brief ? 'on' : ''}" data-map-act="brief">只看大纲</button>${filters.map(([k, t]) => `<button class="nim-chip ${mapUi.filter === k ? 'on' : ''}" data-map-filter="${k}">${t}</button>`).join('')}
             <select id="nim-map-char" class="nim-input nim-map-char"><option value="">所有人物</option>${names.map((x) => `<option ${mapUi.char === x.name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
           ${body || '<div class="nim-empty">这个筛选下没有层</div>'}`;
         renderMapStatsBox();
@@ -2563,6 +2564,9 @@
             .slice(0, 6)
             .map(([k, v]) => `${esc(k.replace('|', ' + '))} ${v}`)
             .join(' · ');
+        // 有安排就默认展开改写工具，没有就收起，免得往下滑好久才到下一层
+        const planBits = [lp.instruction && '指令', lp.outline && '新大纲', lp.outlines.length && '候选大纲', lp.insert && '插入', lp.note && '备注', lp.bookmark && '书签', lp.todo && '待决定', lp.resume && '接回', lp.condense && '压缩', lp.skip && '跳过'].filter(Boolean);
+        const editOpen = mapUi.editOpen || planBits.length > 0;
         const tpl = mapTemplates().map((t, k) => `<option value="${k}">${esc(t.length > 30 ? t.slice(0, 30) + '…' : t)}</option>`).join('');
         const outlines = lp.outlines.length
             ? `<div class="nim-sub">候选新大纲（选一个）</div>${lp.outlines
@@ -2586,6 +2590,7 @@
               <button class="nim-btn sm" data-map-act="scan-one" data-i="${i}">${s ? '重新扫描这层' : '扫描这层'}</button>
               <button class="nim-btn sm" data-map-act="goto-run" data-i="${i}">去处理页</button>
             </div>
+            <details class="nim-fold nim-subfold nim-map-edit" ${editOpen ? 'open' : ''}><summary>改写安排${planBits.length ? `（${planBits.join('、')}）` : '（书签、改写指令、新大纲、插入剧情、备注）'}</summary>
             <div class="nim-row">
               <label class="nim-check"><input type="checkbox" data-map-flag="bookmark" data-i="${i}" ${lp.bookmark ? 'checked' : ''}><span class="nim-switch"></span><span>书签</span></label>
               <label class="nim-check"><input type="checkbox" data-map-flag="todo" data-i="${i}" ${lp.todo ? 'checked' : ''}><span class="nim-switch"></span><span>待决定</span></label>
@@ -2602,6 +2607,12 @@
             <div class="nim-field"><label>在这层后面插一段自创剧情</label>
               <textarea class="nim-input nim-textarea" rows="2" data-map-text="insert" data-i="${i}" placeholder="比如：加一段男主和女主月下谈心">${esc(lp.insert)}</textarea></div>
             <div class="nim-field"><label>备注</label><input class="nim-input" data-map-text="note" data-i="${i}" value="${esc(lp.note)}"></div>
+            </details>
+            <div class="nim-row nim-map-nav">
+              <button class="nim-btn sm ghost" data-map-act="nav" data-i="${i - 1}" ${i > 0 ? '' : 'disabled'}>↑ 上一层</button>
+              <button class="nim-btn sm ghost" data-map-act="toggle" data-i="${i}">收起</button>
+              <button class="nim-btn sm ghost" data-map-act="nav" data-i="${i + 1}" ${i + 1 < e.layers.length ? '' : 'disabled'}>下一层 ↓</button>
+            </div>
           </div>`;
     }
 
@@ -3119,6 +3130,11 @@
                 renderMap();
             } else if (act === 'source') openSource(i, { query: mapUi.char || '' });
             else if (act === 'scan-one') runScan(false, i);
+            else if (act === 'nav') revealMapLayer(i);
+            else if (act === 'brief') {
+                mapUi.brief = !mapUi.brief;
+                renderMap();
+            }
             else if (act === 'goto-run') {
                 State.selected = i;
                 switchTab('run');
@@ -5078,6 +5094,8 @@ button.nim-step:hover{background:var(--surface2);}
 #nim-modal.on-map .nim-footer-main{display:none;}
 .nim-mt{margin-top:8px;}
 .nim-subfold{margin:14px 0;}
+.nim-map-brief{padding:0 14px 12px 50px;font-size:13px;line-height:1.6;color:var(--muted);cursor:pointer;}
+.nim-map-nav{justify-content:space-between;margin-top:6px;}
 .nim-subfold textarea.nim-textarea{min-height:84px;}
 .nim-subfold>summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0;}
 .nim-subfold[open]>summary{margin-bottom:10px;}
