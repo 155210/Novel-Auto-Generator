@@ -958,6 +958,35 @@ describe('运行引擎', () => {
         expect(C.applyEditOps(['a', 'b', 'c'], [{ n: 2, op: 'replace', lines: ['B'] }, { n: 2, op: 'delete', lines: [] }]).paras).toEqual(['a', 'B', 'c']);
     });
 
+    it('层与层之间按设置等待，第一层不等', async () => {
+        const origNow = Date.now;
+        let fake = 1e12;
+        Date.now = () => fake;
+        try {
+            const slept = [];
+            const waits = [];
+            let engine;
+            engine = C.createEngine({
+                settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1, layerDelayMin: 3, layerDelayMax: 3 },
+                tableTemplate: TEMPLATE,
+                sleep: async (t) => {
+                    slept.push(t);
+                    fake += t;
+                },
+                onEvent: (type, p) => type === 'layer-wait' && waits.push(p),
+                callModel: async (messages, info) => normal(info.layer),
+            });
+            engine.prepare(NOVEL);
+            await engine.run();
+            const n = engine.layers.length;
+            expect(waits.map((w) => w.index)).toEqual(Array.from({ length: n - 1 }, (_, k) => k + 1));
+            expect(waits.every((w) => w.ms === 3000)).toBe(true);
+            expect(slept.reduce((a, b) => a + b, 0)).toBe(3000 * (n - 1));
+        } finally {
+            Date.now = origNow;
+        }
+    });
+
     it('自定义标签：加进输出格式、放进楼层、最新一份带给下一层', async () => {
         const { engine, calls } = makeEngine((layer) => normal(layer) + (layer === 0 ? '\n<StatusBlock>DP: 100\n道具：柴刀</StatusBlock>' : ''), { customTags: 'StatusBlock：DP 数量和道具' });
         await engine.run();
@@ -1659,5 +1688,15 @@ describe('自定义标签', () => {
             { tag: 'Mood', rule: '心情' },
         ]);
         expect(C.parseCustomTags('')).toEqual([]);
+    });
+});
+
+describe('层与层之间随机等待', () => {
+    it('在最少和最多之间取，填反了也行，都是 0 不等', () => {
+        expect(C.layerDelayMs({ layerDelayMin: 2, layerDelayMax: 5 }, () => 0)).toBe(2000);
+        expect(C.layerDelayMs({ layerDelayMin: 2, layerDelayMax: 5 }, () => 1)).toBe(5000);
+        expect(C.layerDelayMs({ layerDelayMin: 5, layerDelayMax: 2 }, () => 0.5)).toBe(3500);
+        expect(C.layerDelayMs({ layerDelayMin: 0, layerDelayMax: 0 })).toBe(0);
+        expect(C.layerDelayMs({})).toBe(0);
     });
 });
