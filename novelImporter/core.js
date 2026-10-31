@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.33';
+    const VERSION = '1.5.34';
 
     // ============================================
     // 默认配置
@@ -245,6 +245,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         // 运行
         concurrency: 1,
         retries: 2,
+        layerDelayMin: 0, // 每层之间随机等几秒：最少
+        layerDelayMax: 0, // 最多；都是 0 就不等
     };
 
     // ============================================
@@ -982,6 +984,15 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /** 「Plotline, <摘要>，Calculated data」→ ['Plotline','摘要','Calculated data']（标签名里可以有空格） */
+    /** 层与层之间等多久（毫秒）：在设置的最少、最多秒数之间随机取 */
+    function layerDelayMs(settings, rand = Math.random) {
+        let lo = Math.max(0, Number(settings.layerDelayMin) || 0);
+        let hi = Math.max(0, Number(settings.layerDelayMax) || 0);
+        if (hi < lo) [lo, hi] = [hi, lo];
+        if (!hi) return 0;
+        return Math.round((lo + (hi - lo) * rand()) * 1000);
+    }
+
     /**
      * 解析「只改这几处」的回复：
      * <修改>
@@ -2972,11 +2983,22 @@ ${blocks}`;
             E.stopRequested = false;
             emit('run-start', {});
             try {
+                let sent = false;
                 for (let i = 0; i < E.layers.length; i++) {
                     const r = E.results[i];
                     if (r && r.status === 'done') continue;
                     if (E.reviewing !== null) break;
                     if (E.pauseRequested || E.stopRequested) break;
+                    // 层与层之间随机等一会儿（这次运行的第一层不等）
+                    if (sent) {
+                        const ms = layerDelayMs(settings);
+                        if (ms > 0) {
+                            emit('layer-wait', { index: i, ms });
+                            await waitInterruptible(ms);
+                            if (E.pauseRequested || E.stopRequested) break;
+                        }
+                    }
+                    sent = true;
                     const res = await processLayer(i);
                     if (res.status === 'failed') {
                         emit('run-blocked', { index: i, error: res.error });
@@ -2995,6 +3017,13 @@ ${blocks}`;
                 E.running = false;
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
             }
+        }
+
+        /** 等 ms 毫秒；中途点了暂停或停止就提前结束 */
+        async function waitInterruptible(ms) {
+            const sleep = cfg.sleep || ((t) => new Promise((res) => setTimeout(res, t)));
+            const end = Date.now() + ms;
+            while (Date.now() < end && !E.pauseRequested && !E.stopRequested) await sleep(Math.min(250, end - Date.now()));
         }
 
         /** 审阅通过：继续往下跑 */
@@ -3991,6 +4020,7 @@ ${sums}
         splitTagList,
         parseCustomTags,
         parseEditResponse,
+        layerDelayMs,
         applyEditOps,
         outputRuleItems,
         stripEchoedSource,
