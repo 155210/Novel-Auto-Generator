@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.37';
+    const VERSION = '1.5.38';
 
     // ============================================
     // 默认配置
@@ -218,6 +218,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         worldbookCategories: DEFAULT_WORLDBOOK_CATEGORIES.map((c) => ({ ...c, keywordsExample: c.keywordsExample.slice() })),
         worldbookPrompt: '',
         worldbookContextChars: 6000,
+        // 已有条目又被输出时：replace 一律整条替换；auto 看 AI 回的像不像只写了追加的一段，像就接在旧内容后面
+        wbUpdateMode: 'replace',
         plotSummaryEntries: true,
         // 每层 <摘要> 的写法；摘要导出为「剧情」条目，也用作前情提要和角色卡简介
         summaryGuide: '本层剧情摘要，100 到 200 字，写清楚谁做了什么',
@@ -726,7 +728,7 @@ P段号 |  | ++新段落          在该段之后另起一段
 从本层正文提取或更新世界书条目，只允许这些分类：${cats.map((c) => c.name).join('、')}
 ${guide}
 - 条目名用原文里的正式名称；关键词是原文里实际出现的名称、别称
-- 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整内容**：旧内容全部保留（可以改写整合），再加上新信息，会整条替换旧内容；不要只写追加的部分；没有新信息就不要输出
+- 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整一整条**：旧内容全部保留（可以改写整合），再加上新信息，程序会用它整条替换旧内容；只写追加的部分会把旧内容冲掉，绝对不要只写新增的那几句；没有新信息就不要输出
 - 只写原文明确写出的信息，不要编造
 ${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? custom + '\n' : ''}格式：{"角色": {"条目名": {"关键词": ["名称", "别称"], "定位": "女主", "内容": "markdown 文本"}}, "地点": {"条目名": {"关键词": [], "内容": "markdown 文本"}}}`;
     }
@@ -1160,13 +1162,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, state, layerText));
         if (s.worldbookEnabled) {
             parts.push(buildWorldbookSection(s) + (tr ? '\n- 条目名和内容用中文译名；"关键词" 里同时写中文译名和原文写法（方便后面的层按原文找到这个条目）' : ''));
-            const rel = selectRelevantEntries(state.worldbook || {}, layerText, s.worldbookContextChars);
-            if (rel.length) {
-                parts.push(
-                    `## 相关世界书条目（已有内容）\n` +
-                        rel.map((r) => `### ${r.category} / ${r.name}\n关键词：${(r.entry.关键词 || []).join('、')}\n${r.entry.内容}`).join('\n\n'),
-                );
-            }
+            const ctx = worldbookContext(state.worldbook, layerText, s);
+            if (ctx.text) parts.push(ctx.text);
         }
         const table = buildTableSection(s, state, layerText);
         if (table) parts.push(table);
@@ -1699,6 +1696,28 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return out;
     }
 
+    /**
+     * 发给 AI 的「相关世界书条目」：按正文挑出来的条目带全文；整条替换模式下再列出其他已有条目的名字，
+     * 告诉 AI 这些没给旧内容的条目这次不要输出（输出了也不会用，免得只写一部分把旧内容冲掉）。
+     * 返回 { text, names }，names 是带了全文的条目（"分类/名称"），合并时只有这些可以整条替换。
+     */
+    function worldbookContext(wb, text, settings) {
+        const rel = selectRelevantEntries(wb || {}, text, settings.worldbookContextChars);
+        const names = rel.map((x) => `${x.category}/${x.name}`);
+        const parts = [];
+        if (rel.length) parts.push(`## 相关世界书条目（已有内容）\n` + rel.map((x) => `### ${x.category} / ${x.name}\n关键词：${(x.entry.关键词 || []).join('、')}\n${x.entry.内容}`).join('\n\n'));
+        if (settings.wbUpdateMode !== 'auto') {
+            const shown = new Set(names);
+            const others = [];
+            for (const [cat, items] of Object.entries(wb || {})) for (const n of Object.keys(items || {})) if (!shown.has(`${cat}/${n}`)) others.push(`${cat}/${n}`);
+            if (others.length)
+                parts.push(
+                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n这些条目这一层不要输出：你看不到它们的旧内容，输出了会被忽略。不要换个名字或关键词重新建一条同样的。`,
+                );
+        }
+        return { text: parts.join('\n\n'), names };
+    }
+
     function findEntryByKey(wb, category, name, keys) {
         const items = wb[category] || {};
         if (items[name]) return name;
@@ -1786,7 +1805,14 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 if (role) e.定位 = role;
                 // 旧内容发给过 AI，按理回的是改好的完整版，整条替换；
                 // 但 AI 常常只写「追加」那一段，比旧内容短一大截时当补充接在后面，免得旧信息丢掉
-                if (provided.has(`${category}/${existing}`) && !isPartialWbUpdate(content, e.内容)) {
+                // replaceOnly：一律整条替换，不接在后面（用户要求世界书不能一段段叠）
+                if (opts.replaceOnly) {
+                    if (!provided.has(`${category}/${existing}`)) log.push({ type: 'skip', category, name: existing, reason: '没给 AI 旧内容' });
+                    else if (e.内容 !== content) {
+                        e.内容 = content;
+                        log.push({ type: 'replace', category, name: existing });
+                    }
+                } else if (provided.has(`${category}/${existing}`) && !isPartialWbUpdate(content, e.内容)) {
                     e.内容 = content;
                     log.push({ type: 'replace', category, name: existing });
                 } else if (!e.内容.includes(content)) {
@@ -2701,6 +2727,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 next.worldbook = mergeWorldbook(st.worldbook, p.worldbook, {
                     providedNames: new Set(r.providedNames || []),
                     categories: cats,
+                    replaceOnly: settings.wbUpdateMode !== 'auto',
                 }).worldbook;
             }
             let tableActions = [];
@@ -3113,6 +3140,7 @@ ${blocks}`;
             const tr = !!layer.translate;
             const split = splitBodyBlocks(r.finalParas.join('\n'), s.bodyTag);
             const paras = split.body.split('\n');
+            let wbNames = [];
             const parts = [
                 `你是小说修改助手。下面是一部小说第 ${i + 1} 层已经${tr ? '译好' : '改好'}的定稿正文，用户审阅后提了修改意见。你自己判断意见涉及哪些段落，只改这些段落，其余段落一个字都不动，也不要输出。`,
             ];
@@ -3157,8 +3185,9 @@ ${blocks}`;
             if (s.worldbookEnabled) {
                 const wbGuide = buildWorldbookSection(s);
                 if (wbGuide) parts.push(wbGuide);
-                const rel = selectRelevantEntries(st.worldbook || {}, split.body, s.worldbookContextChars);
-                if (rel.length) parts.push(`## 相关世界书条目（已有内容）\n` + rel.map((x) => `### ${x.category} / ${x.name}\n关键词：${(x.entry.关键词 || []).join('、')}\n${x.entry.内容}`).join('\n\n'));
+                const ctx = worldbookContext(st.worldbook, split.body, s);
+                if (ctx.text) parts.push(ctx.text);
+                wbNames = ctx.names;
                 const mine = r.parsed && r.parsed.worldbook && Object.keys(r.parsed.worldbook).length ? JSON.stringify(r.parsed.worldbook, null, 1) : '';
                 if (mine) parts.push(`## 这一层上次输出的世界书\n${mine}`);
             }
@@ -3197,7 +3226,7 @@ ${blocks}`;
                     .filter(Boolean)
                     .join('\n'),
             );
-            return { prompt: parts.join('\n\n'), paras, extras: split.extras };
+            return { prompt: parts.join('\n\n'), paras, extras: split.extras, wbNames };
         }
 
         /**
@@ -3212,9 +3241,11 @@ ${blocks}`;
         async function editLayerInner(i, feedback, opts) {
             const old = E.results[i];
             if (!old || old.status !== 'done' || !old.finalParas) throw new Error('这一层还没完成');
-            const { prompt, paras, extras } = buildEditPrompt(i, feedback);
+            const { prompt, paras, extras, wbNames } = buildEditPrompt(i, feedback);
             const messages = buildMessages(prompt);
             const r = { ...old, calls: (old.calls || []).slice(), tokens: old.tokens ? { ...old.tokens } : undefined };
+            // 这次给 AI 看过全文的条目也算，回的完整版可以整条替换
+            r.providedNames = uniq([...(old.providedNames || []), ...wbNames]);
             const keepLog = () => Object.assign(old, { calls: r.calls, tokens: r.tokens });
             let reply;
             try {
@@ -3335,8 +3366,10 @@ ${blocks}`;
         }
 
         /** 只让 AI 重新输出 JSON 的提示词：用这层处理完的正文当原文，不再要正文 */
+        let jsonWbNames = [];
         function buildJsonOnlyPrompt(i, st, extraPrompt) {
             const s = { ...DEFAULT_SETTINGS, ...settings };
+            jsonWbNames = [];
             const r = E.results[i];
             const body = splitBodyBlocks(r.finalParas.join('\n'), settings.bodyTag).body;
             const parts = [`你是小说资料整理助手。下面是一部小说第 ${i + 1} 层已经定稿的正文。正文不用改、也不要输出；只按要求输出这一层的 <改写判定>、<世界书>、<表格> 三段，每段都必须是能被 JSON.parse 解析的合法 JSON（键和字符串用英文双引号，字符串里的双引号写成 \\"，不要注释、尾逗号、代码块标记）。`];
@@ -3344,8 +3377,9 @@ ${blocks}`;
             if (div) parts.push(div);
             if (s.worldbookEnabled) {
                 parts.push(buildWorldbookSection(s));
-                const rel = selectRelevantEntries(st.worldbook || {}, body, s.worldbookContextChars);
-                if (rel.length) parts.push(`## 相关世界书条目（已有内容）\n` + rel.map((x) => `### ${x.category} / ${x.name}\n关键词：${(x.entry.关键词 || []).join('、')}\n${x.entry.内容}`).join('\n\n'));
+                const ctx = worldbookContext(st.worldbook, body, s);
+                if (ctx.text) parts.push(ctx.text);
+                jsonWbNames = ctx.names;
             }
             const table = buildTableSection(s, st, body);
             if (table) parts.push(table);
@@ -3379,6 +3413,7 @@ ${blocks}`;
         async function regenJsonInner(i, old, extraPrompt, opts) {
             const st = replay(i);
             const prompt = buildJsonOnlyPrompt(i, st, extraPrompt);
+            const wbNames = jsonWbNames;
             const messages = opts.usePreset
                 ? buildMessages(prompt)
                 : [
@@ -3422,7 +3457,7 @@ ${blocks}`;
                 keepLog();
                 throw new Error(rec.problem);
             }
-            Object.assign(r, { raw, parsed, warnings: parsed.warnings });
+            Object.assign(r, { raw, parsed, warnings: parsed.warnings, providedNames: uniq([...(old.providedNames || []), ...wbNames]) });
             const c = commit(st, i, r);
             r.tableActions = c.out.tableActions;
             r.tableLog = c.out.tableLog;

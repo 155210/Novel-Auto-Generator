@@ -934,7 +934,7 @@ describe('运行引擎', () => {
 
     it('按意见只改几处：带世界书、表格、其他规则、上一层结尾、名称替换；能只补世界书和表格', async () => {
         let editReply = '<世界书>{"角色": {"林晚": {"关键词": ["林晚"], "内容": "补上的林晚"}}}</世界书>\n<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "改后的事件"}}]}</表格>';
-        const { engine, calls } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? editReply : normal(layer)), { extraRules: '别写脏话', prevTailChars: 20, wordReplace: '路长远 → 远' });
+        const { engine, calls } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? editReply : normal(layer)), { extraRules: '别写脏话', prevTailChars: 20, wordReplace: '路长远 → 远', wbUpdateMode: 'auto' });
         await engine.run();
         const res = await engine.editLayer(1, '补一下林晚的世界书');
         const p = calls[calls.length - 1].messages.map((m) => m.content).join('\n');
@@ -955,6 +955,31 @@ describe('运行引擎', () => {
         editReply = '<表格>{"整份替换": true, "事件历史": [{"操作": "插入", "数据": {"事件": "只要这条"}}]}</表格>';
         await engine.editLayer(1, '表格重来');
         expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toEqual(['事件1', '只要这条', '事件3']);
+    });
+
+    it('世界书一律整条替换：只有给 AI 看过旧内容的条目才替换，不接在后面', () => {
+        const wb = { 角色: { 林晚: { 关键词: ['林晚'], 内容: '旧的完整内容' }, 裘月寒: { 关键词: ['裘月寒'], 内容: '裘的旧内容' } } };
+        const delta = { 角色: { 林晚: { 关键词: ['林晚'], 内容: '新的完整内容' }, 裘月寒: { 关键词: ['裘月寒'], 内容: '追加一句' } } };
+        const r = C.mergeWorldbook(wb, delta, { providedNames: new Set(['角色/林晚']), replaceOnly: true });
+        expect(r.worldbook.角色.林晚.内容).toBe('新的完整内容');
+        expect(r.worldbook.角色.裘月寒.内容).toBe('裘的旧内容');
+        expect(r.log.map((x) => x.type)).toEqual(['replace', 'skip']);
+        // 短的完整版也照样替换，不会当补充接在后面
+        const r2 = C.mergeWorldbook(wb, { 角色: { 林晚: { 内容: '短' } } }, { providedNames: new Set(['角色/林晚']), replaceOnly: true });
+        expect(r2.worldbook.角色.林晚.内容).toBe('短');
+    });
+
+    it('世界书整条替换（默认）：第 2 层没给 AI 看旧内容，输出的不用；第 3 层看过，整条替换', async () => {
+        const { engine, calls } = makeEngine(normal);
+        await engine.run();
+        const p1 = calls[1].messages.map((m) => m.content).join('\n');
+        expect(p1).toContain('完整一整条');
+        expect(p1).toContain('其他已有条目');
+        expect(p1).toContain('角色/路长远');
+        const p2 = calls[2].messages.map((m) => m.content).join('\n');
+        expect(p2).toContain('### 角色 / 路长远');
+        const ent = Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - {{user}}');
+        expect(ent.content).toBe('{{user}}第3层');
     });
 
     it('合并修改给的表格操作', () => {
@@ -1093,7 +1118,7 @@ describe('运行引擎', () => {
     });
 
     it('逐层跑完：补丁、称呼、表格、世界书都进楼层', async () => {
-        const { engine } = makeEngine(normal);
+        const { engine } = makeEngine(normal, { wbUpdateMode: 'auto' });
         expect(engine.layers.length).toBe(3);
         await engine.run();
         const floors = engine.renderFloors();
