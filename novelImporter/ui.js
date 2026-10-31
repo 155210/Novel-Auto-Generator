@@ -2377,7 +2377,16 @@
     }
 
     /** 剧情地图里展开第 i 层并滚过去；被筛选藏住了就先清掉筛选 */
-    function revealMapLayer(i) {
+    function scrollParentOf(el) {
+        for (let p = el.parentElement; p; p = p.parentElement) {
+            const o = getComputedStyle(p).overflowY;
+            if ((o === 'auto' || o === 'scroll') && p.scrollHeight > p.clientHeight) return p;
+        }
+        return document.scrollingElement || document.documentElement;
+    }
+
+    /** anchor：{dir, top} 点「上一层 / 下一层」时，让新层的同一个按钮停在手指原来的位置 */
+    function revealMapLayer(i, anchor = null) {
         mapUi.openVol.add(volOf(i));
         mapUi.openLayer = i;
         renderMap();
@@ -2391,6 +2400,14 @@
         if (!row) return;
         requestAnimationFrame(() => {
             row.scrollIntoView({ block: 'start' });
+            const btn = anchor && row.querySelector(`.nim-map-nav [data-dir="${anchor.dir}"]`);
+            if (btn) {
+                const box = scrollParentOf(row);
+                const boxTop = box === document.scrollingElement || box === document.documentElement ? 0 : box.getBoundingClientRect().top;
+                // 按钮挪回原位；这样会把这层开头顶出屏幕的话，还是从这层开头看
+                const delta = btn.getBoundingClientRect().top - anchor.top;
+                if (row.getBoundingClientRect().top - delta >= boxTop) box.scrollTop += delta;
+            }
             row.classList.remove('nim-flash');
             void row.offsetWidth;
             row.classList.add('nim-flash');
@@ -2609,9 +2626,9 @@
             <div class="nim-field"><label>备注</label><input class="nim-input" data-map-text="note" data-i="${i}" value="${esc(lp.note)}"></div>
             </details>
             <div class="nim-row nim-map-nav">
-              <button class="nim-btn sm ghost" data-map-act="nav" data-i="${i - 1}" ${i > 0 ? '' : 'disabled'}>↑ 上一层</button>
+              <button class="nim-btn sm ghost" data-map-act="nav" data-dir="prev" data-i="${i - 1}" ${i > 0 ? '' : 'disabled'}>↑ 上一层</button>
               <button class="nim-btn sm ghost" data-map-act="toggle" data-i="${i}">收起</button>
-              <button class="nim-btn sm ghost" data-map-act="nav" data-i="${i + 1}" ${i + 1 < e.layers.length ? '' : 'disabled'}>下一层 ↓</button>
+              <button class="nim-btn sm ghost" data-map-act="nav" data-dir="next" data-i="${i + 1}" ${i + 1 < e.layers.length ? '' : 'disabled'}>下一层 ↓</button>
             </div>
           </div>`;
     }
@@ -3130,7 +3147,7 @@
                 renderMap();
             } else if (act === 'source') openSource(i, { query: mapUi.char || '' });
             else if (act === 'scan-one') runScan(false, i);
-            else if (act === 'nav') revealMapLayer(i);
+            else if (act === 'nav') revealMapLayer(i, { dir: b.dataset.dir, top: b.getBoundingClientRect().top });
             else if (act === 'brief') {
                 mapUi.brief = !mapUi.brief;
                 renderMap();
