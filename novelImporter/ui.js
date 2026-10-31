@@ -2747,6 +2747,11 @@
     let sideUsageOk = true;
 
     /** 预扫描、提议、出大纲用的请求：流式，onChunk(delta, full) 拿实时输出；不占主流程的停止按钮，超时按多久没收到新数据算 */
+    /** 剧情地图请求的输出上限：设置里「最大输出 tokens」更大就用设置的，免得整体方案、提议这些长输出被截断 */
+    function sideMaxTokens(def) {
+        return Math.max(def, Number(State.settings.maxTokens) || 0);
+    }
+
     async function callSideAPI(prompt, { signal, maxTokens = 2000, onChunk } = {}) {
         const m = scanModelInfo();
         const h = { 'Content-Type': 'application/json' };
@@ -2907,7 +2912,7 @@
                         if (!/JSON/.test(String(err.message))) throw err;
                         log(`剧情地图：第 ${l.index + 1} 层回复格式不对，放宽长度上限重试一次`);
                         mapLive(key, '', false);
-                        parsed = await attempt(4000);
+                        parsed = await attempt(sideMaxTokens(4000));
                     }
                     setPlanField(l.index, { scan: { ...parsed, hash: PM.hashText(PM.layerText(l)) }, scanError: '' });
                 } catch (err) {
@@ -3025,7 +3030,7 @@
         setStatus('AI 正在通读剧情地图、找要改的地方…');
         try {
             const pref = (State.settings.mapToxic || '') + (State.settings.divergenceDirection ? `\n改写方向：${State.settings.divergenceDirection}` : '');
-            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules, protagonist: mapHero(), judgeNotes: C.TOXIC_JUDGE_NOTES }), { signal: mapUi.busyCtl.signal, maxTokens: 4000, onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
+            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules, protagonist: mapHero(), judgeNotes: C.TOXIC_JUDGE_NOTES }), { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(4000), onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
             mapLive('AI 提议改写点', res.text, false, true);
             const list = PM.parseSuggestResponse(res.text, C.parseLooseJson);
             State.plan = { ...State.plan, suggestions: list };
@@ -3064,7 +3069,7 @@
         const key = '整体改写方案';
         try {
             const prev = revise ? { idea: ov.idea, facts: ov.facts, points: ov.points || State.plan.suggestions } : null;
-            const res = await callSideAPI(PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero(), prev, feedback: rounds }), { signal: mapUi.busyCtl.signal, maxTokens: 8000, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
+            const res = await callSideAPI(PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero(), prev, feedback: rounds }), { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(8000), onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
             mapLive(key, res.text, false, true);
             const r = PM.parseOverallResponse(res.text, C.parseLooseJson);
             // 新设定没变就保持「已加进账本」；变了要重新加（加的时候会换掉旧的那几条）
@@ -3160,7 +3165,7 @@
         try {
             const variants = Math.max(1, Math.min(3, Number(State.settings.mapVariants) || 1));
             const prompt = PM.buildOutlinePrompt(e.layers, State.plan, i, to, { instruction: instr.join('\n'), facts: ledgerFacts().map((f) => f.text), variants });
-            const res = await callSideAPI(prompt, { signal: mapUi.busyCtl.signal, maxTokens: 3000, onChunk: (_d, full, think) => mapLive(`第 ${i + 1}–${to + 1} 层新大纲`, liveText(full, think)) });
+            const res = await callSideAPI(prompt, { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(3000), onChunk: (_d, full, think) => mapLive(`第 ${i + 1}–${to + 1} 层新大纲`, liveText(full, think)) });
             mapLive(`第 ${i + 1}–${to + 1} 层新大纲`, res.text, false, true);
             const list = PM.parseOutlineResponse(res.text, C.parseLooseJson);
             if (!list.length) throw new Error('没拿到大纲');
