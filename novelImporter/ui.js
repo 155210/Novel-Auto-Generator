@@ -2552,8 +2552,17 @@
             body += `<section class="nim-map-vol"><button class="nim-map-volhead" data-map-vol="${v}"><b>${open ? '▾' : '▸'} 第 ${v + 1} 卷</b><span class="nim-muted">第 ${from + 1}–${to + 1} 层</span></button>${open ? `<ul class="nim-map-list">${rows}</ul>` : ''}</section>`;
         }
 
+        const ov = plan.overall;
+        const overallHtml = ov
+            ? `<div class="nim-sub">整体改写方案</div><div class="nim-map-overall">
+                ${ov.request ? `<div class="nim-muted">你的要求：${esc(ov.request)}</div>` : ''}
+                ${ov.idea ? `<div>${esc(ov.idea)}</div>` : ''}
+                ${ov.facts && ov.facts.length ? `<div class="nim-sub">新设定（全书生效）</div><ul>${ov.facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
+                <div class="nim-row">${ov.facts && ov.facts.length ? `<button class="nim-btn sm ${ov.applied ? '' : 'primary'}" data-map-act="overall-facts" ${ov.applied ? 'disabled' : ''}>${ov.applied ? '新设定已加进事实账本' : '把新设定加进事实账本'}</button>` : ''}<button class="nim-btn sm ghost" data-map-act="overall-drop">不要这个方案</button></div>
+              </div>`
+            : '';
         const sg = plan.suggestions.length
-            ? `<div class="nim-sub">AI 提议的改写点（${plan.suggestions.length} 条）</div><ul class="nim-map-sugg">${plan.suggestions
+            ? `<div class="nim-sub">AI 提议的改写点（${plan.suggestions.length} 条）<button class="nim-btn xs" data-map-act="sugg-all">全部采用</button></div><ul class="nim-map-sugg">${plan.suggestions
                   .map(
                       (s, k) => `<li><b>第 ${s.layer + 1} 层${s.resume !== null && s.resume !== undefined ? ` → 第 ${s.resume + 1} 层接回` : ''}</b><div class="nim-muted">${esc(s.reason)}</div><div>${esc(s.change)}</div>
                         <div class="nim-row"><button class="nim-btn sm" data-map-act="sugg-take" data-k="${k}">采用</button><button class="nim-btn sm ghost" data-map-act="sugg-go" data-k="${k}">看这层</button><button class="nim-btn sm ghost" data-map-act="sugg-drop" data-k="${k}">不要</button></div></li>`,
@@ -2564,6 +2573,7 @@
         box.innerHTML = `
           <div class="nim-map-summary">共 ${n} 层 · 已扫描 ${scanned} 层 · 有改写安排 ${planned} 层${ledgerFacts().length ? ` · 账本 ${ledgerFacts().length} 条事实` : ''}${heroLine()}</div>
           <div class="nim-vol-cards">${cards.join('')}</div>
+          ${overallHtml}
           ${sg}
           <div class="nim-row nim-map-filters"><button class="nim-chip ${mapUi.brief ? 'on' : ''}" data-map-act="brief">只看大纲</button>${filters.map(([k, t]) => `<button class="nim-chip ${mapUi.filter === k ? 'on' : ''}" data-map-filter="${k}">${t}</button>`).join('')}
             <select id="nim-map-char" class="nim-input nim-map-char"><option value="">所有人物</option>${names.map((x) => `<option ${mapUi.char === x.name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
@@ -2938,7 +2948,7 @@
             ja.parentElement.hidden = !n;
             ja.textContent = `重扫没翻成中文的 ${n} 层`;
         }
-        const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
+        const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'overall' ? 'AI 正在通读全书出整体方案…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
         el.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? `，失败 ${sc.failed}` : ''}` : busy;
         $('nim-map-scanstop').hidden = !sc && !mapUi.busy;
         renderMapFooter();
@@ -2984,7 +2994,7 @@
         const n = e ? e.layers.length : 0;
         const scanned = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length : 0;
         const failedN = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scanError).length : 0;
-        const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
+        const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'overall' ? 'AI 正在通读全书出整体方案…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
         t.textContent = busy && !sc ? busy : sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? ` · 失败 ${sc.failed}` : ''}` : n ? `已扫描 ${scanned} / ${n} 层` : '先在「小说」页选一本小说';
         $('nim-foot-mapbar').style.width = `${sc ? Math.round((sc.done / Math.max(1, sc.total)) * 100) : n ? Math.round((scanned / n) * 100) : 0}%`;
         $('nim-foot-scan').hidden = !!sc || !!mapUi.busy;
@@ -3026,6 +3036,70 @@
             renderScanState();
             renderMap();
         }
+    }
+
+    async function overallPlan() {
+        const e = mapEngine();
+        if (!e) return toast('先选一本小说', 'warning');
+        const request = (($('nim-map-overall-req') && $('nim-map-overall-req').value) || State.plan.overallReq || '').trim();
+        if (!request) return toast('先写你想怎么改', 'warning');
+        const scanned = e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length;
+        if (!scanned) return toast('先预扫描，AI 要看着全书大纲出方案', 'warning');
+        if (scanned < e.layers.length && !confirm(`还有 ${e.layers.length - scanned} 层没扫描，AI 看不到这些层的剧情。还是现在出方案？`)) return;
+        if (mapUi.busy) return;
+        mapUi.busy = 'overall';
+        mapUi.busyCtl = new AbortController();
+        renderScanState();
+        setStatus('AI 正在通读全书大纲、想整体怎么改…');
+        const key = '整体改写方案';
+        try {
+            const res = await callSideAPI(PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero() }), { signal: mapUi.busyCtl.signal, maxTokens: 8000, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
+            mapLive(key, res.text, false, true);
+            const r = PM.parseOverallResponse(res.text, C.parseLooseJson);
+            State.plan = { ...State.plan, overallReq: request, overall: { request, idea: r.idea, facts: r.facts, applied: false }, suggestions: r.points };
+            savePlan();
+            toast(`整体方案出来了：${r.facts.length} 条新设定，${r.points.length} 个改写点，在地图上方`, 'success');
+        } catch (err) {
+            if (String(err.message) === 'ABORTED') toast('已停止', 'info');
+            else toast(`出方案失败：${err.message}`, 'error');
+        } finally {
+            mapUi.busy = '';
+            mapUi.busyCtl = null;
+            setStatus('');
+            renderScanState();
+            renderMap();
+        }
+    }
+
+    /** 新设定写进事实账本（从第 1 层起生效），正式处理时每层都带上，原文冲突就改写 */
+    function applyOverallFacts() {
+        const ov = State.plan.overall;
+        if (!ov || !ov.facts || !ov.facts.length) return;
+        const have = new Set((State.ledgerManual || []).map((m) => m.text));
+        const add = ov.facts.filter((f) => !have.has(f)).map((text) => ({ from: 0, text }));
+        State.ledgerManual = [...(State.ledgerManual || []), ...add];
+        if (!State.settings.divergenceEnabled) {
+            State.settings.divergenceEnabled = true;
+            saveSettings();
+        }
+        State.plan = { ...State.plan, overall: { ...ov, applied: true } };
+        savePlan();
+        renderAll();
+        toast(`加了 ${add.length} 条新设定进事实账本。正式处理时每层都会带上，原文和它冲突的地方会改写`, 'success');
+    }
+
+    function takeAllSuggestions() {
+        const list = State.plan.suggestions || [];
+        if (!list.length) return;
+        for (const s of list) {
+            const lp = PM.layerPlan(State.plan, s.layer);
+            setPlanField(s.layer, { instruction: lp.instruction ? `${lp.instruction}\n${s.change}` : s.change });
+            if (s.resume !== null && s.resume !== undefined && s.resume >= s.layer) setPlanField(s.resume, { resume: true });
+        }
+        State.plan = { ...State.plan, suggestions: [] };
+        savePlan();
+        renderMap();
+        toast(`${list.length} 条改写点都写进了各层的改写指令`, 'success');
     }
 
     function takeSuggestion(k) {
@@ -3166,6 +3240,14 @@
                 setPlanField(i, { outlines: [] });
                 renderMap();
             } else if (act === 'sugg-take') takeSuggestion(Number(b.dataset.k));
+            else if (act === 'sugg-all') takeAllSuggestions();
+            else if (act === 'overall-facts') applyOverallFacts();
+            else if (act === 'overall-drop') {
+                if (!confirm('不要这个整体方案？（已经加进账本的新设定和已采用的改写点不会撤回）')) return;
+                State.plan = { ...State.plan, overall: null };
+                savePlan();
+                renderMap();
+            }
             else if (act === 'sugg-go') {
                 const s = State.plan.suggestions[Number(b.dataset.k)];
                 if (s) revealMapLayer(s.layer);
@@ -3192,6 +3274,9 @@
             } else if (t.dataset.mapText) {
                 setPlanField(Number(t.dataset.i), { [t.dataset.mapText]: t.value });
                 renderMap();
+            } else if (t.id === 'nim-map-overall-req') {
+                State.plan = { ...State.plan, overallReq: t.value };
+                savePlan();
             } else if (t.id === 'nim-map-names' || t.id === 'nim-map-keywords' || t.id === 'nim-map-volsize') {
                 State.plan = {
                     ...State.plan,
@@ -3232,6 +3317,7 @@
         });
         on('nim-foot-scanstop', 'click', stopMapWork);
         on('nim-map-suggest', 'click', suggestPoints);
+        on('nim-map-overall', 'click', overallPlan);
         on('nim-map-export', 'click', exportPlan);
         on('nim-map-apply-toxic', 'click', applyToxicToRules);
     }
@@ -3241,6 +3327,7 @@
         $('nim-map-names').value = State.plan.names;
         $('nim-map-keywords').value = State.plan.keywords;
         $('nim-map-volsize').value = State.plan.volumeSize;
+        if ($('nim-map-overall-req')) $('nim-map-overall-req').value = State.plan.overallReq || '';
         document.querySelectorAll('#nim-modal [data-map-set]').forEach((el) => {
             const v = el.dataset.mapSet === 'mapTemplates' ? mapTemplates() : State.settings[el.dataset.mapSet];
             el.value = Array.isArray(v) ? v.join('\n') : v ?? '';
@@ -3322,6 +3409,9 @@
            <div id="nim-map-est" class="nim-muted"></div>
            <details class="nim-fold" id="nim-map-live-box"><summary>实时输出</summary><div id="nim-map-live" class="nim-map-live"></div></details>
            <div class="nim-row"><button id="nim-map-suggest" class="nim-btn">AI 提议改写点</button></div>
+           <div class="nim-field nim-mt"><label>整体改写（改设定、改主线，AI 通读全书大纲后出方案）</label>
+             <textarea id="nim-map-overall-req" class="nim-input nim-textarea" rows="3" placeholder="比如：去掉奴隶设定，地牢里的女孩都是自愿跟随的伙伴，契约改成雇佣关系，可以随时解约"></textarea>
+             <div class="nim-row"><button id="nim-map-overall" class="nim-btn">AI 通读全书出整体方案</button></div></div>
            <div class="nim-row nim-row-quiet"><button id="nim-map-rescan" class="nim-btn ghost sm">全部重扫</button><button id="nim-map-export" class="nim-btn ghost sm">导出规划</button><label class="nim-btn ghost sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>
       </div></div>
       <div id="nim-map" class="nim-map"></div>`;
@@ -5114,6 +5204,8 @@ button.nim-step:hover{background:var(--surface2);}
 #nim-modal.on-map .nim-footer-main{display:none;}
 .nim-mt{margin-top:8px;}
 .nim-subfold{margin:14px 0;}
+.nim-map-overall{padding:12px 14px;border-radius:12px;background:var(--bg2, rgba(127,127,127,.08));line-height:1.65;font-size:14px;}
+.nim-map-overall ul{margin:4px 0 8px;padding-left:18px;}
 .nim-map-brief{padding:0 14px 12px 50px;font-size:13px;line-height:1.6;color:var(--muted);cursor:pointer;}
 .nim-map-nav{justify-content:space-between;margin-top:6px;}
 .nim-subfold textarea.nim-textarea{min-height:84px;}
