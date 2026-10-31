@@ -1535,3 +1535,15 @@ describe('从旧聊天搬柏宝绘插图', () => {
         expect(chat[1].mes).toContain(`第一段。\n${tagA}`);
     });
 });
+
+describe('正文章节标题格式和楼层标题分开', () => {
+    it('楼层标题用第X层时，正文里还是第X话', () => {
+        const s = { titleFormat: '#第{n}层：{title}', titleTag: 'bt' };
+        expect(C.formatBodyHeadings(['第四话 初战', '正文'], s, '话')).toEqual(['<bt>\n#第4话：初战\n</bt>', '正文']);
+        expect(C.formatHeading({ index: 1, chapters: [] }, '初战与壁穴', s, '话')).toBe('#第2层：初战与壁穴');
+    });
+    it('可以单独设正文标题格式；空着时跟楼层标题一样', () => {
+        expect(C.formatBodyHeadings(['第四话 初战'], { bodyTitleFormat: '{n}. {title}', titleTag: 'bt' }, '话')).toEqual(['<bt>\n4. 初战\n</bt>']);
+        expect(C.formatBodyHeadings(['第四话 初战'], { titleFormat: '##第{n}{unit} {title}', titleTag: 'bt' }, '话')).toEqual(['<bt>\n##第4话 初战\n</bt>']);
+    });
+});

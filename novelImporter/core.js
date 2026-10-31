@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.27';
+    const VERSION = '1.5.28';
 
     // ============================================
     // 默认配置
@@ -200,6 +200,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         bodyTag: '正文',
         titleMode: 'ai', // ai：AI 起标题；original：用原文章节标题
         titleFormat: '#第{n}{unit}：{title}',
+        bodyTitleFormat: '', // 正文里章节标题的格式；空着跟楼层标题格式一样（楼层标题格式里没有 {unit}，比如「第{n}层」时用默认的第X章/话）
         chapterUnit: 'auto', // auto：按原文判断；章；话
 
         // 翻译：auto 时原文大部分不是中文就整层翻译成简体中文
@@ -311,6 +312,14 @@ P段号 |  | ++新段落          在该段之后另起一段
      * 楼层标题行，默认「#第X章：标题」。
      * AI 标题：X 是层号；原文标题：X 和标题取本层第一个章节标题（翻译时标题用 AI 给的译名）。
      */
+    /** 正文里章节标题用的格式 */
+    function bodyTitleFormatOf(s) {
+        const own = String(s.bodyTitleFormat || '').trim();
+        if (own) return own;
+        const fl = s.titleFormat || '#第{n}{unit}：{title}';
+        return fl.includes('{unit}') ? fl : '#第{n}{unit}：{title}';
+    }
+
     function formatHeading(layer, aiTitle, settings, bookUnit) {
         const s = { ...DEFAULT_SETTINGS, ...settings };
         const fmt = s.titleFormat || '#第{n}{unit}：{title}';
@@ -408,7 +417,7 @@ P段号 |  | ++新段落          在该段之后另起一段
      */
     function formatBodyHeadings(paras, settings, bookUnit, opts = {}) {
         const s = { ...DEFAULT_SETTINGS, ...settings };
-        const fmt = s.titleFormat || '#第{n}{unit}：{title}';
+        const fmt = bodyTitleFormatOf(s);
         const re = new RegExp(`^第\\s*[${CN_NUM}]+\\s*[章话話回节節]`);
         const out = [];
         let first = true;
