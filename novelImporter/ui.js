@@ -4259,17 +4259,18 @@
             const st = layerState(r, i, e);
             const title = r && r.parsed ? r.parsed.title : (l.chapters[0] || l.paras[0].text).slice(0, 30);
             const flags = [];
-            if (r && r.divergenceStart) flags.push('<span class="nim-tag red">改写起点</span>');
-            else if (r && r.inDivergence) flags.push('<span class="nim-tag orange">改写中</span>');
-            if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag">${r.patchStats.failed.length} 条补丁没对上</span>`);
-            if (r && r.askedBigSummary) flags.push('<span class="nim-tag blue">大总结</span>');
-            if (l.translate) flags.push('<span class="nim-tag violet">翻译</span>');
-            if (l.note) flags.push('<span class="nim-tag blue" title="这层有提前写好的提示词">专属提示词</span>');
+            // 列表里标签用短字，给标题留地方；完整意思放 title 里
+            if (r && r.divergenceStart) flags.push('<span class="nim-tag red" title="剧情改写起点">起点</span>');
+            else if (r && r.inDivergence) flags.push('<span class="nim-tag orange" title="剧情改写中">改写</span>');
+            if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag" title="${r.patchStats.failed.length} 条补丁没对上">补丁×${r.patchStats.failed.length}</span>`);
+            if (r && r.askedBigSummary) flags.push('<span class="nim-tag blue" title="这层写了大总结">总结</span>');
+            if (l.translate) flags.push('<span class="nim-tag violet" title="翻译">译</span>');
+            if (l.note) flags.push('<span class="nim-tag blue" title="这层有提前写好的提示词">专属</span>');
             rows.push(
                 `<button class="nim-layer ${State.selected === i ? 'sel' : ''}" data-i="${i}" title="${STATE_TEXT[st] || ''}">
                    <span class="nim-dot ${st}"></span><span class="nim-layer-no">${i + 1}</span>
                    <span class="nim-layer-title">${esc(title)}</span>
-                   <span class="nim-layer-meta">${flags.join('')}<span class="nim-muted">${l.chars} 字</span></span>
+                   <span class="nim-layer-meta">${flags.join('')}<span class="nim-layer-chars" title="${l.chars} 字">${l.chars >= 10000 ? `${(l.chars / 10000).toFixed(1)}万` : l.chars}</span></span>
                  </button>`,
             );
         }
@@ -5166,7 +5167,9 @@ select.nim-input{appearance:auto;}
 .nim-layer.sel{background:rgba(139,124,246,.16);box-shadow:inset 0 0 0 1px rgba(139,124,246,.45);}
 .nim-layer-no{flex:none;min-width:28px;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;}
 .nim-layer-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.nim-layer-meta{flex:none;display:flex;gap:4px;align-items:center;}
+.nim-layer-meta{flex:none;display:flex;gap:3px;align-items:center;}
+.nim-layer-meta .nim-tag{padding:0 4px;font-size:10px;line-height:16px;}
+.nim-layer-chars{font-size:10px;color:var(--muted);min-width:30px;text-align:right;font-variant-numeric:tabular-nums;}
 .nim-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--line2);}
 .nim-dot.done{background:var(--ok);}.nim-dot.running{background:var(--accent2);animation:nimPulse 1s infinite;}.nim-dot.failed{background:var(--bad);}.nim-dot.review{background:var(--warn);}
 @keyframes nimPulse{50%{opacity:.35;}}
