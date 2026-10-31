@@ -889,6 +889,11 @@ describe('运行引擎', () => {
         expect(after.slice(2)).toEqual(before.slice(2));
         expect(engine.results[0].parsed.summary).toBe('新摘要');
         expect(engine.results[1]).toBe(later);
+        // 高亮：改出来的段落标上
+        const mb = engine.markedBody(0);
+        expect(mb).toContain('\uE000改好的第一段。\uE001');
+        expect(mb).toContain('\uE000第二行也算新段。\uE001');
+
         // AI 说要整层重做：退回整层重做
         editReply = '<整层重做>要整体换写法</整层重做>';
         const n = calls.length;
@@ -936,6 +941,10 @@ describe('运行引擎', () => {
         expect(res.mode).toBe('edit');
         expect(engine.reviewing).toBe(0);
         expect(engine.results[0].finalParas).toEqual(['开头加一段。', ...old]);
+        // 原来补丁的高亮照留，新加的也标上
+        const mb = engine.markedBody(0);
+        expect(mb).toContain('\uE000开头加一段。\uE001');
+        expect(mb).toContain('\uE000裘月寒抬眸道。\uE001');
     });
 
     it('解析修改回复', () => {

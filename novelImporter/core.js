@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.32';
+    const VERSION = '1.5.33';
 
     // ============================================
     // 默认配置
@@ -3164,7 +3164,13 @@ ${blocks}`;
                 raw = extractTag(raw, t.tag).closed ? replaceTag(raw, t.tag, x.content.trim()) : `${raw}\n<${t.tag}>${x.content.trim()}</${t.tag}>`;
             }
             const finalParas = ap.paras.concat(extras);
-            Object.assign(r, { raw, parsed, finalParas, edited: (old.edited || 0) + 1 });
+            // 高亮：原来标的照留，这次改出来的段落整段标上
+            const oldMarked = markedParas(i);
+            const markedBase = oldMarked ? splitBodyBlocks(oldMarked.join('\n'), settings.bodyTag).body.split('\n') : paras;
+            const wrap = (t) => (stripMarks(t).trim() ? MARK_OPEN + stripMarks(t) + MARK_CLOSE : t);
+            const markedOps = ed.ops.map((o) => ({ ...o, lines: o.lines.map(wrap) }));
+            const markedNew = markedBase.length === paras.length ? applyEditOps(markedBase, markedOps).paras.concat(extras) : null;
+            Object.assign(r, { raw, parsed, finalParas, markedParas: markedNew, edited: (old.edited || 0) + 1 });
             const st = replay(i);
             const c = commit(st, i, r);
             r.tableActions = c.out.tableActions;
@@ -3453,9 +3459,21 @@ ${blocks}`;
          * 去掉标记后和 renderFloors 里的 body 一致。
          */
         function markedBody(i) {
+            const paras = markedParas(i);
+            if (!paras) return null;
+            let n = 0;
+            while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
+            const st = replay(n);
+            return outText(bodyParas(i, paras).join('\n'), st);
+        }
+
+        /** 和 finalParas 一一对应、带高亮标记的段落；标不出来返回 null */
+        function markedParas(i) {
             const r = E.results[i];
             const layer = E.layers[i];
             if (!r || r.status !== 'done' || !layer) return null;
+            // 按意见改过的层：改的时候已经把标记版一起改好了
+            if (r.markedParas && stripMarks(r.markedParas.join('\n')) === r.finalParas.join('\n')) return r.markedParas;
             // 用「立即应用」改过存档的层，标记版也照样换一遍，才对得上
             const appliedRules = r.appliedReplace ? parseWordReplace(r.appliedReplace) : [];
             const applied = (arr) => (appliedRules.length ? arr.map((p) => applyWordReplace(p, appliedRules)) : arr);
@@ -3478,10 +3496,7 @@ ${blocks}`;
                 paras = applied(applyPatches(layer.paras, (r.parsed && r.parsed.patches) || [], { maxPatchChars: settings.maxPatchChars, mark: true }).paras);
                 if (stripMarks(paras.join('\n')) !== r.finalParas.join('\n')) return null;
             }
-            let n = 0;
-            while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
-            const st = replay(n);
-            return outText(bodyParas(i, paras).join('\n'), st);
+            return paras;
         }
 
         /** 导出时按文字替换的主角称呼；交给 AI 写 {{user}} 时不再硬换，免得别人同名、同字被误换 */
