@@ -298,6 +298,15 @@
                     ['off', '不停'],
                 ],
             },
+            {
+                key: 'feedbackEditMode',
+                label: '按意见改一层时',
+                type: 'select',
+                options: [
+                    ['smart', 'AI 自己找要改的段落，只输出那几段（省钱）；改不了才整层重做'],
+                    ['full', '整层重新输出'],
+                ],
+            },
         ],
         stwb: [
             { key: 'stWorldEnabled', label: '把酒馆里开着的世界书当作输出要求发给 AI', type: 'check', hint: '全局、当前角色、当前聊天、人设绑定的世界书；关掉的条目不发' },
@@ -4407,7 +4416,7 @@
     function callsHtml(r) {
         const calls = r.calls || [];
         if (!calls.length) return '';
-        const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON' };
+        const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处' };
         return (
             `<details class="nim-fold"><summary>每次请求的原始输出（${calls.length} 次）</summary>` +
             calls
@@ -4498,7 +4507,7 @@
         if (!reviewing && r && (r.status === 'done' || r.status === 'failed'))
             body += `<div class="nim-sub">这层的修改要求</div>
               <textarea id="nim-layer-fb" class="nim-input nim-textarea" rows="3" placeholder="例如：NTR 那段改得更彻底；对话多补几句神态；译名统一用「花恋」"></textarea>
-              <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">按要求重做这层</button><span class="nim-muted">会带上这层上次的输出</span></div>`;
+              <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">${State.settings.feedbackEditMode === 'full' ? '按要求重做这层' : '按要求改这层'}</button><span class="nim-muted">${State.settings.feedbackEditMode === 'full' ? '会带上这层上次的输出' : 'AI 自己找段落只改那几段；改不了才整层重做（设置 → 审阅里可以换）'}</span></div>`;
         if (!reviewing && r && r.status === 'done') {
             const bad = r.warnings && r.warnings.length;
             body += `<details class="nim-fold"${bad ? ' open' : ''}><summary>只重新输出 JSON（正文不动）${bad ? '<span class="nim-muted">：这层有 JSON 没用上</span>' : ''}</summary>
@@ -4519,7 +4528,7 @@
             ? `<div class="nim-review">
                  <div class="nim-sub">审阅这一层：没问题就继续，不行就写修改意见重做</div>
                  <textarea id="nim-feedback" class="nim-input nim-textarea" rows="3" placeholder="例如：第 3 段的补充太长了；这里的改写和前面冲突了"></textarea>
-                 <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">按意见重做这层</button></div>
+                 <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">${State.settings.feedbackEditMode === 'full' ? '按意见重做这层' : '按意见改这层'}</button></div>
                </div>`
             : '';
         el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><div class="nim-row" style="justify-content:flex-end">${r && (r.status === 'done' || r.status === 'failed') ? '<button id="nim-reroll" class="nim-btn sm" title="同样的提示词再要一次，后面的层保留">只重 roll 这层</button>' : ''}<button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div></div>${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}${reviewHtml}${body}`;
@@ -4549,6 +4558,11 @@
                 if (!keepLater && hasLater && !confirm(`第 ${i + 2} 层及之后的结果会清空，确定吗？`)) return;
                 collectFields();
                 State.stopped = false;
+                if (State.settings.feedbackEditMode !== 'full') {
+                    log(`按要求改第 ${i + 1} 层：${fb}`);
+                    await runEdit(e.editLayer(i, fb, { keepLater }), i);
+                    return;
+                }
                 log(`按要求重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}：${fb}`);
                 const job = e.redoWithFeedback(i, fb, { keepLater });
                 renderButtons();
@@ -4649,6 +4663,11 @@
                 if (!fb) return toast('请先写修改意见', 'warning');
                 collectFields();
                 State.stopped = false;
+                if (State.settings.feedbackEditMode !== 'full') {
+                    log(`按意见改第 ${i + 1} 层：${fb}`);
+                    await runEdit(e.rejectSmart(fb), i);
+                    return;
+                }
                 log(`按意见重做第 ${i + 1} 层`);
                 const job = e.reject(fb);
                 renderButtons();
@@ -4657,6 +4676,25 @@
                 renderAll();
             };
         }
+    }
+
+    /** 按意见只改几处：等结果、写日志、刷新 */
+    async function runEdit(job, i) {
+        renderButtons();
+        try {
+            const res = await job;
+            if (!res) log(`第 ${i + 1} 层：已停止，这层没动`);
+            else if (res.mode === 'full') log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），已整层重做`);
+            else {
+                log(`第 ${i + 1} 层：只改了 ${res.applied} 处${res.bad ? `，${res.bad} 处段号对不上没用上` : ''}，其余正文没动`);
+                toast(`改了 ${res.applied} 处`, 'success');
+            }
+        } catch (err) {
+            log(`第 ${i + 1} 层按意见修改失败：${err.message}`);
+            toast(`没改成：${err.message}（AI 的回复在下面「请求记录」里）`, 'error');
+        }
+        saveProgress();
+        renderAll();
     }
 
     function renderExport() {
