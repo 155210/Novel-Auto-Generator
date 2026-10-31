@@ -380,6 +380,16 @@
             { key: 'worldbookEnabled', label: '提取世界书', type: 'check' },
             { key: 'worldbookPrompt', label: '世界书额外要求', type: 'textarea', rows: 3 },
             { key: 'worldbookContextChars', label: '每层带给 AI 的已有条目字数上限', type: 'number' },
+            {
+                key: 'wbUpdateMode',
+                label: '已有条目再次输出时',
+                type: 'select',
+                options: [
+                    ['replace', '一律整条替换（不接在后面）'],
+                    ['auto', 'AI 只写了追加的一段时接在旧内容后面'],
+                ],
+                hint: '整条替换时，AI 给的内容要包含旧信息（提示词里已经这样要求）；改了之后已生成的层会按新方式重新合并',
+            },
             { key: 'summaryGuide', label: '每层摘要的写法', type: 'textarea', rows: 3, hint: '摘要会导出为「剧情 - 第N层」条目，也用在下一层的前情提要和角色卡简介里' },
             { key: 'plotSummaryEntries', label: '每层摘要也导出为「剧情」条目', type: 'check' },
             { key: 'plotPosition', label: '剧情条目的位置', type: 'select', options: POS_OPTIONS },
@@ -4367,14 +4377,15 @@
         const rows = items.map((x) => {
             const keys = Array.isArray(x.it.关键词) ? x.it.关键词 : x.it.关键词 ? [String(x.it.关键词)] : [];
             const old = findOld(x.cat, x.name, keys);
-            const kind = !old ? 'add' : provided.has(`${x.cat}/${old}`) && !C.isPartialWbUpdate(x.it.内容, before[x.cat][old].内容) ? 'replace' : 'append';
+            const shown = provided.has(`${x.cat}/${old}`);
+            const kind = !old ? 'add' : State.settings.wbUpdateMode !== 'auto' ? (shown ? 'replace' : 'skip') : shown && !C.isPartialWbUpdate(x.it.内容, before[x.cat][old].内容) ? 'replace' : 'append';
             return { ...x, keys, old, kind };
         });
         const n = (k) => rows.filter((x) => x.kind === k).length;
-        const TAG = { add: '新增', replace: '更新（整条改写）', append: '补充（接在旧内容后）' };
+        const TAG = { add: '新增', replace: '更新（整条改写）', append: '补充（接在旧内容后）', skip: '没用上（AI 没看到旧内容）' };
         return (
-            `<details class="nim-fold" open><summary>本层世界书（${rows.length} 条：新增 ${n('add')}，更新 ${n('replace') + n('append')}）</summary>` +
-            `<div class="nim-muted">这里是 AI 这一层原样给的内容。同名或关键词对上的条目会并进同一条，导出时一个角色只有一条。「整条改写」：AI 拿到了旧内容，回的是改好的完整版，直接替换；「补充」：这次没把旧内容发给 AI，或者 AI 只回了追加的一段，新内容接在旧内容后面。点「合并后的完整条目」看这一层处理完后条目的样子。称呼表里的名字导出时会换成 ${esc(target)}。</div><ul class="nim-wb-list">` +
+            `<details class="nim-fold" open><summary>本层世界书（${rows.length} 条：新增 ${n('add')}，更新 ${n('replace') + n('append')}${n('skip') ? `，没用上 ${n('skip')}` : ''}）</summary>` +
+            `<div class="nim-muted">这里是 AI 这一层原样给的内容。同名或关键词对上的条目会并进同一条，导出时一个角色只有一条。「整条改写」：AI 拿到了旧内容，回的是改好的完整版，直接替换；「补充」：这次没把旧内容发给 AI，或者 AI 只回了追加的一段，新内容接在旧内容后面（只在设置里选了「接在旧内容后面」时会这样）；「没用上」：设置为一律整条替换时，AI 没看到旧内容的条目不会拿来替换，旧内容保留。点「合并后的完整条目」看这一层处理完后条目的样子。称呼表里的名字导出时会换成 ${esc(target)}。</div><ul class="nim-wb-list">` +
             rows
                 .map(({ cat, name, keys, old, kind }) => {
                     const asUser = aliases.includes(name);
