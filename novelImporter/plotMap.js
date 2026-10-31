@@ -602,6 +602,57 @@ ${after || '（到结尾）'}
     }
 
     /** 全书搜：返回命中总数和前 limit 条（带层号、所在章节、前后文） */
+    /** 搜大纲：每层的预扫描结果（一句话、摘要、人物、雷点）和用户写的安排（改写指令、新大纲、插入、备注） */
+    function searchPlan(layers, plan, query, { limit = 300, context = 30 } = {}) {
+        const re = searchRegex(query);
+        const hits = [];
+        let total = 0;
+        if (!re) return { total, hits, bad: !!String(query || '').trim() };
+        for (const l of layers) {
+            const lp = layerPlan(plan, l.index);
+            const s = lp.scan;
+            const fields = [
+                ['一句话', s && s.oneLine],
+                ['摘要', s && s.summary],
+                ['人物', s && s.characters.join('、')],
+                ['关系', s && (s.relations || []).map((x) => `${x.a}${x.b ? ' 和 ' + x.b : ''} ${x.change}`).join('；')],
+                ['雷点', s && s.toxic.map((t) => `${t.rule}${t.who ? `（${t.who}）` : ''}：${t.evidence}`).join('；')],
+                ['改写指令', lp.instruction],
+                ['新大纲', lp.outline],
+                ['插入剧情', lp.insert],
+                ['备注', lp.note],
+            ];
+            for (const [field, text] of fields) {
+                const t = String(text || '');
+                if (!t) continue;
+                re.lastIndex = 0;
+                let m;
+                let first = null;
+                let n = 0;
+                while ((m = re.exec(t))) {
+                    if (!m[0]) {
+                        re.lastIndex++;
+                        continue;
+                    }
+                    if (!first) first = { index: m.index, match: m[0] };
+                    n++;
+                }
+                if (!n) continue;
+                total += n;
+                if (hits.length < limit)
+                    hits.push({
+                        layer: l.index,
+                        field,
+                        count: n,
+                        before: (first.index > context ? '…' : '') + t.slice(Math.max(0, first.index - context), first.index),
+                        match: first.match,
+                        after: t.slice(first.index + first.match.length, first.index + first.match.length + context * 2) + (first.index + first.match.length + context * 2 < t.length ? '…' : ''),
+                    });
+            }
+        }
+        return { total, hits, bad: false };
+    }
+
     function searchLayers(layers, query, { limit = 300, isChapterTitle = () => false, context = 28 } = {}) {
         const re = searchRegex(query);
         const hits = [];
@@ -719,6 +770,7 @@ ${after || '（到结尾）'}
         voteHero,
         searchRegex,
         searchLayers,
+        searchPlan,
         chapterIndex,
         locateEmptyChapters,
     };
