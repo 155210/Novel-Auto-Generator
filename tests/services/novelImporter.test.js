@@ -872,6 +872,24 @@ describe('运行引擎', () => {
         expect(C.splitTagList('Calculated data, <Calculated_data>')).toEqual(['Calculated data', 'Calculated_data']);
     });
 
+    it('自定义标签：加进输出格式、放进楼层、最新一份带给下一层', async () => {
+        const { engine, calls } = makeEngine((layer) => normal(layer) + (layer === 0 ? '\n<StatusBlock>DP: 100\n道具：柴刀</StatusBlock>' : ''), { customTags: 'StatusBlock：DP 数量和道具' });
+        await engine.run();
+        const p0 = calls[0].messages.map((m) => m.content).join('\n');
+        expect(p0).toContain('<StatusBlock>DP 数量和道具</StatusBlock>');
+        expect(p0).toContain('每层都要输出 <StatusBlock>');
+        const mes = engine.renderFloors()[0].mes;
+        expect(mes.indexOf('<StatusBlock>') > mes.indexOf('</正文>')).toBe(true);
+        expect(mes).toContain('DP: 100');
+        const p1 = calls[1].messages.map((m) => m.content).join('\n');
+        expect(p1).toContain('## 目前最新的 <StatusBlock>（来自第 1 层');
+        // 清空就什么都不加
+        const plain = makeEngine((layer) => normal(layer) + '\n<StatusBlock>DP: 1</StatusBlock>');
+        await plain.engine.run();
+        expect(plain.calls[0].messages.map((m) => m.content).join('\n')).not.toContain('StatusBlock');
+        expect(plain.engine.renderFloors()[0].mes).not.toContain('StatusBlock');
+    });
+
     it('每层存下发出去的提示词，改了可以用它重做这层', async () => {
         const { engine, calls } = makeEngine(normal);
         await engine.run();
@@ -1545,5 +1563,15 @@ describe('正文章节标题格式和楼层标题分开', () => {
     it('可以单独设正文标题格式；空着时跟楼层标题一样', () => {
         expect(C.formatBodyHeadings(['第四话 初战'], { bodyTitleFormat: '{n}. {title}', titleTag: 'bt' }, '话')).toEqual(['<bt>\n4. 初战\n</bt>']);
         expect(C.formatBodyHeadings(['第四话 初战'], { titleFormat: '##第{n}{unit} {title}', titleTag: 'bt' }, '话')).toEqual(['<bt>\n##第4话 初战\n</bt>']);
+    });
+});
+
+describe('自定义标签', () => {
+    it('每行一个标签，下一行接着写要求', () => {
+        expect(C.parseCustomTags('StatusBlock：DP 数量和道具\n  道具写成列表\n<Mood>: 心情\n\n')).toEqual([
+            { tag: 'StatusBlock', rule: 'DP 数量和道具\n道具写成列表' },
+            { tag: 'Mood', rule: '心情' },
+        ]);
+        expect(C.parseCustomTags('')).toEqual([]);
     });
 });

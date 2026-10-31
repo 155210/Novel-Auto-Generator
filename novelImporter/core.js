@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.29';
+    const VERSION = '1.5.30';
 
     // ============================================
     // 默认配置
@@ -224,6 +224,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         // 承接上一层：带上一层正文最后多少字（0 不带），以及上一层回复里哪些标签原样一起发（逗号分隔）
         prevTailChars: 300,
         carryTags: '',
+        customTags: '', // 自定义标签：每行「标签名：要AI写什么」，AI 写在正文后面，自动放进楼层、带给下一层
         plotPosition: 0,
         plotDepth: 4,
         plotOrder: 50,
@@ -980,6 +981,23 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /** 「Plotline, <摘要>，Calculated data」→ ['Plotline','摘要','Calculated data']（标签名里可以有空格） */
+    /**
+     * 自定义标签：每行「标签名：要 AI 往里写什么」，下一行不是「标签名：」开头就接在上一条要求后面。
+     * @returns {{tag:string, rule:string}[]}
+     */
+    function parseCustomTags(v) {
+        const out = [];
+        for (const raw of String(v || '').split('\n')) {
+            const line = raw.trim();
+            if (!line) continue;
+            const m = line.match(/^<?\s*([A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff.-]{0,40})\s*>?\s*[:：]\s*(.*)$/);
+            if (m) out.push({ tag: m[1], rule: m[2].trim() });
+            else if (out.length) out[out.length - 1].rule += (out[out.length - 1].rule ? '\n' : '') + line;
+        }
+        const seen = new Set();
+        return out.filter((x) => !seen.has(x.tag) && seen.add(x.tag));
+    }
+
     function splitTagList(v) {
         return uniq(
             String(v || '')
@@ -1072,6 +1090,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
         if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
         if (!protagonistOf(s, state)) format += '\n<主角>主角的名字，看不出就留空</主角>';
+        const custom = parseCustomTags(s.customTags).filter((t) => t.tag !== s.titleTag && t.tag !== s.bodyTag);
+        for (const t of custom) format += `\n<${t.tag}>${t.rule || '按用户要求写'}</${t.tag}>`;
         // 放在世界书、术语表、前情后面，免得被前面的旧写法盖过去
         // 放在世界书、术语表、前情后面，免得被前面的旧写法盖过去
         const un = buildUserNameSection(s, state, tr);
@@ -1090,6 +1110,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const reminders = [];
         if (aiUserName(s)) reminders.push(`指主角的名字和称呼一律写成 ${target}`);
         if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
+        if (custom.length) reminders.push(`每层都要输出 ${custom.map((t) => `<${t.tag}>`).join('、')}，写在正文后面（不要夹在正文里），按上一份的内容和本层剧情更新，没变化也照抄完整的一份`);
         if ((extra.outputRules || '').trim()) reminders.push('正文（补丁的补充内容、<改写正文>、译文）照「输出要求（来自酒馆里开着的世界书）」里的每一条写，剧情改写时也一样');
         if (reminders.length) parts.push(`再次提醒（硬性要求，按语境做，即使原文、术语表、世界书还是旧写法也要换）：${reminders.join('。')}`);
         // 修改要求放在最后：前面有上一次的输出和整层原文，放中间 AI 很容易看漏
@@ -2657,7 +2678,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             // 翻译时把上一层原文结尾也带上同样字数，AI 对照着看上一层最后几句有没有漏译
             const prevSourceTail = prevTail && i > 0 && E.layers[i - 1].translate ? tailText(E.layers[i - 1].paras.map((p) => p.text).join('\n'), tailN) : '';
             // 像表格一样带「最新的一份」：上一层没输出这个标签，就往前找最近一次有的，状态不会断
-            const carryTags = splitTagList(settings.carryTags)
+            const carryTags = uniq(splitTagList(settings.carryTags).concat(parseCustomTags(settings.customTags).map((t) => t.tag)))
                 .map((tag) => {
                     for (let k = i - 1; k >= 0; k--) {
                         const r = E.results[k];
@@ -3291,7 +3312,7 @@ ${blocks}`;
             const after = extras.filter((x) => !isBefore(x));
             return {
                 before: before.concat(floorTagBlocks(r, extras, settings.floorTagsBefore)),
-                after: after.concat(floorTagBlocks(r, extras, settings.floorTags)),
+                after: after.concat(floorTagBlocks(r, extras, splitTagList(settings.floorTags).concat(parseCustomTags(settings.customTags).map((t) => t.tag).filter((t) => !beforeNames.includes(t))).join(','))),
             };
         }
 
@@ -3744,6 +3765,7 @@ ${sums}
         buildOutputRules,
         tailText,
         splitTagList,
+        parseCustomTags,
         outputRuleItems,
         stripEchoedSource,
         protagonistOf,
