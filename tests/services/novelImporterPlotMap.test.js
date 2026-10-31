@@ -323,3 +323,22 @@ describe('剧情地图：整体方案按意见改', () => {
         expect(M.buildOverallPrompt(layers, plan, { request: '去掉奴隶' })).not.toContain('上一版方案');
     });
 });
+
+describe('剧情地图：搜大纲', () => {
+    it('搜扫描结果和用户写的安排，按字段列出', () => {
+        const layers = [{ index: 0, paras: [] }, { index: 1, paras: [] }];
+        const plan = {
+            layers: {
+                0: { scan: { oneLine: '沙耶香成为奴隶', summary: '夜云和沙耶香签下奴隶契约，奴隶身份确定', characters: ['沙耶香'], relations: [], toxic: [], tags: [] } },
+                1: { instruction: '去掉奴隶契约', note: '' },
+            },
+        };
+        const r = M.searchPlan(layers, plan, '奴隶');
+        expect(r.total).toBe(4);
+        expect(r.hits.map((h) => `${h.layer}:${h.field}:${h.count}`)).toEqual(['0:一句话:1', '0:摘要:2', '1:改写指令:1']);
+        expect(r.hits[1].match).toBe('奴隶');
+        expect(M.searchPlan(layers, plan, '').total).toBe(0);
+        expect(M.searchPlan(layers, plan, '/沙耶.香/').hits.length).toBe(0);
+        expect(M.searchPlan(layers, plan, '/沙耶./').hits.map((h) => h.field)).toEqual(['一句话', '摘要', '人物']);
+    });
+});

@@ -3651,7 +3651,7 @@
 
     // ---- 全书搜索：原文 / 目录 / 功能和设置 ----
 
-    const findUi = { mode: 'text', q: '', hits: null, index: null };
+    const findUi = { mode: 'text', q: '', hits: null, ohits: null, index: null };
     const TAB_NAMES = { file: '小说', map: '剧情地图', settings: '设置', run: '处理', export: '导入酒馆' };
 
     function openFind(mode, q) {
@@ -3704,6 +3704,7 @@
         // 页面外的入口
         out.push({ text: '原文搜索、看原文', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('text') });
         out.push({ text: '目录、空章', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('toc') });
+        out.push({ text: '搜大纲（剧情、人物、雷点、改写指令）', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('outline') });
         return out;
     }
 
@@ -3770,7 +3771,7 @@
         const q = $('nim-find-q').value.trim();
         findUi.q = q;
         document.querySelectorAll('#nim-find [data-find-mode]').forEach((b) => b.classList.toggle('on', b.dataset.findMode === findUi.mode));
-        $('nim-find-q').placeholder = findUi.mode === 'text' ? '搜原文：人名、台词、情节…（/正则/ 也行）' : findUi.mode === 'toc' ? '筛选章节标题' : '找功能或设置，例如 雷点、模型、清洗';
+        $('nim-find-q').placeholder = findUi.mode === 'text' ? '搜原文：人名、台词、情节…（/正则/ 也行）' : findUi.mode === 'outline' ? '搜大纲：剧情、人物、雷点、改写指令…' : findUi.mode === 'toc' ? '筛选章节标题' : '找功能或设置，例如 雷点、模型、清洗';
         const e = State.engine;
         const noBook = '<div class="nim-empty">先在「小说」页选一本小说</div>';
         if (findUi.mode === 'text') {
@@ -3787,6 +3788,25 @@
                     .map(
                         (h, k) =>
                             `<button class="nim-hit" data-hit="${k}"><div class="nim-hit-where"><b>第 ${h.layer + 1} 层</b>${h.chapter ? ` · ${esc(h.chapter)}` : ''}</div><div class="nim-hit-text">${esc(h.before)}<mark class="nim-hl">${esc(h.match)}</mark>${esc(h.after)}</div></button>`,
+                    )
+                    .join('');
+            return;
+        }
+        if (findUi.mode === 'outline') {
+            if (!e || !e.layers.length) return (box.innerHTML = noBook);
+            const scanned = e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length;
+            if (!q) return (box.innerHTML = `<div class="nim-empty">搜剧情地图里每层的一句话、摘要、人物、关系、雷点，和你写的改写指令、新大纲、备注。点结果跳到剧情地图的那一层。${scanned ? '' : '<br>还没预扫描，只能搜到你自己写的安排。'}</div>`);
+            const r = PM.searchPlan(e.layers, State.plan, q, { limit: 400 });
+            findUi.ohits = r.hits;
+            if (r.bad) return (box.innerHTML = '<div class="nim-empty">正则写得不对</div>');
+            if (!r.total) return (box.innerHTML = `<div class="nim-empty">大纲里没有找到${scanned < e.layers.length ? `（还有 ${e.layers.length - scanned} 层没扫描）` : ''}。想在原文里找，切到「原文」。</div>`);
+            const layers = new Set(r.hits.map((h) => h.layer)).size;
+            box.innerHTML =
+                `<div class="nim-find-sum">共 ${fmtNum(r.total)} 处，在 ${layers} 层里</div>` +
+                r.hits
+                    .map(
+                        (h, k) =>
+                            `<button class="nim-hit" data-ohit="${k}"><div class="nim-hit-where"><b>第 ${h.layer + 1} 层</b> · ${esc(h.field)}${h.count > 1 ? ` · ${h.count} 处` : ''}</div><div class="nim-hit-text">${esc(h.before)}<mark class="nim-hl">${esc(h.match)}</mark>${esc(h.after)}</div></button>`,
                     )
                     .join('');
             return;
@@ -3886,6 +3906,16 @@
                 const h = findUi.hits[Number(hit.dataset.hit)];
                 return openSource(h.layer, { query: findUi.q, nth: h.nth });
             }
+            const oh = ev.target.closest('[data-ohit]');
+            if (oh) {
+                const h = findUi.ohits[Number(oh.dataset.ohit)];
+                sheet.hidden = true;
+                switchTab('map');
+                if (h.field === '改写指令' || h.field === '新大纲' || h.field === '插入剧情' || h.field === '备注') mapUi.editOpen = true;
+                revealMapLayer(h.layer);
+                mapUi.editOpen = false;
+                return;
+            }
             const toc = ev.target.closest('[data-toc]');
             if (toc) return openSource(Number(toc.dataset.tocLayer), { chapter: toc.dataset.toc });
             const em = ev.target.closest('[data-empty]');
@@ -3923,7 +3953,7 @@
             <div class="nim-search-in grow"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="nim-find-q" type="search" enterkeyhint="search"></div>
             <button class="nim-icon-btn" data-find="close" title="关闭">✕</button>
           </div>
-          <div class="nim-seg"><button data-find-mode="text">原文</button><button data-find-mode="toc">目录和空章</button><button data-find-mode="ui">功能和设置</button></div>
+          <div class="nim-seg"><button data-find-mode="text">原文</button><button data-find-mode="outline">大纲</button><button data-find-mode="toc">目录和空章</button><button data-find-mode="ui">功能和设置</button></div>
           <div id="nim-find-body" class="nim-sheet-body nim-find-body"></div>
         </div></div>`;
     }
@@ -5440,7 +5470,8 @@ button.nim-step:hover{background:var(--surface2);}
                 return;
             }
             const fo = ev.target.closest('[data-find-open]');
-            if (fo && !fo.closest('#nim-find')) return openFind(fo.dataset.findOpen, '');
+            // 在剧情地图页点搜索，默认搜大纲
+            if (fo && !fo.closest('#nim-find')) return openFind(fo.dataset.findOpen === 'text' && State.tab === 'map' ? 'outline' : fo.dataset.findOpen, '');
             const tg = ev.target.closest('[data-tab-go]');
             if (tg && !tg.closest('#nim-find')) switchTab(tg.dataset.tabGo);
         });
