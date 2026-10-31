@@ -2558,7 +2558,7 @@
                 ${ov.request ? `<div class="nim-muted">你的要求：${esc(ov.request)}</div>` : ''}
                 ${ov.idea ? `<div>${esc(ov.idea)}</div>` : ''}
                 ${ov.facts && ov.facts.length ? `<div class="nim-sub">新设定（全书生效）</div><ul>${ov.facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : ''}
-                <div class="nim-row">${ov.facts && ov.facts.length ? `<button class="nim-btn sm ${ov.applied ? '' : 'primary'}" data-map-act="overall-facts" ${ov.applied ? 'disabled' : ''}>${ov.applied ? '新设定已加进事实账本' : '把新设定加进事实账本'}</button>` : ''}<button class="nim-btn sm ghost" data-map-act="overall-drop">不要这个方案</button></div>
+                <div class="nim-row">${ov.facts && ov.facts.length ? `<button class="nim-btn sm ${ov.applied ? '' : 'primary'}" data-map-act="overall-facts" ${ov.applied ? 'disabled' : ''}>${ov.applied ? '新设定已加进事实账本' : '把新设定加进事实账本'}</button>` : ''}${ov.applied ? '<button class="nim-btn sm" data-map-act="ledger-open">看事实账本</button>' : ''}<button class="nim-btn sm ghost" data-map-act="overall-drop">不要这个方案</button></div>
                 ${ov.rounds && ov.rounds.length ? `<details class="nim-fold nim-subfold"><summary>已按你的意见改了 ${ov.rounds.length} 轮</summary><ol>${ov.rounds.map((f) => `<li>${esc(f)}</li>`).join('')}</ol></details>` : ''}
                 <div class="nim-field nim-mt"><label>对这个方案的意见（AI 按意见接着改）</label>
                   <textarea id="nim-map-overall-fb" class="nim-input nim-textarea" rows="3" placeholder="比如：沙耶香和主角的关系保留主仆，但要是她自愿的；第 3 层的改法太突兀，换个过渡">${esc(mapUi.overallFb || '')}</textarea>
@@ -3280,6 +3280,7 @@
             } else if (act === 'sugg-take') takeSuggestion(Number(b.dataset.k));
             else if (act === 'sugg-all') takeAllSuggestions();
             else if (act === 'overall-facts') applyOverallFacts();
+            else if (act === 'ledger-open') $('nim-ledger-edit').click();
             else if (act === 'overall-revise') {
                 mapUi.overallFb = ($('nim-map-overall-fb') && $('nim-map-overall-fb').value) || '';
                 overallPlan(true);
