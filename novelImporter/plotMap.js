@@ -484,6 +484,22 @@ ${mapLines(layers, plan, { detail: true })}
 {"思路": "100 到 300 字，整体怎么改、为什么这样改", "新设定": ["一条一句"], "改写点": [{"层": 12, "接回": 15, "原因": "原剧情是什么、和新设定哪里冲突", "改法": "具体改成什么"}]}`;
     }
 
+    /** 改写点的意见框用的键：层号 + 改法的哈希，列表增删后也对得上 */
+    function pointKey(x) {
+        return `${x.layer}:${hashText(String(x.change || ''))}`;
+    }
+
+    /** 把总意见和各层改写点下面填的意见整理成一份，发给 AI 改方案 */
+    function composeFeedback(general, points, pointFb = {}) {
+        const lines = [];
+        for (const x of points || []) {
+            const fb = String(pointFb[pointKey(x)] || '').trim();
+            if (fb) lines.push(`- 第${x.layer + 1}层（原改法：${String(x.change || '').slice(0, 80)}${String(x.change || '').length > 80 ? '…' : ''}）：${fb}`);
+        }
+        const g = String(general || '').trim();
+        return [g, lines.length ? `对具体改写点的意见：\n${lines.join('\n')}` : ''].filter(Boolean).join('\n');
+    }
+
     function parseOverallResponse(raw, parseLooseJson) {
         const j = parseLooseJsonObject(raw, parseLooseJson);
         const str = (v) => String(v ?? '').trim();
@@ -763,6 +779,8 @@ ${after || '（到结尾）'}
         buildSuggestPrompt,
         buildOverallPrompt,
         parseOverallResponse,
+        pointKey,
+        composeFeedback,
         parseSuggestResponse,
         buildOutlinePrompt,
         parseOutlineResponse,

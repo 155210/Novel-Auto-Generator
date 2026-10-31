@@ -342,3 +342,17 @@ describe('剧情地图：搜大纲', () => {
         expect(M.searchPlan(layers, plan, '/沙耶./').hits.map((h) => h.field)).toEqual(['一句话', '摘要', '人物']);
     });
 });
+
+describe('剧情地图：改写点逐层意见', () => {
+    it('总意见和各层意见整理成一份', () => {
+        const pts = [
+            { layer: 1, change: '改成签雇佣契约', reason: '' },
+            { layer: 5, change: '改成请求', reason: '' },
+        ];
+        const fb = { [M.pointKey(pts[1])]: '太软了，要有点主仆感' };
+        expect(M.composeFeedback('整体再黑暗一点', pts, fb)).toBe('整体再黑暗一点\n对具体改写点的意见：\n- 第6层（原改法：改成请求）：太软了，要有点主仆感');
+        expect(M.composeFeedback('', pts, fb)).toBe('对具体改写点的意见：\n- 第6层（原改法：改成请求）：太软了，要有点主仆感');
+        expect(M.composeFeedback(' ', pts, {})).toBe('');
+        expect(M.pointKey(pts[0])).not.toBe(M.pointKey({ layer: 1, change: '别的' }));
+    });
+});

@@ -2569,9 +2569,10 @@
             ? `<div class="nim-sub">AI 提议的改写点（${plan.suggestions.length} 条）<button class="nim-btn xs" data-map-act="sugg-all">全部采用</button></div><ul class="nim-map-sugg">${plan.suggestions
                   .map(
                       (s, k) => `<li><b>第 ${s.layer + 1} 层${s.resume !== null && s.resume !== undefined ? ` → 第 ${s.resume + 1} 层接回` : ''}</b><div class="nim-muted">${esc(s.reason)}</div><div>${esc(s.change)}</div>
-                        <div class="nim-row"><button class="nim-btn sm" data-map-act="sugg-take" data-k="${k}">采用</button><button class="nim-btn sm ghost" data-map-act="sugg-go" data-k="${k}">看这层</button><button class="nim-btn sm ghost" data-map-act="sugg-drop" data-k="${k}">不要</button></div></li>`,
+                        <div class="nim-row"><button class="nim-btn sm" data-map-act="sugg-take" data-k="${k}">采用</button><button class="nim-btn sm ghost" data-map-act="sugg-go" data-k="${k}">看这层</button><button class="nim-btn sm ghost" data-map-act="sugg-drop" data-k="${k}">不要</button></div>
+                        ${ov ? `<textarea class="nim-input nim-textarea nim-sugg-fb" rows="2" data-point-fb="${esc(PM.pointKey(s))}" placeholder="这层的改法哪里不行、想怎么改（不填就是没意见）">${esc((ov.pointFb || {})[PM.pointKey(s)] || '')}</textarea>` : ''}</li>`,
                   )
-                  .join('')}</ul>`
+                  .join('')}</ul>${ov ? `<div class="nim-row nim-sugg-foot"><button class="nim-btn primary" data-map-act="overall-revise">按意见改方案</button><span class="nim-muted" id="nim-fb-count">${fbCountText()}</span></div>` : ''}`
             : '';
 
         box.innerHTML = `
@@ -3053,8 +3054,9 @@
         const e = mapEngine();
         if (!e) return toast('先选一本小说', 'warning');
         const ov = State.plan.overall;
-        const fb = revise ? String(mapUi.overallFb || '').trim() : '';
-        if (revise && (!ov || !fb)) return toast('先写你对方案的意见', 'warning');
+        // 总意见和各层改写点下面的意见整理成一份
+        const fb = revise && ov ? PM.composeFeedback(mapUi.overallFb, State.plan.suggestions, ov.pointFb) : '';
+        if (revise && (!ov || !fb)) return toast('先写你对方案的意见：上面的总意见，或各层改写点下面的意见框', 'warning');
         const request = revise ? ov.request : (($('nim-map-overall-req') && $('nim-map-overall-req').value) || State.plan.overallReq || '').trim();
         if (!request) return toast('先写你想怎么改', 'warning');
         const scanned = e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length;
@@ -3080,7 +3082,7 @@
                 overall: { request, idea: r.idea, facts: r.facts, points: r.points, rounds, applied: !!sameFacts, appliedFacts: (ov && ov.appliedFacts) || [] },
                 suggestions: r.points,
             };
-            if (revise) mapUi.overallFb = '';
+            if (revise) mapUi.overallFb = ''; // 各层意见随新方案一起清空（新方案的 pointFb 是空的）
             savePlan();
             toast(`${revise ? `方案改好了（第 ${rounds.length} 轮）` : '整体方案出来了'}：${r.facts.length} 条新设定，${r.points.length} 个改写点${ov && ov.applied && !sameFacts ? '。新设定变了，要重新点「把新设定加进事实账本」' : ''}`, 'success');
         } catch (err) {
@@ -3127,6 +3129,15 @@
         savePlan();
         renderMap();
         toast(`${list.length} 条改写点都写进了各层的改写指令`, 'success');
+    }
+
+    /** 「按意见改方案」旁边显示填了几层意见 */
+    function fbCountText() {
+        const ov = State.plan.overall;
+        if (!ov) return '';
+        const n = (State.plan.suggestions || []).filter((x) => String((ov.pointFb || {})[PM.pointKey(x)] || '').trim()).length;
+        const g = String(mapUi.overallFb || '').trim();
+        return n || g ? `会一起发：${g ? '总意见' : ''}${g && n ? ' + ' : ''}${n ? `${n} 层的意见` : ''}` : '在上面写总意见，或在各层下面写意见';
     }
 
     function takeSuggestion(k) {
@@ -3351,7 +3362,16 @@
         on('nim-map-overall', 'click', () => overallPlan(false));
         // 意见框在地图里，地图重画时靠 mapUi 里存的草稿填回去
         document.addEventListener('input', (ev) => {
-            if (ev.target && ev.target.id === 'nim-map-overall-fb') mapUi.overallFb = ev.target.value;
+            const t = ev.target;
+            if (!t) return;
+            if (t.id === 'nim-map-overall-fb') mapUi.overallFb = t.value;
+            else if (t.dataset && t.dataset.pointFb !== undefined && State.plan.overall) {
+                const ov = State.plan.overall;
+                State.plan = { ...State.plan, overall: { ...ov, pointFb: { ...(ov.pointFb || {}), [t.dataset.pointFb]: t.value } } };
+                savePlan();
+            } else return;
+            const c = $('nim-fb-count');
+            if (c) c.textContent = fbCountText();
         });
         on('nim-map-export', 'click', exportPlan);
         on('nim-map-apply-toxic', 'click', applyToxicToRules);
@@ -5326,6 +5346,8 @@ button.nim-step:hover{background:var(--surface2);}
 .nim-subfold{margin:14px 0;}
 .nim-map-overall{padding:12px 14px;border-radius:12px;background:var(--bg2, rgba(127,127,127,.08));line-height:1.65;font-size:14px;}
 .nim-map-overall ul{margin:4px 0 8px;padding-left:18px;}
+.nim-sugg-fb{margin-top:8px;font-size:13px;}
+.nim-sugg-foot{margin:6px 0 14px;align-items:center;}
 .nim-map-brief{padding:0 14px 12px 50px;font-size:13px;line-height:1.6;color:var(--muted);cursor:pointer;}
 .nim-map-nav{justify-content:space-between;margin-top:6px;}
 .nim-subfold textarea.nim-textarea{min-height:84px;}
