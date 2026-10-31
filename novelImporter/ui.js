@@ -2458,7 +2458,7 @@
     }
 
     function renderMap() {
-        renderMapFooter();
+        renderScanState(); // 里面会画底栏，也刷新「重扫没翻成中文」按钮
         const box = $('nim-map');
         if (!box) return;
         const e = mapEngine();
@@ -2910,12 +2910,12 @@
 
     function renderScanState() {
         const el = $('nim-map-scanstate');
-        if (!el) return;
+        if (!el) return renderMapFooter();
         const sc = mapUi.scan;
         const ja = $('nim-map-rescan-ja');
         if (ja) {
             const n = sc || mapUi.busy ? 0 : notChineseLayers().length;
-            ja.hidden = !n;
+            ja.parentElement.hidden = !n;
             ja.textContent = `重扫没翻成中文的 ${n} 层`;
         }
         const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
@@ -3277,7 +3277,7 @@
            <div class="nim-tools-head"><div><div class="nim-card-title">预扫描与 AI</div><div class="nim-card-desc">便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点</div></div><button class="nim-btn ghost sm" data-goto="nim-sec-mapcfg">模型和雷点设置</button></div>
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
            <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过或失败的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
-           <div class="nim-row"><button id="nim-map-rescan-ja" class="nim-btn sm" hidden></button></div>
+           <div class="nim-row" hidden><button id="nim-map-rescan-ja" class="nim-btn sm"></button></div>
            <details class="nim-fold nim-subfold"><summary>扫描时额外要求（可选）</summary>
              <textarea class="nim-input nim-textarea" rows="3" data-map-set="mapScanExtra" placeholder="比如：原文是日文，摘要和人名一律翻成中文；人物名单里不要写路人"></textarea>
              <div class="nim-hint">写了之后每次扫描、重扫都会带上。</div>
@@ -5078,6 +5078,7 @@ button.nim-step:hover{background:var(--surface2);}
 #nim-modal.on-map .nim-footer-main{display:none;}
 .nim-mt{margin-top:8px;}
 .nim-subfold{margin:14px 0;}
+.nim-subfold textarea.nim-textarea{min-height:84px;}
 .nim-subfold>summary{font-size:13px;color:var(--muted);cursor:pointer;padding:4px 0;}
 .nim-subfold[open]>summary{margin-bottom:10px;}
 .nim-linkbtn{border:0;background:none;padding:0;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline;}
