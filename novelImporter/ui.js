@@ -4685,7 +4685,16 @@
                 log(`按意见重做第 ${i + 1} 层`);
                 const job = e.reject(fb);
                 renderButtons();
-                await job;
+                try {
+                    const res = await job;
+                    if (res && res.restored) {
+                        log(`第 ${i + 1} 层按意见重做没成功（${res.error || '格式一直不对'}），原来的这层已放回，可以再提意见`);
+                        toast('重做没成功，原来的这层已放回', 'warning');
+                    }
+                } catch (err) {
+                    log(`第 ${i + 1} 层按意见重做失败：${err.message}，原来的这层已放回`);
+                    toast(`重做失败：${err.message}`, 'error');
+                }
                 saveProgress();
                 renderAll();
             };
@@ -4698,7 +4707,10 @@
         try {
             const res = await job;
             if (!res) log(`第 ${i + 1} 层：已停止，这层没动`);
-            else if (res.mode === 'full') log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），已整层重做`);
+            else if (res.mode === 'full' && res.result && res.result.restored) {
+                log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），但整层重做没成功（${res.result.error || '格式一直不对'}），原来的这层已放回，可以再提意见`);
+                toast('整层重做没成功，原来的这层已放回', 'warning');
+            } else if (res.mode === 'full') log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），已整层重做`);
             else {
                 log(`第 ${i + 1} 层：正文改了 ${res.applied} 处${res.bad ? `，${res.bad} 处段号对不上没用上` : ''}${res.worldbook ? `，世界书新增或更新 ${res.worldbook} 条` : ''}${res.table ? '，表格换成新的' : ''}，其余没动`);
                 // 改动带出来的新事实记进事实账本，从下一层起生效

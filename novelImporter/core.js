@@ -3136,12 +3136,21 @@ ${blocks}`;
             if (keep) E.results[i] = null;
             else for (let k = i; k < E.results.length; k++) E.results[k] = null;
             E.reviewing = null;
+            const wasReviewing = saved[0] && saved[0].status === 'done' ? i : null;
+            // 重做没成功（报错、格式一直坏、点了停止）：把原来的结果都放回去，这层和后面的层都不丢
+            const restore = () => {
+                saved.forEach((r, k) => (E.results[i + k] = r));
+                if (!keep) E.reviewing = wasReviewing;
+            };
             let res;
             try {
                 res = await processLayer(i, extra);
             } catch (e) {
-                if (e.message !== 'ABORTED') throw e;
-                saved.forEach((r, k) => (E.results[i + k] = r));
+                restore();
+                if (e.message !== 'ABORTED') {
+                    if (!keep && wasReviewing !== null) emit('review', { index: i, result: E.results[i] });
+                    throw e;
+                }
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
                 return null;
             }
@@ -3149,6 +3158,15 @@ ${blocks}`;
                 if (res.status !== 'done' && saved[0]) E.results[i] = saved[0];
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
                 return res;
+            }
+            if (res.status !== 'done' && saved[0]) {
+                // 失败的这次记下来给人看（调用记录接到原结果上），原结果放回去，回到审阅
+                const failed = res;
+                restore();
+                const back = E.results[i];
+                if (back && failed.calls) back.calls = (back.calls || []).concat(failed.calls.filter((c) => !(back.calls || []).includes(c)));
+                emit('review', { index: i, result: back });
+                return { ...failed, restored: true };
             }
             E.reviewing = res.status === 'done' ? i : null;
             emit('review', { index: i, result: res });
