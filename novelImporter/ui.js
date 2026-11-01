@@ -4726,7 +4726,83 @@
         $('nim-card-name').value = State.meta.cardName || baseName();
         $('nim-world-name').value = State.meta.worldName || State.meta.cardName || baseName();
         $('nim-card-desc').value = State.meta.description || '';
+        if ($('nim-view-wb')?.open) renderViewWorldbook();
+        if ($('nim-view-tb')?.open) renderViewTables();
         $('nim-card-avatar').textContent = State.meta.avatar ? `已绑定角色卡 ${State.meta.avatar}，再次导入会更新这张卡并新建一个聊天` : '导入时会新建角色卡';
+    }
+
+    /** 导出页：全部世界书条目（合并后、导出时的样子） */
+    function renderViewWorldbook() {
+        const box = $('nim-view-wb-body');
+        if (!box) return;
+        const e = State.engine;
+        let entries = [];
+        try {
+            entries = e ? Object.values(e.exportWorldbook().entries || {}) : [];
+        } catch (err) {
+            box.innerHTML = `<div class="nim-alert warn">${esc(err.message || String(err))}</div>`;
+            return;
+        }
+        const badge = $('nim-view-wb-badge');
+        if (badge) badge.textContent = entries.length ? `（${entries.length} 条）` : '';
+        if (!entries.length) {
+            box.innerHTML = '<div class="nim-muted">还没有世界书条目</div>';
+            return;
+        }
+        const q = ($('nim-view-wb-q')?.value || '').trim();
+        const hit = (x) => !q || [x.comment, (x.key || []).join(' '), x.content].some((t) => String(t || '').includes(q));
+        const groups = new Map();
+        for (const x of entries.filter(hit)) {
+            const cat = String(x.comment || '').split(' - ')[0] || '其他';
+            if (!groups.has(cat)) groups.set(cat, []);
+            groups.get(cat).push(x);
+        }
+        if (!groups.size) {
+            box.innerHTML = '<div class="nim-muted">没有搜到</div>';
+            return;
+        }
+        box.innerHTML = [...groups.entries()]
+            .map(
+                ([cat, list]) =>
+                    `<div class="nim-sub">${esc(cat)}（${list.length}）</div><ul class="nim-wb-list">` +
+                    list
+                        .map(
+                            (x) =>
+                                `<li><details class="nim-fold"><summary><b>${esc(String(x.comment || '').replace(/^[^-]+ - /, ''))}</b> <span class="nim-muted">${fmtNum(String(x.content || '').length)} 字${x.constant ? ' · 常驻' : ''}</span></summary>${(x.key || []).length ? `<div class="nim-muted">关键词：${esc(x.key.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(x.content || ''))}</div></details></li>`,
+                        )
+                        .join('') +
+                    '</ul>',
+            )
+            .join('');
+    }
+
+    /** 导出页：最新表格（处理完的最后一层之后的状态） */
+    function renderViewTables() {
+        const box = $('nim-view-tb-body');
+        if (!box) return;
+        const e = State.engine;
+        let tables = [];
+        try {
+            tables = e ? e.exportTables() : [];
+        } catch (err) {
+            box.innerHTML = `<div class="nim-alert warn">${esc(err.message || String(err))}</div>`;
+            return;
+        }
+        const badge = $('nim-view-tb-badge');
+        if (badge) badge.textContent = tables.length ? `（${tables.length} 张）` : '';
+        if (!tables.length) {
+            box.innerHTML = '<div class="nim-muted">没有启用表格，或者还没有处理完的层</div>';
+            return;
+        }
+        box.innerHTML = tables
+            .map((t) => {
+                const [cols = [], ...rows] = t.data || [];
+                const body = rows.length
+                    ? `<div class="nim-tb-scroll"><table class="nim-bd nim-tb-view"><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr>${rows.map((r) => `<tr>${cols.map((_, k) => `<td>${esc(r[k] ?? '')}</td>`).join('')}</tr>`).join('')}</table></div>`
+                    : '<div class="nim-muted">空</div>';
+                return `<details class="nim-fold"${rows.length ? ' open' : ''}><summary>${esc(t.name)} <span class="nim-muted">${rows.length} 行</span></summary>${body}</details>`;
+            })
+            .join('');
     }
 
     function readMetaInputs() {
@@ -5001,6 +5077,16 @@
         <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
         <div id="nim-import-result" class="nim-alert" hidden></div>
         <div class="nim-muted nim-center">角色卡 + 世界书 + 聊天楼层 + 插图，然后让记忆插件逐层重建表格并核对</div>
+      </div></div>
+      <div class="nim-card static"><div class="nim-card-body">
+        <details class="nim-fold" id="nim-view-wb"><summary>查看全部世界书条目<span id="nim-view-wb-badge" class="nim-muted"></span></summary>
+          <div class="nim-row"><input id="nim-view-wb-q" class="nim-input" placeholder="搜条目名、关键词或内容"></div>
+          <div id="nim-view-wb-body"></div>
+        </details>
+        <details class="nim-fold" id="nim-view-tb"><summary>查看最新表格<span id="nim-view-tb-badge" class="nim-muted"></span></summary>
+          <div id="nim-view-tb-body"></div>
+        </details>
+        <div class="nim-muted">按已经处理完的层合并后的样子，和导入酒馆时写进去的一样。</div>
       </div></div>
       <div class="nim-card static"><div class="nim-card-body">
         <div class="nim-sub">其他操作</div>
@@ -5365,6 +5451,8 @@ select.nim-input{appearance:auto;}
 .nim-bd{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0;}
 .nim-bd th,.nim-bd td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left;}
 .nim-bd .nim-num{text-align:right;white-space:nowrap;}
+.nim-tb-scroll{overflow-x:auto;max-width:100%;}
+.nim-tb-view td,.nim-tb-view th{min-width:4em;max-width:16em;vertical-align:top;white-space:pre-wrap;word-break:break-word;}
 .nim-keep-later{display:flex;align-items:center;gap:6px;margin:6px 0;font-size:12px;}
 .nim-cl-mark{background:rgba(240,100,100,.25);color:var(--text);border-radius:3px;padding:0 2px;}
 .nim-wr-to{background:rgba(80,200,120,.25);color:var(--text);border-radius:3px;padding:0 2px;margin-left:2px;text-decoration:none;}
@@ -5805,6 +5893,9 @@ button.nim-step:hover{background:var(--surface2);}
         });
         on('nim-carry-char', 'change', fillCarryChats);
         on('nim-carry-load', 'click', loadCarry);
+        $('nim-view-wb')?.addEventListener('toggle', (ev) => ev.target.open && renderViewWorldbook());
+        $('nim-view-tb')?.addEventListener('toggle', (ev) => ev.target.open && renderViewTables());
+        on('nim-view-wb-q', 'input', renderViewWorldbook);
         on('nim-carry-changed', 'change', previewCarry);
         onFile('nim-carry-file', loadCarryFile);
         on('nim-carry-clear', 'click', () => {
