@@ -853,6 +853,20 @@ describe('运行引擎', () => {
         expect(engine.results[0].calls[3].problem).toContain('回复里没有');
     });
 
+    it('只重新输出 JSON：旧回复里同一标签出现两次（后一段坏的），换的是读的那一段', async () => {
+        const { engine } = makeEngine((layer, last) => {
+            if (/只按要求输出这一层的/.test(last)) return '<世界书>{"角色": {"林晚": {"关键词": ["林晚"], "内容": "新的林晚"}}}</世界书>\n<表格>{}</表格>';
+            const r = normal(layer);
+            return layer === 0 ? r + '\n<世界书>{坏的</世界书>' : r;
+        });
+        await engine.run();
+        expect(engine.results[0].warnings.join('')).toContain('世界书');
+        const nr = await engine.regenJson(0, '');
+        expect(nr.warnings).toEqual([]);
+        expect(JSON.stringify(engine.exportWorldbook())).toContain('新的林晚');
+        expect(C.replaceTag('<a>1</a> x <a>2</a>', 'a', '9')).toBe('<a>1</a> x <a>9</a>');
+    });
+
     it('下一层带上一层正文结尾和指定的标签', async () => {
         const { engine, calls } = makeEngine((layer) => normal(layer) + (layer === 0 ? '\n<Plotline>雨夜相遇，埋下伏笔</Plotline>' : ''), { prevTailChars: 30, carryTags: '<Plotline>，不存在的' });
         await engine.run();

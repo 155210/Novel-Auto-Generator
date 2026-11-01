@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.39';
+    const VERSION = '1.5.40';
 
     // ============================================
     // 默认配置
@@ -1334,14 +1334,21 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /** 把回复里某个标签的内容换掉 */
+    /**
+     * 换掉标签里的内容。和 extractTag 认同一段：从后往前第一个有闭合的，
+     * 否则回复里同一个标签出现两次时（AI 写了两遍、正文里提到），换的是前一段、读的是后一段，换了等于没换。
+     */
     function replaceTag(raw, tag, content) {
         const s = String(raw || '');
-        const m = new RegExp(`<${escapeRegExp(tag)}>`, 'i').exec(s);
-        if (!m) return s;
-        const start = m.index + m[0].length;
-        const end = s.indexOf(`</${tag}>`, start);
-        if (end < 0) return s;
-        return s.slice(0, start) + content + s.slice(end);
+        const open = new RegExp(`<${escapeRegExp(tag)}>`, 'gi');
+        const starts = [];
+        let m;
+        while ((m = open.exec(s))) starts.push(m.index + m[0].length);
+        for (let k = starts.length - 1; k >= 0; k--) {
+            const end = s.indexOf(`</${tag}>`, starts[k]);
+            if (end >= 0) return s.slice(0, starts[k]) + content + s.slice(end);
+        }
+        return s;
     }
 
     function parsePatchLines(text) {
