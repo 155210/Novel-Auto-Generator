@@ -4562,6 +4562,17 @@
             renderLayers();
         });
         $('nim-layer-note-save').onclick = saveNote;
+        // 写到一半的意见按层记住：界面重画（停止、暂停、切换）后放回去，改成功了才清掉
+        State.fbDrafts = State.fbDrafts || {};
+        for (const [id, key] of [
+            ['nim-layer-fb', `layer:${i}`],
+            ['nim-feedback', `review:${i}`],
+        ]) {
+            const ta = $(id);
+            if (!ta) continue;
+            if (State.fbDrafts[key]) ta.value = State.fbDrafts[key];
+            ta.addEventListener('input', () => (State.fbDrafts[key] = ta.value));
+        }
         const fbBtn = $('nim-layer-fb-go');
         if (fbBtn)
             fbBtn.onclick = async () => {
@@ -4687,6 +4698,7 @@
                 renderButtons();
                 try {
                     const res = await job;
+                    if (res && res.status === 'done' && !res.restored && State.fbDrafts) delete State.fbDrafts[`review:${i}`];
                     if (res && res.restored) {
                         log(`第 ${i + 1} 层按意见重做没成功（${res.error || '格式一直不对'}），原来的这层已放回，可以再提意见`);
                         toast('重做没成功，原来的这层已放回', 'warning');
@@ -4706,7 +4718,12 @@
         renderButtons();
         try {
             const res = await job;
-            if (!res) log(`第 ${i + 1} 层：已停止，这层没动`);
+            const ok = res && !(res.mode === 'full' && res.result && (res.result.restored || res.result.status !== 'done'));
+            if (ok && State.fbDrafts) {
+                delete State.fbDrafts[`layer:${i}`];
+                delete State.fbDrafts[`review:${i}`];
+            }
+            if (!res) log(`第 ${i + 1} 层：已停止，这层没动，写的意见还在`);
             else if (res.mode === 'full' && res.result && res.result.restored) {
                 log(`第 ${i + 1} 层：AI 认为要整层重做（${res.reason || ''}），但整层重做没成功（${res.result.error || '格式一直不对'}），原来的这层已放回，可以再提意见`);
                 toast('整层重做没成功，原来的这层已放回', 'warning');
