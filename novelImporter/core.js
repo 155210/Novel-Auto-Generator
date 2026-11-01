@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.41';
+    const VERSION = '1.5.42';
 
     // ============================================
     // 默认配置
@@ -728,6 +728,7 @@ P段号 |  | ++新段落          在该段之后另起一段
 从本层正文提取或更新世界书条目，只允许这些分类：${cats.map((c) => c.name).join('、')}
 ${guide}
 - 条目名用原文里的正式名称；关键词是原文里实际出现的名称、别称
+- 已有条目要改名（比如知道了真名）：条目名写新名字，关键词里写上旧条目名，内容照下一条写完整版，程序会把旧条目改成新名字；不改名就照抄旧条目名
 - 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整一整条**：旧内容全部保留（可以改写整合），再加上新信息，程序会用它整条替换旧内容；只写追加的部分会把旧内容冲掉，绝对不要只写新增的那几句；没有新信息就不要输出
 - 只写原文明确写出的信息，不要编造
 ${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? custom + '\n' : ''}格式：{"角色": {"条目名": {"关键词": ["名称", "别称"], "定位": "女主", "内容": "markdown 文本"}}, "地点": {"条目名": {"关键词": [], "内容": "markdown 文本"}}}`;
@@ -1817,18 +1818,30 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 // 旧内容发给过 AI，按理回的是改好的完整版，整条替换；
                 // 但 AI 常常只写「追加」那一段，比旧内容短一大截时当补充接在后面，免得旧信息丢掉
                 // replaceOnly：一律整条替换，不接在后面（用户要求世界书不能一段段叠）
+                const shown = provided.has(`${category}/${existing}`);
+                let replaced = false;
                 if (opts.replaceOnly) {
-                    if (!provided.has(`${category}/${existing}`)) log.push({ type: 'skip', category, name: existing, reason: '没给 AI 旧内容' });
-                    else if (e.内容 !== content) {
-                        e.内容 = content;
-                        log.push({ type: 'replace', category, name: existing });
+                    if (!shown) log.push({ type: 'skip', category, name: existing, reason: '没给 AI 旧内容' });
+                    else {
+                        replaced = true;
+                        if (e.内容 !== content) {
+                            e.内容 = content;
+                            log.push({ type: 'replace', category, name: existing });
+                        }
                     }
-                } else if (provided.has(`${category}/${existing}`) && !isPartialWbUpdate(content, e.内容)) {
+                } else if (shown && !isPartialWbUpdate(content, e.内容)) {
+                    replaced = true;
                     e.内容 = content;
                     log.push({ type: 'replace', category, name: existing });
                 } else if (!e.内容.includes(content)) {
                     e.内容 = `${e.内容}\n\n${content}`;
                     log.push({ type: 'append', category, name: existing });
+                }
+                // AI 看过旧条目、回了完整新版，换了条目名并把旧条目名写进关键词（比如知道了真名）：改名，旧名留在关键词里，条目位置不变
+                // 只用别称当条目名、关键词里没写旧名的，当成同一条，不改名
+                if (replaced && existing !== name && keys.includes(existing)) {
+                    out[category] = Object.fromEntries(Object.entries(out[category]).map(([n, v]) => [n === existing ? name : n, v]));
+                    log.push({ type: 'rename', category, from: existing, name });
                 }
             }
         }

@@ -1005,6 +1005,20 @@ describe('运行引擎', () => {
         expect(Object.keys(r.worldbook.角色)).toEqual(['守卫（红发）', '守卫（白发）']);
     });
 
+    it('世界书：AI 看过旧条目、整条改写时换了名字就改名，没看过只合并不改名', () => {
+        const wb = { 角色: { 甲: { 关键词: ['甲'], 内容: 'A' }, '魅魔（白发）': { 关键词: ['魅魔（白发）'], 内容: '旧' }, 乙: { 关键词: ['乙'], 内容: 'B' } } };
+        const delta = { 角色: { 拉娜: { 关键词: ['拉娜', '魅魔（白发）'], 内容: '新的完整内容' } } };
+        const r = C.mergeWorldbook(wb, delta, { providedNames: new Set(['角色/魅魔（白发）']), replaceOnly: true });
+        expect(Object.keys(r.worldbook.角色)).toEqual(['甲', '拉娜', '乙']);
+        expect(r.worldbook.角色.拉娜.内容).toBe('新的完整内容');
+        expect(r.worldbook.角色.拉娜.关键词).toEqual(['魅魔（白发）', '拉娜']);
+        expect(r.log.some((x) => x.type === 'rename' && x.from === '魅魔（白发）' && x.name === '拉娜')).toBe(true);
+        const r2 = C.mergeWorldbook(wb, delta, { replaceOnly: true });
+        expect(Object.keys(r2.worldbook.角色)).toEqual(['甲', '魅魔（白发）', '乙']);
+        const r3 = C.mergeWorldbook(wb, { 角色: { 拉娜: { 关键词: ['魅魔（白发）'], 内容: '追加' } } }, { providedNames: new Set(['角色/魅魔（白发）']) });
+        expect(r3.worldbook.角色['魅魔（白发）'].内容).toContain('追加');
+    });
+
     it('合并修改给的表格操作', () => {
         const old = { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '甲', 身份: '学生' } }] };
         const m = C.mergeTableOps(old, { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }, { 操作: '插入', 数据: { 事件: 'B' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '乙' } }] });

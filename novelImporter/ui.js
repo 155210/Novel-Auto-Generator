@@ -4380,11 +4380,14 @@
         const TAG = { add: '新增', replace: '更新（整条改写）', append: '补充（接在旧内容后）', skip: '没用上（AI 没看到旧内容）' };
         return (
             `<details class="nim-fold" open><summary>本层世界书（${rows.length} 条：新增 ${n('add')}，更新 ${n('replace') + n('append')}${n('skip') ? `，没用上 ${n('skip')}` : ''}）</summary>` +
-            `<div class="nim-muted">这里是 AI 这一层原样给的内容。同名或关键词对上的条目会并进同一条，导出时一个角色只有一条。「整条改写」：AI 拿到了旧内容，回的是改好的完整版，直接替换；「补充」：这次没把旧内容发给 AI，或者 AI 只回了追加的一段，新内容接在旧内容后面（只在设置里选了「接在旧内容后面」时会这样）；「没用上」：设置为一律整条替换时，AI 没看到旧内容的条目不会拿来替换，旧内容保留。点「合并后的完整条目」看这一层处理完后条目的样子。称呼表里的名字导出时会换成 ${esc(target)}。</div><ul class="nim-wb-list">` +
+            `<div class="nim-muted">这里是 AI 这一层原样给的内容。同名或关键词对上的条目会并进同一条，导出时一个角色只有一条；AI 看过旧条目、整条改写时换了条目名，旧条目会改成新名字（旧名留在关键词里）。「整条改写」：AI 拿到了旧内容，回的是改好的完整版，直接替换；「补充」：这次没把旧内容发给 AI，或者 AI 只回了追加的一段，新内容接在旧内容后面（只在设置里选了「接在旧内容后面」时会这样）；「没用上」：设置为一律整条替换时，AI 没看到旧内容的条目不会拿来替换，旧内容保留。点「合并后的完整条目」看这一层处理完后条目的样子。称呼表里的名字导出时会换成 ${esc(target)}。</div><ul class="nim-wb-list">` +
             rows
                 .map(({ cat, name, keys, old, kind }) => {
                     const asUser = aliases.includes(name);
-                    return `<li><div class="nim-wb-head"><span class="nim-pr-tag">${esc(cat)}</span><b>${esc(name)}</b><span class="nim-pr-tag ${kind === 'add' ? 'is-depth' : ''}">${TAG[kind]}</span>${old && old !== name ? `<span class="nim-muted">并进「${esc(old)}」</span>` : ''}${asUser ? `<span class="nim-muted">导出为 ${esc(target)}</span>` : ''}</div>${keys.length ? `<div class="nim-muted">关键词：${esc(keys.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(r.parsed.worldbook[cat][name].内容 || ''))}</div>${old && after[cat] && after[cat][old] ? `<details class="nim-fold"><summary>合并后的完整条目</summary><div class="nim-wb-content">${esc(String(after[cat][old].内容 || ''))}</div></details>` : ''}</li>`;
+                    // AI 看过旧条目又换了名字：合并时改了名，处理完的条目在新名字下
+                    const renamed = old && old !== name && after[cat] && after[cat][name] && !after[cat][old];
+                    const merged = old && after[cat] && after[cat][renamed ? name : old];
+                    return `<li><div class="nim-wb-head"><span class="nim-pr-tag">${esc(cat)}</span><b>${esc(name)}</b><span class="nim-pr-tag ${kind === 'add' ? 'is-depth' : ''}">${TAG[kind]}</span>${old && old !== name ? `<span class="nim-muted">${renamed ? `由「${esc(old)}」改名` : `并进「${esc(old)}」`}</span>` : ''}${asUser ? `<span class="nim-muted">导出为 ${esc(target)}</span>` : ''}</div>${keys.length ? `<div class="nim-muted">关键词：${esc(keys.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(r.parsed.worldbook[cat][name].内容 || ''))}</div>${merged ? `<details class="nim-fold"><summary>合并后的完整条目</summary><div class="nim-wb-content">${esc(String(merged.内容 || ''))}</div></details>` : ''}</li>`;
                 })
                 .join('') +
             `</ul></details>`
