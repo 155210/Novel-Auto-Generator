@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.40';
+    const VERSION = '1.5.41';
 
     // ============================================
     // 默认配置
@@ -1725,13 +1725,17 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return { text: parts.join('\n\n'), names };
     }
 
+    /**
+     * 找同一个条目：名字一样，或者一边的名字在另一边的关键词里（别称、译名）。
+     * 只是共用一个关键词不算：「XX（粉发）」「XX（白发）」都带「XX」这种泛称，合起来就串了。
+     */
     function findEntryByKey(wb, category, name, keys) {
         const items = wb[category] || {};
         if (items[name]) return name;
-        const want = new Set([name, ...keys]);
+        const want = new Set([name, ...(keys || [])].map((k) => String(k).trim()).filter(Boolean));
         for (const [n, e] of Object.entries(items)) {
-            const ks = [n, ...(e.关键词 || [])];
-            if (ks.some((k) => want.has(k))) return n;
+            if (want.has(n)) return n;
+            if ((e.关键词 || []).some((k) => String(k).trim() === name)) return n;
         }
         return null;
     }
@@ -4206,6 +4210,7 @@ ${sums}
         applyAliases,
         selectRelevantEntries,
         mergeWorldbook,
+        findEntryByKey,
         worldbookToST,
         importWorldbook,
         parseTableTemplate,
