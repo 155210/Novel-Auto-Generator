@@ -1043,6 +1043,30 @@ describe('运行引擎', () => {
         expect(mb).toContain('\uE000裘月寒抬眸道。\uE001');
     });
 
+    it('审阅里按意见重做没成功：原来的这层和后面的层放回去，回到审阅', async () => {
+        let fail = false;
+        const { engine } = makeEngine((layer, last) => {
+            if (fail) return '格式完全不对';
+            if (/你是小说修改助手/.test(last)) return '<整层重做>要整层换写法</整层重做>';
+            return normal(layer);
+        }, { reviewMode: 'every' });
+        await engine.run();
+        expect(engine.reviewing).toBe(0);
+        const old = engine.results[0];
+        // 整层重做路线
+        fail = true;
+        const res = await engine.reject('换个写法');
+        expect(res.restored).toBe(true);
+        expect(engine.results[0]).toBe(old);
+        expect(engine.reviewing).toBe(0);
+        // 按意见改 → AI 要整层重做 → 重做失败
+        fail = false;
+        const r2 = await engine.rejectSmart('换个写法');
+        expect(r2.mode).toBe('full');
+        expect(engine.results[0].status).toBe('done');
+        expect(engine.reviewing).toBe(0);
+    });
+
     it('解析修改回复', () => {
         const r = C.parseEditResponse('<修改>\n[E3] 改成：甲\nE5 后面插入：乙\n丙\n[E2] 前面插入:丁\n[E7] 删掉\n[E4] 替换：\n</修改>');
         expect(r.ops).toEqual([
