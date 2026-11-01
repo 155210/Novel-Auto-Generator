@@ -996,6 +996,15 @@ describe('运行引擎', () => {
         expect(ent.content).toBe('{{user}}第3层');
     });
 
+    it('世界书：只共用一个泛称关键词的两条不合并，名字或别称对上才合并', () => {
+        const wb = { 角色: { '守卫（红发）': { 关键词: ['守卫（红发）', '守卫', '红发守卫'], 内容: 'A' } } };
+        expect(C.findEntryByKey(wb, '角色', '守卫（白发）', ['守卫（白发）', '守卫', '白发守卫'])).toBe(null);
+        expect(C.findEntryByKey(wb, '角色', '红发守卫', ['红发守卫'])).toBe('守卫（红发）');
+        expect(C.findEntryByKey(wb, '角色', '小红', ['小红', '守卫（红发）'])).toBe('守卫（红发）');
+        const r = C.mergeWorldbook(wb, { 角色: { '守卫（白发）': { 关键词: ['守卫'], 内容: 'B' } } }, { replaceOnly: true });
+        expect(Object.keys(r.worldbook.角色)).toEqual(['守卫（红发）', '守卫（白发）']);
+    });
+
     it('合并修改给的表格操作', () => {
         const old = { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '甲', 身份: '学生' } }] };
         const m = C.mergeTableOps(old, { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }, { 操作: '插入', 数据: { 事件: 'B' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '乙' } }] });

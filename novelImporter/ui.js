@@ -4367,13 +4367,8 @@
         }
         const target = C.aliasTargetOf(State.settings);
         const provided = new Set(r.providedNames || []);
-        // 和合并时一样：名字或任一关键词对上旧条目就算同一个
-        const findOld = (cat, name, keys) => {
-            const old = before[cat] || {};
-            if (old[name]) return name;
-            const want = new Set([name, ...keys]);
-            return Object.keys(old).find((n) => [n, ...(old[n].关键词 || [])].some((k) => want.has(k))) || null;
-        };
+        // 和合并时一样：名字一样，或一边的名字在另一边的关键词里
+        const findOld = (cat, name, keys) => C.findEntryByKey(before, cat, name, keys);
         const rows = items.map((x) => {
             const keys = Array.isArray(x.it.关键词) ? x.it.关键词 : x.it.关键词 ? [String(x.it.关键词)] : [];
             const old = findOld(x.cat, x.name, keys);
