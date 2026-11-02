@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.48';
+    const VERSION = '1.5.49';
 
     // ============================================
     // 默认配置
@@ -1481,7 +1481,25 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
                 }
             }
         }
-        const { patches, bad } = parsePatchLines(patch.content);
+        let { patches, bad } = parsePatchLines(patch.content);
+        // AI 有时把补丁行（P12 | 锚点 | +…）或「[P3-P5 同原文]」写进 <改写正文>，原样当正文就把这些行放进楼层了
+        let rewriteAsPatch = false;
+        if (!opts.translate && rewritten.closed && rewritten.content) {
+            const lines = rewritten.content.split('\n').map((l) => l.trim()).filter(Boolean);
+            const isPatch = (l) => /^\[?P\d+\]?\s*[|｜]/.test(l);
+            const isSame = (l) => /^[\[［【(（]?\s*P\d+(\s*[-—~～至到]\s*P?\d+)?\s*(同原文|与原文相同|原文不变|不变|略)\s*[\]］】)）]?$/.test(l);
+            const nPatch = lines.filter(isPatch).length;
+            const nSame = lines.filter(isSame).length;
+            if (nPatch + nSame > 0 && (nSame > 0 || nPatch >= 2)) {
+                if (lines.every((l) => isPatch(l) || isSame(l)) && nPatch > 0) {
+                    const conv = parsePatchLines(lines.filter(isPatch).join('\n'));
+                    patches = patches.concat(conv.patches);
+                    bad = bad.concat(conv.bad);
+                    rewriteAsPatch = true;
+                    warnings.push(`<改写正文> 写成了补丁格式，已按 ${conv.patches.length} 条补丁处理`);
+                } else errors.push('<改写正文> 里混进了补丁行（P段号 | 锚点 | …）或「同原文」省略，改写正文要写完整');
+            }
+        }
         const aliases = alias.closed
             ? uniq(alias.content.split(/[/／、,，\n]/).map((x) => x.trim()).filter((x) => x && x !== '无'))
             : [];
@@ -1496,9 +1514,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             summary: summary.content,
             patches,
             badPatchLines: bad,
-            rewrittenText: rewritten.closed ? stripChangeMarks(opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
+            rewrittenText: rewritten.closed && !rewriteAsPatch ? stripChangeMarks(opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
             // 带 ⟪⟫ 改动标记的版本，只给界面高亮用
-            markedText: rewritten.closed && /[⟪⟫]/.test(rewritten.content) ? (opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
+            markedText: rewritten.closed && !rewriteAsPatch && /[⟪⟫]/.test(rewritten.content) ? (opts.translate ? stripEchoedSource(rewritten.content) : rewritten.content) : null,
             divergence,
             aliases,
             worldbook,
