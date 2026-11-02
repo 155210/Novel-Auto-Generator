@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.54';
+    const VERSION = '1.5.55';
 
     // ============================================
     // 默认配置
@@ -69,7 +69,7 @@
         return `本层补充内容至少约为原文字数的 ${r}%（原文约 ${chars} 字，至少补约 ${Math.round((chars * r) / 100)} 字）；这是下限，确实需要可以多补，但不要为凑字数写空话`;
     }
 
-    const THINK_BRIEF = '- 思考只用来决定哪些地方要改、大概怎么改；不要在思考里逐段逐句过一遍原文，也不要逐条推敲补丁或逐处列出要换的称呼，想好就直接写进输出';
+    const THINK_BRIEF = '## 思考要求\n- 思考只用来决定哪些地方要改、大概怎么改；不要在思考里逐段逐句过一遍原文，也不要逐条推敲补丁或逐处列出要换的称呼，想好就直接写进输出';
 
     const DEFAULT_DIVERGENCE_RULES = `- 出现主角把自己的女人送给别人（送女）的情节
 - 出现主角的女人被他人染指、背叛主角（NTR、绿帽）的情节`;
@@ -738,8 +738,7 @@ P段号 |  | ++新段落          在该段之后另起一段
 - 单条补丁的补充内容不超过 {MAX_PATCH} 字
 - 只写需要改动的地方，没有列出的段落一律保持原文
 - 不要输出整段原文，不要重复原文
-- 原文里单独一行的 〔插图N〕 是插图位置，不要改动或删除
-${THINK_BRIEF}`;
+- 原文里单独一行的 〔插图N〕 是插图位置，不要改动或删除`;
 
     function buildWorldbookSection(settings) {
         const cats = normalizeCategories(settings.worldbookCategories).filter((c) => c.enabled);
@@ -912,8 +911,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
 - 不要写段号（P1、[P1]），不要写补丁格式，不要复述原文对照
 - 原文的分段、换行、对话格式保留
 - 原文中单独一行的 〔插图N〕 原样保留在对应位置
-- 新增或改动的内容用 ⟪ 和 ⟫ 包起来（照原文的不包；程序会去掉这两个符号，只用来给用户标出改动）
-${THINK_BRIEF}`;
+- 新增或改动的内容用 ⟪ 和 ⟫ 包起来（照原文的不包；程序会去掉这两个符号，只用来给用户标出改动）`;
 
     // ============================================
     // 术语表（翻译模式）
@@ -1242,6 +1240,8 @@ ${THINK_BRIEF}`;
         // 翻译不用补丁，原文不带段号，免得 AI 照着段号逐段「原文 → 译文」对照着输出
         const src = tr ? layer.paras.map((p) => p.text) : layer.paras.map((p) => `[P${p.id}]${p.text}`);
         parts.push(`## 本层正文（第 ${layer.index + 1} 层）\n<原文>\n${src.join('\n')}\n</原文>`);
+        // 思考要求放在原文后面：原文几万字，放前面的规则 AI 读到最后就淡了
+        parts.push(THINK_BRIEF);
         // 输出格式放在原文后面：原文很长时，放前面 AI 读到最后就忘了格式，JSON 容易写坏
         parts.push(format + (extra.needBigSummary ? '\n<大总结>总结内容</大总结>' : '') + '\n\n' + (tr ? `<${s.bodyTag}> 里只写正文；其他标签一律写在 </${s.bodyTag}> 后面，不要夹在正文里。\n` : '') + String(s.jsonReminder ?? JSON_REMINDER).trim());
         const wrLines = aiReplaceLines(s);
@@ -1812,7 +1812,7 @@ ${THINK_BRIEF}`;
             for (const [cat, items] of Object.entries(wb || {})) for (const n of Object.keys(items || {})) if (!shown.has(`${cat}/${n}`)) others.push(`${cat}/${n}`);
             if (others.length)
                 parts.push(
-                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n这些条目这一层不要输出：你看不到它们的旧内容，输出了会被忽略。不要换个名字或关键词重新建一条同样的。`,
+                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n这些条目这一层不要输出内容：你看不到它们的旧内容，写了也会被忽略。不要换个名字或关键词重新建一条同样的。\n- 唯一例外是改名（比如本层知道了某个人的真名）：可以输出这一条，条目名写新名字，"关键词" 里写上旧条目名和新名字，"内容" 写「改名」就行。程序只改名、加关键词，旧内容不动；之后的层出现新名字时会把全文发给你，到时再更新内容。`,
                 );
         }
         return { text: parts.join('\n\n'), names };
@@ -1931,7 +1931,8 @@ ${THINK_BRIEF}`;
                 }
                 // AI 看过旧条目、回了完整新版，换了条目名并把旧条目名写进关键词（比如知道了真名）：改名，旧名留在关键词里，条目位置不变
                 // 只用别称当条目名、关键词里没写旧名的，当成同一条，不改名
-                if (replaced && existing !== name && keys.includes(existing)) {
+                // 没给 AI 旧内容的条目也允许改名（内容不动）：改名后关键词里有新名字，后面的层能按新名字把它挑出来带全文
+                if ((replaced || (opts.replaceOnly && !shown)) && existing !== name && keys.includes(existing) && !out[category][name]) {
                     out[category] = Object.fromEntries(Object.entries(out[category]).map(([n, v]) => [n === existing ? name : n, v]));
                     log.push({ type: 'rename', category, from: existing, name });
                 }
