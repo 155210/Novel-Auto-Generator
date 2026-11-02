@@ -446,16 +446,22 @@ describe('运行引擎', () => {
 
     function makeEngine(responder, extra = {}) {
         const calls = [];
+        const merges = [];
         const engine = C.createEngine({
             settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1, aliasReplaceBy: 'text', ...extra },
             tableTemplate: TEMPLATE,
             callModel: async (messages, info) => {
+                // 合并世界书旧条目的旁路请求单独记，不算进 calls（免得打乱各层请求的序号）
+                if (info.purpose === 'wb-merge') {
+                    merges.push({ messages, info });
+                    return responder(info.layer, messages[messages.length - 1].content, -1);
+                }
                 calls.push({ messages, info });
                 return responder(info.layer, messages[messages.length - 1].content, calls.length);
             },
         });
         engine.prepare(NOVEL);
-        return { engine, calls };
+        return { engine, calls, merges };
     }
 
     const normal = (layer) =>
@@ -489,6 +495,9 @@ describe('运行引擎', () => {
         expect(C.expansionText(10, 1000)).toContain('至少');
         expect(C.expansionText(10, 1000)).toContain('100 字');
         expect(C.expansionText(0, 1000)).toContain('不用补就不补');
+        expect(C.expansionText(0, 1000, 10)).toContain('最多');
+        expect(C.expansionText(0, 1000, 10)).toContain('100 字');
+        expect(C.expansionText(2, 1000, 10)).toContain('2% 到 10%');
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('不要逐条推敲补丁');
     });
@@ -499,6 +508,25 @@ describe('运行引擎', () => {
         expect(out).not.toContain('说话人');
         expect(out).toContain('我自己的要求');
         expect(C.DEFAULT_REWRITE_PROMPT).not.toContain('说话人');
+    });
+
+    it('整条替换：AI 给没发全文的旧条目写了新信息，另外请求一次合并成完整一条，改名照常', async () => {
+        const wbReply = (layer) =>
+            layer === 0
+                ? reply({ title: '一', wb: { 角色: { 某夫人: { 关键词: ['某夫人'], 内容: '旧内容：温柔，住在城东' } } } })
+                : reply({ title: '二', wb: { 角色: { 秦霜: { 关键词: ['秦霜', '某夫人'], 内容: '真名秦霜，会剑法' } } } });
+        const { engine, merges } = makeEngine((layer, prompt) => {
+            if (prompt.includes('把新信息合进旧条目')) return '{"角色/某夫人": "真名秦霜。温柔，住在城东，会剑法"}';
+            return wbReply(layer);
+        });
+        await engine.run();
+        expect(merges.length).toBeGreaterThan(0);
+        const merge = merges[0].messages[1].content;
+        expect(merge).toContain('旧内容：温柔，住在城东');
+        expect(merge).toContain('真名秦霜，会剑法');
+        const ent = Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - 秦霜');
+        expect(ent.content).toBe('真名秦霜。温柔，住在城东，会剑法');
+        expect(ent.key).toContain('某夫人');
     });
 
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {

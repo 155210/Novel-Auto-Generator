@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.55';
+    const VERSION = '1.5.56';
 
     // ============================================
     // 默认配置
@@ -62,11 +62,17 @@
             .join('\n');
     }
 
-    /** 扩写比例是下限：0 = 不要求补，觉得不用补就不补 */
-    function expansionText(ratio, chars) {
-        const r = Math.max(0, Number(ratio) || 0);
-        if (!r) return '本层不要求补充字数：需要补的地方才补，觉得不用补就不补，不要为凑字数加内容';
-        return `本层补充内容至少约为原文字数的 ${r}%（原文约 ${chars} 字，至少补约 ${Math.round((chars * r) / 100)} 字）；这是下限，确实需要可以多补，但不要为凑字数写空话`;
+    /** 扩写比例：下限 ratio、上限 max（百分比，0 = 不设）。只有上限时不用补的层可以不补 */
+    function expansionText(ratio, chars, max = 0) {
+        const lo = Math.max(0, Number(ratio) || 0);
+        let hi = Math.max(0, Number(max) || 0);
+        if (hi && hi < lo) hi = lo;
+        const n = (r) => Math.round((chars * r) / 100);
+        const tail = '不要为凑字数写空话';
+        if (lo && hi) return `本层补充内容约为原文字数的 ${lo}% 到 ${hi}%（原文约 ${chars} 字，补约 ${n(lo)} 到 ${n(hi)} 字）；${tail}`;
+        if (lo) return `本层补充内容至少约为原文字数的 ${lo}%（原文约 ${chars} 字，至少补约 ${n(lo)} 字）；这是下限，确实需要可以多补，但${tail}`;
+        if (hi) return `本层补充内容最多约为原文字数的 ${hi}%（原文约 ${chars} 字，最多补约 ${n(hi)} 字）；需要补的地方才补，觉得不用补就不补，${tail}`;
+        return `本层不要求补充字数：需要补的地方才补，觉得不用补就不补，${tail}`;
     }
 
     const THINK_BRIEF = '## 思考要求\n- 思考只用来决定哪些地方要改、大概怎么改；不要在思考里逐段逐句过一遍原文，也不要逐条推敲补丁或逐处列出要换的称呼，想好就直接写进输出';
@@ -182,7 +188,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         cleanKeep: [],
 
         // 改写
-        expansionRatio: 10,
+        expansionRatio: 0,
+        expansionMax: 10,
         rewritePrompt: DEFAULT_REWRITE_PROMPT,
         outputFormat: OUTPUT_FORMAT,
         jsonReminder: JSON_REMINDER,
@@ -1173,7 +1180,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         const layerText = layer.paras.map((p) => p.text).join('\n');
         const tr = !!layer.translate;
         const parts = [];
-        const ratioText = expansionText(s.expansionRatio, layer.chars);
+        const ratioText = expansionText(s.expansionRatio, layer.chars, s.expansionMax);
         if (tr && layer.fullZh) {
             parts.push(`你是小说改编助手。任务：把下面这一层小说按用户的改写要求改好，整层完整输出改写后的正文，导入角色扮演聊天，同时提取世界书和记忆表格。`);
             parts.push(FULL_OUTPUT_RULES);
@@ -1812,7 +1819,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
             for (const [cat, items] of Object.entries(wb || {})) for (const n of Object.keys(items || {})) if (!shown.has(`${cat}/${n}`)) others.push(`${cat}/${n}`);
             if (others.length)
                 parts.push(
-                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n这些条目这一层不要输出内容：你看不到它们的旧内容，写了也会被忽略。不要换个名字或关键词重新建一条同样的。\n- 唯一例外是改名（比如本层知道了某个人的真名）：可以输出这一条，条目名写新名字，"关键词" 里写上旧条目名和新名字，"内容" 写「改名」就行。程序只改名、加关键词，旧内容不动；之后的层出现新名字时会把全文发给你，到时再更新内容。`,
+                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n- 这些条目只给了名字，没给旧内容。本层没有它们的新信息就不要输出。\n- 本层有某一条的新信息（比如知道了真名、身份或关系变了）时，可以输出这一条："内容" 只写本层得到的新信息，不用写完整，程序会另外把它和旧内容合并成完整的一条。条目名照抄；要改名（比如知道了真名）就写新名字，并在 "关键词" 里写上旧条目名。\n- 不要换个名字或关键词重新建一条同样的。`,
                 );
         }
         return { text: parts.join('\n\n'), names };
@@ -3058,6 +3065,62 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             }
         }
 
+        /**
+         * 整条替换模式下，AI 给没发全文的旧条目写了本层的新信息：单独发一次请求（只带旧内容和新信息，不带原文，很省），
+         * 让 AI 合成完整的一条，替换 parsed 里的内容，并把这条记进 providedNames，合并时按整条替换（改名也照常改）。
+         * 请求失败就保持原样：只改名、加关键词，内容不动。
+         */
+        async function mergeUnseenEntries(i, st, parsed, r) {
+            if (!settings.worldbookEnabled || settings.wbUpdateMode === 'auto') return;
+            const provided = new Set(r.providedNames || []);
+            const wb = st.worldbook || {};
+            const todo = [];
+            for (const [cat, items] of Object.entries(parsed.worldbook || {})) {
+                if (!items || typeof items !== 'object' || Array.isArray(items)) continue;
+                for (const [rawName, item] of Object.entries(items)) {
+                    if (!item || typeof item !== 'object') continue;
+                    const name = String(rawName).trim();
+                    const keys = uniq(Array.isArray(item.关键词) ? item.关键词 : item.关键词 ? [item.关键词] : []);
+                    const add = String(item.内容 || '').trim();
+                    if (!name || !add || /^(改名|无|没有)[。.]?$/.test(add)) continue;
+                    const existing = findEntryByKey(wb, cat, name, keys);
+                    if (!existing || provided.has(`${cat}/${existing}`)) continue;
+                    todo.push({ key: `${cat}/${existing}`, item, old: String((wb[cat][existing] || {}).内容 || ''), add });
+                }
+            }
+            if (!todo.length) return;
+            const prompt = `下面是世界书里的旧条目，和刚读完的一层小说里得到的新信息。把新信息合进旧条目，每条写成完整的一条：
+- 旧内容里仍然成立的信息都保留，和新信息冲突的以新信息为准
+- 格式、写法照旧条目，不要加「追加」「更新」这类字样
+- 只输出一个 JSON 对象，键是下面的条目名（原样照抄），值是合并后的完整内容；不要写别的
+
+${todo.map((t) => `### ${t.key}\n【旧内容】\n${t.old}\n【本层新信息】\n${t.add}`).join('\n\n')}`;
+            try {
+                if (E.stopRequested) throw new Error('ABORTED');
+                const messages = [
+                    { role: 'system', content: '你是世界书条目整理工具。只把新信息合进旧条目，输出 JSON，不写任何别的话。' },
+                    { role: 'user', content: prompt },
+                ];
+                const out = parseLooseJson(await callAndLog(r, messages, { layer: i, attempt: 0, prompt, purpose: 'wb-merge' }, true));
+                const done = [];
+                for (const t of todo) {
+                    const v = out && typeof out[t.key] === 'string' ? out[t.key].trim() : '';
+                    if (!v) continue;
+                    t.item.内容 = v;
+                    provided.add(t.key);
+                    done.push(t.key);
+                }
+                r.providedNames = [...provided];
+                if (done.length) {
+                    parsed.warnings.push(`世界书：${done.join('、')} 这次没发全文，已按本层新信息另外合并成完整一条`);
+                    emit('layer-warn', { index: i, warnings: [parsed.warnings[parsed.warnings.length - 1]] });
+                }
+            } catch (e) {
+                if (String(e.message || e) === 'ABORTED') throw e;
+                emit('layer-warn', { index: i, warnings: [`世界书合并旧条目失败（${String(e.message || e)}），这几条只改名、加关键词：${todo.map((t) => t.key).join('、')}`] });
+            }
+        }
+
         /** 把坏掉的 JSON 块单独发给 AI 修，返回替换好的回复；请求失败就原样返回 */
         async function repairJsonBlocks(i, raw, errors, r) {
             const tags = JSON_TAGS.filter((t) => errors.includes(`<${t}> 不是合法 JSON`));
@@ -3167,6 +3230,7 @@ ${blocks}`;
                     emit('layer-retry', { index: i, attempt, error: lastErr.message });
                     continue;
                 }
+                await mergeUnseenEntries(i, st, parsed, r);
                 r.raw = raw;
                 r.parsed = parsed;
                 r.warnings = parsed.warnings;
