@@ -4565,8 +4565,15 @@
             if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
             body += `<div class="nim-sub">楼层内容${State.hlOff ? '' : '<span class="nim-muted">（<mark class="nim-hl">高亮</mark>是 AI 补充的，只在这里显示，导出不带）</span>'}<button id="nim-hl-toggle" class="nim-btn ghost sm" style="margin-left:8px">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div>${State.hlOff ? '' : '<div class="nim-row nim-hl-nav" id="nim-hl-nav" hidden><button class="nim-btn sm" data-hl-go="-1">↑ 上一处</button><span id="nim-hl-pos" class="nim-muted"></span><button class="nim-btn sm" data-hl-go="1">下一处 ↓</button></div>'}<pre class="nim-pre" id="nim-floor-pre">${floorHtml(e, i, floor)}</pre>`;
-            if (r.patchStats.failed.length)
-                body += `<div class="nim-sub">没对上的补丁</div><pre class="nim-pre">${esc(r.patchStats.failed.map((f) => `P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`).join('\n'))}</pre>`;
+            if (r.patchStats.failed.length) {
+                const long = r.patchStats.failed.filter((f) => /超过 \d+ 字/.test(f.reason)).length;
+                body += `<div class="nim-sub">没对上的补丁${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div><div class="nim-pre">${r.patchStats.failed
+                    .map((f, k) => {
+                        const btn = /超过 \d+ 字/.test(f.reason) ? ` <button class="nim-btn sm" data-force-patch="${k}">确认加进去</button>` : ' <span class="nim-muted">（锚点对不上，打不上去；要改可以用「按要求改这层」或重 roll）</span>';
+                        return `<div style="margin:4px 0">${esc(`P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`)}${btn}</div>`;
+                    })
+                    .join('')}</div>`;
+            }
             if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
             body += layerWorldbookHtml(e, i, r);
             if (r.parsed.terms && r.parsed.terms.length) body += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
@@ -4742,6 +4749,18 @@
                 saveProgress();
                 renderAll();
             };
+        document.querySelectorAll('[data-force-patch]').forEach((b) => {
+            b.onclick = () => {
+                if (e.running) return toast('正在处理中，先暂停再改', 'warning');
+                const v = b.dataset.forcePatch;
+                const n = e.forcePatches(i, v === 'all' ? undefined : Number(v));
+                if (!n) return toast('这条打不上去', 'warning');
+                log(`第 ${i + 1} 层：手动确认了 ${n} 条超字数的补丁，已加进楼层`);
+                toast(`已加进去 ${n} 条`, 'success');
+                saveProgress();
+                renderAll();
+            };
+        });
         const hlBtn = $('nim-hl-toggle');
         if (hlBtn)
             hlBtn.onclick = () => {
