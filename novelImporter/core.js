@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.53';
+    const VERSION = '1.5.54';
 
     // ============================================
     // 默认配置
@@ -49,9 +49,27 @@
         '[A-Za-z0-9]{2,}\\s?(?:[^\\sA-Za-z0-9\\u3400-\\u9fff]|[点點])\\s?(?:cc|com|net|org|cn)(?![A-Za-z])',
     ];
 
-    const DEFAULT_REWRITE_PROMPT = `- 对话之后如果看不出是谁说的，用一句简短的动作或神态补上说话人，例如：“……。”裘月寒蹙眉道。
-- 已经能看出说话人的对话不要补。
-- 补充内容贴合原文文风，不要改变剧情，不要添加原文没有的事件。`;
+    const DEFAULT_REWRITE_PROMPT = `- 补充内容贴合原文文风，不要改变剧情，不要添加原文没有的事件。`;
+    // 1.5.54 以前默认改写要求里的两行（逐句补说话人，思考量很大），旧设置里原样还在的话加载时删掉
+    const OLD_SPEAKER_RULE_LINES = [
+        '- 对话之后如果看不出是谁说的，用一句简短的动作或神态补上说话人，例如：“……。”裘月寒蹙眉道。',
+        '- 已经能看出说话人的对话不要补。',
+    ];
+    function dropOldSpeakerRule(text) {
+        return String(text || '')
+            .split('\n')
+            .filter((l) => !OLD_SPEAKER_RULE_LINES.includes(l.trim()))
+            .join('\n');
+    }
+
+    /** 扩写比例是下限：0 = 不要求补，觉得不用补就不补 */
+    function expansionText(ratio, chars) {
+        const r = Math.max(0, Number(ratio) || 0);
+        if (!r) return '本层不要求补充字数：需要补的地方才补，觉得不用补就不补，不要为凑字数加内容';
+        return `本层补充内容至少约为原文字数的 ${r}%（原文约 ${chars} 字，至少补约 ${Math.round((chars * r) / 100)} 字）；这是下限，确实需要可以多补，但不要为凑字数写空话`;
+    }
+
+    const THINK_BRIEF = '- 思考只用来决定哪些地方要改、大概怎么改；不要在思考里逐段逐句过一遍原文，也不要逐条推敲补丁或逐处列出要换的称呼，想好就直接写进输出';
 
     const DEFAULT_DIVERGENCE_RULES = `- 出现主角把自己的女人送给别人（送女）的情节
 - 出现主角的女人被他人染指、背叛主角（NTR、绿帽）的情节`;
@@ -720,7 +738,8 @@ P段号 |  | ++新段落          在该段之后另起一段
 - 单条补丁的补充内容不超过 {MAX_PATCH} 字
 - 只写需要改动的地方，没有列出的段落一律保持原文
 - 不要输出整段原文，不要重复原文
-- 原文里单独一行的 〔插图N〕 是插图位置，不要改动或删除`;
+- 原文里单独一行的 〔插图N〕 是插图位置，不要改动或删除
+${THINK_BRIEF}`;
 
     function buildWorldbookSection(settings) {
         const cats = normalizeCategories(settings.worldbookCategories).filter((c) => c.enabled);
@@ -893,7 +912,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
 - 不要写段号（P1、[P1]），不要写补丁格式，不要复述原文对照
 - 原文的分段、换行、对话格式保留
 - 原文中单独一行的 〔插图N〕 原样保留在对应位置
-- 新增或改动的内容用 ⟪ 和 ⟫ 包起来（照原文的不包；程序会去掉这两个符号，只用来给用户标出改动）`;
+- 新增或改动的内容用 ⟪ 和 ⟫ 包起来（照原文的不包；程序会去掉这两个符号，只用来给用户标出改动）
+${THINK_BRIEF}`;
 
     // ============================================
     // 术语表（翻译模式）
@@ -1155,7 +1175,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         const layerText = layer.paras.map((p) => p.text).join('\n');
         const tr = !!layer.translate;
         const parts = [];
-        const ratioText = `本层补充内容合计约为原文字数的 ${s.expansionRatio}%（原文约 ${layer.chars} 字，补充约 ${Math.round((layer.chars * s.expansionRatio) / 100)} 字）`;
+        const ratioText = expansionText(s.expansionRatio, layer.chars);
         if (tr && layer.fullZh) {
             parts.push(`你是小说改编助手。任务：把下面这一层小说按用户的改写要求改好，整层完整输出改写后的正文，导入角色扮演聊天，同时提取世界书和记忆表格。`);
             parts.push(FULL_OUTPUT_RULES);
@@ -4302,6 +4322,8 @@ ${sums}
         adPatternsFor,
         DEFAULT_INLINE_AD_PATTERNS,
         DEFAULT_REWRITE_PROMPT,
+        dropOldSpeakerRule,
+        expansionText,
         DEFAULT_DIVERGENCE_RULES,
         DEFAULT_DIVERGENCE_DIRECTION,
         DEFAULT_WORLDBOOK_CATEGORIES,
