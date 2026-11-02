@@ -162,6 +162,11 @@
         out.worldbookCategories = C.normalizeCategories(saved.worldbookCategories || d.worldbookCategories);
         out.preset = saved.preset ? C.normalizePreset(saved.preset) : saved.messageChain ? C.presetFromMessageChain(saved.messageChain) : d.preset;
         delete out.messageChain;
+        // 旧版默认改写要求里的「补说话人」两行删掉（只删原样没改过的那两行，只做一次）
+        if (!saved.speakerRuleDropped) {
+            out.rewritePrompt = C.dropOldSpeakerRule(out.rewritePrompt).trim() || d.rewritePrompt;
+            out.speakerRuleDropped = true;
+        }
         return out;
     }
 
@@ -274,7 +279,7 @@
             },
         ],
         rewrite: [
-            { key: 'expansionRatio', label: '扩写比例 %', type: 'number', hint: '补充内容约占原文字数的比例，默认 10' },
+            { key: 'expansionRatio', label: '扩写比例 %', type: 'number', hint: '补充字数的下限：填 1 就是至少补 1%，可以多补；填 0 就是不要求，不用补的层可以不补。默认 10' },
             { key: 'maxPatchChars', label: '单条补丁最多字数', type: 'number' },
             { key: 'rewritePrompt', label: '改写要求', type: 'textarea', rows: 5 },
             {

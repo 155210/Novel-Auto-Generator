@@ -485,6 +485,22 @@ describe('运行引擎', () => {
         expect(engine.results[0].finalParas.join('\n')).toContain('整层正文1乙。');
     });
 
+    it('扩写比例是下限，0 不要求补；补丁规则里让思考别逐条推敲', () => {
+        expect(C.expansionText(10, 1000)).toContain('至少');
+        expect(C.expansionText(10, 1000)).toContain('100 字');
+        expect(C.expansionText(0, 1000)).toContain('不用补就不补');
+        const { engine } = makeEngine(normal);
+        expect(engine.buildRequestFor(0).prompt).toContain('不要逐条推敲补丁');
+    });
+
+    it('旧默认改写要求里的「补说话人」两行会被删掉，用户自己写的保留', () => {
+        const old = '- 对话之后如果看不出是谁说的，用一句简短的动作或神态补上说话人，例如：“……。”裘月寒蹙眉道。\n- 已经能看出说话人的对话不要补。\n- 补充内容贴合原文文风。\n- 我自己的要求';
+        const out = C.dropOldSpeakerRule(old);
+        expect(out).not.toContain('说话人');
+        expect(out).toContain('我自己的要求');
+        expect(C.DEFAULT_REWRITE_PROMPT).not.toContain('说话人');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
