@@ -1040,6 +1040,17 @@ describe('运行引擎', () => {
         expect(q).toContain('全名和其他称呼不用你换');
     });
 
+    it('程序换主角称呼时不误换别人名字里的同样几个字', () => {
+        expect(C.applyAliases('张三和张三丰见面，张三先说话', ['张三'], '{{user}}', ['张三丰'])).toBe('{{user}}和张三丰见面，{{user}}先说话');
+        expect(C.applyAliases('张三和张三丰', ['张三'], '{{user}}')).toBe('{{user}}和{{user}}丰');
+    });
+
+    it('主角替换 mixed：翻译层整篇交给 AI 换，补丁层只交代易混称呼', async () => {
+        const s = { ...C.DEFAULT_SETTINGS, aliasReplaceBy: 'mixed', protagonistName: '张三' };
+        expect(C.buildUserNameSection(s, { aliases: ['张三'] }, true)).toContain('一律写成');
+        expect(C.buildUserNameSection(s, { aliases: ['张三'] }, false)).toBe('');
+    });
+
     it('合并修改给的表格操作', () => {
         const old = { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '甲', 身份: '学生' } }] };
         const m = C.mergeTableOps(old, { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }, { 操作: '插入', 数据: { 事件: 'B' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '乙' } }] });
