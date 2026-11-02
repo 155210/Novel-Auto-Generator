@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.57';
+    const VERSION = '1.5.58';
 
     // ============================================
     // 默认配置
@@ -1643,7 +1643,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                 failed.push({ patch: pt, reason: '补充内容为空' });
                 continue;
             }
-            if (pt.text.length > maxChars) {
+            // force：用户在审阅页手动确认过的超长补丁，不再卡字数
+            if (pt.text.length > maxChars && !pt.force) {
                 failed.push({ patch: pt, reason: `补充内容超过 ${maxChars} 字` });
                 continue;
             }
@@ -4131,6 +4132,30 @@ ${sums}
             },
             stop() {
                 E.stopRequested = true;
+            },
+            /**
+             * 用户手动确认没对上的补丁：只放行「超过字数」的那些（锚点对不上的放行了也打不上去）。
+             * k 是 patchStats.failed 里的下标，不传就全部放行。返回放行了几条。
+             */
+            forcePatches(i, k) {
+                const r = E.results[i];
+                if (!r || r.status !== 'done' || !r.patchStats || r.patchStats.rewritten || !r.parsed) return 0;
+                const list = (r.patchStats.failed || []).filter((f, n) => (k === undefined || n === k) && /超过 \d+ 字/.test(f.reason));
+                let n = 0;
+                for (const f of list) {
+                    const same = (p) => p.pid === f.patch.pid && p.op === f.patch.op && p.anchor === f.patch.anchor && p.text === f.patch.text;
+                    const pt = (r.parsed.patches || []).find((p) => same(p) && !p.force);
+                    if (pt) {
+                        pt.force = true;
+                        n++;
+                    }
+                }
+                if (!n) return 0;
+                const ap = applyPatches(E.layers[i].paras, r.parsed.patches, { maxPatchChars: settings.maxPatchChars });
+                r.finalParas = ap.paras;
+                r.patchStats = { ...r.patchStats, applied: ap.applied, failed: ap.failed, addedChars: ap.addedChars, moved: ap.moved };
+                emit('layer-done', { index: i, result: r });
+                return n;
             },
             buildRequestFor(i) {
                 return buildRequest(i, replay(i));

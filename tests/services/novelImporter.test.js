@@ -542,6 +542,19 @@ describe('运行引擎', () => {
         expect(ent.content).toContain('新信息乙');
     });
 
+    it('超字数的补丁可以手动确认加进去', async () => {
+        const long = '补'.repeat(300);
+        const { engine } = makeEngine((layer) => (layer === 0 ? reply({ patches: `P2 | 你来了。” | +${long}` }) : normal(layer)), { maxPatchChars: 100 });
+        await engine.run();
+        const r = engine.results[0];
+        expect(r.patchStats.failed.length).toBe(1);
+        expect(r.finalParas.join('\n')).not.toContain(long);
+        expect(engine.forcePatches(0, 0)).toBe(1);
+        expect(r.patchStats.failed.length).toBe(0);
+        expect(r.finalParas.join('\n')).toContain(long);
+        expect(engine.forcePatches(0)).toBe(0);
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
