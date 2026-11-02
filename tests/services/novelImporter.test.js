@@ -349,6 +349,22 @@ describe('解析回复', () => {
         expect(r.warnings.length).toBe(1);
     });
 
+    it('<改写正文> 只抄了占位文字时报错重试', () => {
+        const judge = { 触发: true, 规则: 'x', 说明: '', 回归原文: false };
+        const r = C.parseLayerResponse(reply({ rewritten: '\n本层完整的改写后正文\n', judge }));
+        expect(r.ok).toBe(false);
+        expect(r.errors[0]).toContain('占位文字');
+    });
+
+    it('触发了改写但只改几段时可以用 <补丁>', () => {
+        const judge = { 触发: true, 规则: 'x', 说明: '改了一句', 回归原文: false };
+        const r = C.parseLayerResponse(reply({ patches: 'P2 | 天色渐晚 | =天色已晚。', judge }));
+        expect(r.ok).toBe(true);
+        expect(r.divergence.triggered).toBe(true);
+        expect(r.patches.length).toBe(1);
+        expect(C.parseLayerResponse(reply({ patches: '', judge }).replace(/<补丁>[\s\S]*<\/补丁>/, '')).ok).toBe(false);
+    });
+
     it('<改写正文> 混进补丁行或「同原文」省略时报错重试', () => {
         const a = C.parseLayerResponse(reply({ rewritten: '天色渐晚，他走在路上。\n[P3-P5 同原文]\n他推开了门。' }));
         expect(a.ok).toBe(false);
