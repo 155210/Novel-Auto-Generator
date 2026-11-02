@@ -331,10 +331,18 @@
                 label: '主角替换怎么做',
                 type: 'select',
                 options: [
-                    ['ai', 'AI 输出时按语境替换（写进每层提示词）'],
-                    ['text', '导出和导入酒馆时按称呼直接替换'],
+                    ['mixed', '程序换全名，单字和易混称呼交给 AI（推荐）'],
+                    ['ai', '全部交给 AI 按语境替换'],
+                    ['text', '全部由程序按称呼直接替换'],
                 ],
-                hint: '交给 AI 时，单字称呼、带「君」「同学」的称呼也会换，别的角色同名同字不会被误换；只对之后生成或重做的层有效。已经按旧方式生成的层，切到「按称呼直接替换」导出才会换。补丁模式下 AI 要逐处写替换补丁，补丁会多一些',
+                hint: '推荐：全名这类不会认错的称呼导出时由程序直接换，AI 只管单字昵称和下面列出的易混称呼，补丁少很多。「全部交给 AI」在补丁模式下 AI 要给每一处名字写替换补丁，输出会很长。只对之后生成或重做的层有效',
+            },
+            {
+                key: 'aliasAmbiguous',
+                label: '交给 AI 判断的易混称呼',
+                type: 'textarea',
+                rows: 2,
+                hint: '每行一个。别的角色也会这么叫、程序直接换会换错的称呼写这里（单字的自动算）。只在上面选了「程序换全名」时有用',
             },
             { key: 'titleTag', label: '标题标签', type: 'text' },
             { key: 'bodyTag', label: '正文标签', type: 'text' },
@@ -4537,7 +4545,7 @@
             </details>`;
         if (r) body += promptHtml(r);
         if (r) body += callsHtml(r);
-        body += `<details class="nim-fold"><summary>原文</summary><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
+        body += `<details class="nim-fold"><summary>原文</summary><div class="nim-row"><button id="nim-src-copy" class="nim-btn sm">复制原文</button><button id="nim-src-export" class="nim-btn sm">导出原文为文件</button></div><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
         const reviewHtml = reviewing
             ? `<div class="nim-review">
                  <div class="nim-sub">审阅这一层：没问题就继续，不行就写修改意见重做</div>
@@ -4632,6 +4640,27 @@
                 const body = (r.request || []).map((m, k) => `===== 第 ${k + 1} 条消息【${m.role}】${String(m.content || '').length} 字 =====\n${m.content}`).join('\n\n');
                 download(head.join('\n') + '\n\n' + body, `${baseName()}-第${i + 1}层-完整消息.txt`, 'text/plain');
             };
+        const srcText = () => e.layers[i].paras.map((p) => p.text).join('\n');
+        const srcCopy = $('nim-src-copy');
+        if (srcCopy)
+            srcCopy.onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(srcText());
+                    toast(`已复制第 ${i + 1} 层原文（${srcText().length} 字）`, 'success');
+                } catch (err) {
+                    // 有的手机浏览器不给写剪贴板：退回用选中文字的老办法
+                    const ta = document.createElement('textarea');
+                    ta.value = srcText();
+                    ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+                    document.body.appendChild(ta);
+                    ta.select();
+                    const ok = document.execCommand && document.execCommand('copy');
+                    ta.remove();
+                    toast(ok ? `已复制第 ${i + 1} 层原文` : '复制不了，用「导出原文为文件」', ok ? 'success' : 'warning');
+                }
+            };
+        const srcExport = $('nim-src-export');
+        if (srcExport) srcExport.onclick = () => download(srcText(), `${baseName()}-第${i + 1}层-原文.txt`, 'text/plain');
         const allBtn = $('nim-layer-export');
         if (allBtn)
             allBtn.onclick = () => {

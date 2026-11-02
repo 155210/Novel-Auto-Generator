@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.45';
+    const VERSION = '1.5.46';
 
     // ============================================
     // 默认配置
@@ -187,7 +187,10 @@ P段号 |  | ++新段落          在该段之后另起一段
         aliasBlacklist: [],
         aliasMode: 'user', // user：{{user}}；persona：酒馆当前 user 名字；custom：自定义
         aliasTarget: 'fary',
-        aliasReplaceBy: 'ai', // ai：让 AI 输出时按语境把主角写成 {{user}}；text：导出时按已知称呼直接替换
+        // mixed：不会认错的称呼（两个字以上）导出时由程序直接换，单字和下面列出的易混称呼交给 AI 按语境换
+        // ai：全部交给 AI；text：全部由程序按称呼直接换
+        aliasReplaceBy: 'mixed',
+        aliasAmbiguous: '', // 交给 AI 按语境判断的称呼，每行一个（别的角色也用的昵称等）；单字称呼自动算在内
         personaName: '',
         useUserMacro: false,
 
@@ -1210,7 +1213,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const wrLines = aiReplaceLines(s);
         const target = aliasTargetOf(s);
         const reminders = [];
-        if (aiUserName(s)) reminders.push(`指主角的名字和称呼一律写成 ${target}`);
+        if (aiUserName(s, state)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' ? `主角的易混称呼（${aiAliasesOf(s, state).join('、')}）确实指主角时写成 ${target}，全名不用管` : `指主角的名字和称呼一律写成 ${target}`);
         if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
         if (custom.length) reminders.push(`每层都要输出 ${custom.map((t) => `<${t.tag}>`).join('、')}，写在正文后面（不要夹在正文里），按上一份的内容和本层剧情更新，没变化也照抄完整的一份`);
         if ((extra.outputRules || '').trim()) reminders.push('正文（补丁的补充内容、<改写正文>、译文）照「输出要求（来自酒馆里开着的世界书）」里的每一条写，剧情改写时也一样');
@@ -1937,15 +1940,45 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
             });
     }
 
-    /** 主角写成 {{user}} 交给 AI 做（默认）；text 时导出按已知称呼直接替换 */
-    function aiUserName(s) {
-        return (s.aliasReplaceBy || 'ai') === 'ai';
+    /** 易混称呼：单字的，或者用户列出来的（别的角色也会这么叫的） */
+    function ambiguousAliasList(s) {
+        return String(s.aliasAmbiguous || '')
+            .split(/[\n,，、]/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+    }
+    function isAmbiguousAlias(a, s) {
+        const t = String(a || '').trim();
+        return [...t].length <= 1 || ambiguousAliasList(s).includes(t);
+    }
+    /** mixed 模式下交给 AI 判断的那几个称呼 */
+    function aiAliasesOf(s, state) {
+        const target = aliasTargetOf(s);
+        const name = protagonistOf(s, state);
+        const all = uniq([name, ...((state && state.aliases) || []), ...ambiguousAliasList(s)]).filter((a) => a && a !== target);
+        return all.filter((a) => isAmbiguousAlias(a, s));
+    }
+    /** 这一层要不要让 AI 把主角写成 {{user}}：ai 一律要；mixed 只有存在易混称呼时才要 */
+    function aiUserName(s, state) {
+        const mode = s.aliasReplaceBy || 'mixed';
+        if (mode === 'ai') return true;
+        if (mode === 'text') return false;
+        return aiAliasesOf(s, state).length > 0;
     }
 
     function buildUserNameSection(s, state, tr) {
-        if (!aiUserName(s)) return '';
+        if (!aiUserName(s, state)) return '';
         const target = aliasTargetOf(s);
         const name = protagonistOf(s, state);
+        if ((s.aliasReplaceBy || 'mixed') === 'mixed') {
+            // 全名这类不会认错的由程序导出时换，这里只交代容易认错的几个，补丁只为它们写
+            const amb = aiAliasesOf(s, state);
+            return `## 主角的易混称呼写成 ${target}（用户的硬性要求，必须执行）
+- 主角${name ? `「${name}」` : ''}的这几个称呼容易和别人混：${amb.map((a) => `「${a}」`).join('、')}。只在它们确实指主角时换成 ${target}；别的角色恰好也用这个字、这个称呼时不换
+- 主角的全名和其他称呼不用你换，程序导出时会统一处理，不要为它们写补丁或改动
+${tr ? '' : `- 原文里确实指主角的这几个称呼，用「=」补丁换成 ${target}：锚点从原文复制包含它的一小段，一段里出现几次就写几条，锚点互不重叠；不指主角的不写补丁
+`}- <称呼> 里照常写原文里指主角的称呼（原来的写法），<主角> 里写主角原来的名字`;
+        }
         const who = name ? `主角「${name}」（已知称呼：${uniq([name, ...((state && state.aliases) || [])]).filter((a) => a !== target).join('、')}）` : '主角（按上面「主角」一节认出来的那个人）';
         return `## 主角在输出里写成 ${target}（用户的硬性要求，必须执行）
 - ${who}在${tr ? '译文' : '你写的补丁、补充内容'}、标题、摘要、世界书、表格里，凡是指主角的名字、姓、名、单字昵称、外号、尊称，一律写成 ${target}
@@ -3240,7 +3273,7 @@ ${blocks}`;
                 parts.push(`## 这一层上次输出的表格操作\n${tb.closed && tb.content.trim() ? tb.content.trim() : '{}'}`);
             }
             const reminders = [];
-            if (aiUserName(s)) reminders.push(`指主角的名字和称呼一律写成 ${aliasTargetOf(s)}`);
+            if (aiUserName(s, st)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' ? `主角的易混称呼（${aiAliasesOf(s, st).join('、')}）确实指主角时写成 ${aliasTargetOf(s)}，全名不用管` : `指主角的名字和称呼一律写成 ${aliasTargetOf(s)}`);
             const wrLines = aiReplaceLines(s);
             if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
             if ((cfg.outputRules || '').trim()) reminders.push('改出来的正文照「输出要求」里的每一条写');
@@ -3712,7 +3745,11 @@ ${blocks}`;
 
         /** 导出时按文字替换的主角称呼；交给 AI 写 {{user}} 时不再硬换，免得别人同名、同字被误换 */
         function textAliases(st) {
-            return aiUserName(settings) ? [] : st.aliases;
+            const mode = settings.aliasReplaceBy || 'mixed';
+            if (mode === 'ai') return [];
+            if (mode === 'text') return st.aliases;
+            // mixed：不会认错的由程序换，易混的留给 AI（AI 已经写成 {{user}} 的自然不会再被换）
+            return (st.aliases || []).filter((a) => !isAmbiguousAlias(a, settings));
         }
 
         /** 导出前的最后一步：主角称呼替换 + 用户的词语替换 */
@@ -4210,6 +4247,8 @@ ${sums}
         protagonistOf,
         TOXIC_JUDGE_NOTES,
         aliasTargetOf,
+        aiAliasesOf,
+        isAmbiguousAlias,
         cleanCell,
         estimateTokens,
         normalizeText,
