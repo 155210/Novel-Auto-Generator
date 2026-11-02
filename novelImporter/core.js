@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.46';
+    const VERSION = '1.5.47';
 
     // ============================================
     // 默认配置
@@ -1213,7 +1213,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         const wrLines = aiReplaceLines(s);
         const target = aliasTargetOf(s);
         const reminders = [];
-        if (aiUserName(s, state)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' ? `主角的易混称呼（${aiAliasesOf(s, state).join('、')}）确实指主角时写成 ${target}，全名不用管` : `指主角的名字和称呼一律写成 ${target}`);
+        if (aiUserName(s, state, tr)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr ? `主角的易混称呼（${aiAliasesOf(s, state).join('、')}）确实指主角时写成 ${target}，全名不用管` : `指主角的名字和称呼一律写成 ${target}`);
         if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
         if (custom.length) reminders.push(`每层都要输出 ${custom.map((t) => `<${t.tag}>`).join('、')}，写在正文后面（不要夹在正文里），按上一份的内容和本层剧情更新，没变化也照抄完整的一份`);
         if ((extra.outputRules || '').trim()) reminders.push('正文（补丁的补充内容、<改写正文>、译文）照「输出要求（来自酒馆里开着的世界书）」里的每一条写，剧情改写时也一样');
@@ -1659,11 +1659,42 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
     }
 
     /** 长的先换，避免「阿诺斯·沃勒迪戈」被「阿诺斯」先截掉一半 */
-    function applyAliases(text, aliases, target) {
+    function applyAliases(text, aliases, target, protect = []) {
         const list = uniq(aliases || []).filter((a) => a !== target).sort((a, b) => b.length - a.length);
         if (!list.length || !target || !text) return text;
-        const re = new RegExp(list.map(escapeRegExp).join('|'), 'g');
-        return String(text).replace(re, target);
+        // 别人的名字里正好含着主角的称呼（「张三丰」里有「张三」）：先把别人的名字整个保护起来，换完再放回去
+        const guard = uniq(protect || [])
+            .filter((n) => n && !list.includes(n) && list.some((a) => n.length > a.length && n.includes(a)))
+            .sort((a, b) => b.length - a.length);
+        let out = String(text);
+        const held = [];
+        if (guard.length) {
+            out = out.replace(new RegExp(guard.map(escapeRegExp).join('|'), 'g'), (m) => {
+                held.push(m);
+                return `\uE010${held.length - 1}\uE011`;
+            });
+        }
+        out = out.replace(new RegExp(list.map(escapeRegExp).join('|'), 'g'), target);
+        return held.length ? out.replace(/\uE010(\d+)\uE011/g, (_, k) => held[Number(k)]) : out;
+    }
+
+    /** 世界书「角色」里别人的名字和别称：程序换主角称呼时用来防误换 */
+    function otherCharacterNames(state, aliases) {
+        const mine = new Set(aliases || []);
+        const out = [];
+        for (const [cat, items] of Object.entries((state && state.worldbook) || {})) {
+            if (!/角色|人物/.test(cat)) continue;
+            for (const [name, e] of Object.entries(items || {})) {
+                const ks = [name, ...((e && e.关键词) || [])].map((k) => String(k || '').trim()).filter(Boolean);
+                // 主角自己的条目跳过
+                if (ks.some((k) => mine.has(k)) && ks.some((k) => k === protagonistOfState(state))) continue;
+                out.push(...ks.filter((k) => !mine.has(k)));
+            }
+        }
+        return uniq(out);
+    }
+    function protagonistOfState(state) {
+        return String((state && state.protagonist) || '').trim();
     }
 
     function aliasTargetOf(settings) {
@@ -1959,18 +1990,20 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层输�
         return all.filter((a) => isAmbiguousAlias(a, s));
     }
     /** 这一层要不要让 AI 把主角写成 {{user}}：ai 一律要；mixed 只有存在易混称呼时才要 */
-    function aiUserName(s, state) {
+    function aiUserName(s, state, tr) {
         const mode = s.aliasReplaceBy || 'mixed';
         if (mode === 'ai') return true;
         if (mode === 'text') return false;
+        // 翻译层整篇都是 AI 写的，让它按语境全换不多花钱，还比程序硬换准
+        if (tr) return true;
         return aiAliasesOf(s, state).length > 0;
     }
 
     function buildUserNameSection(s, state, tr) {
-        if (!aiUserName(s, state)) return '';
+        if (!aiUserName(s, state, tr)) return '';
         const target = aliasTargetOf(s);
         const name = protagonistOf(s, state);
-        if ((s.aliasReplaceBy || 'mixed') === 'mixed') {
+        if ((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr) {
             // 全名这类不会认错的由程序导出时换，这里只交代容易认错的几个，补丁只为它们写
             const amb = aiAliasesOf(s, state);
             return `## 主角的易混称呼写成 ${target}（用户的硬性要求，必须执行）
@@ -3273,7 +3306,7 @@ ${blocks}`;
                 parts.push(`## 这一层上次输出的表格操作\n${tb.closed && tb.content.trim() ? tb.content.trim() : '{}'}`);
             }
             const reminders = [];
-            if (aiUserName(s, st)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' ? `主角的易混称呼（${aiAliasesOf(s, st).join('、')}）确实指主角时写成 ${aliasTargetOf(s)}，全名不用管` : `指主角的名字和称呼一律写成 ${aliasTargetOf(s)}`);
+            if (aiUserName(s, st, tr)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr ? `主角的易混称呼（${aiAliasesOf(s, st).join('、')}）确实指主角时写成 ${aliasTargetOf(s)}，全名不用管` : `指主角的名字和称呼一律写成 ${aliasTargetOf(s)}`);
             const wrLines = aiReplaceLines(s);
             if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
             if ((cfg.outputRules || '').trim()) reminders.push('改出来的正文照「输出要求」里的每一条写');
@@ -3754,7 +3787,8 @@ ${blocks}`;
 
         /** 导出前的最后一步：主角称呼替换 + 用户的词语替换 */
         function outText(s, st) {
-            return applyWordReplace(applyAliases(s, textAliases(st), aliasTargetOf(settings)), textReplaceRules(settings));
+            const al = textAliases(st);
+            return applyWordReplace(applyAliases(s, al, aliasTargetOf(settings), al.length ? otherCharacterNames(st, al) : []), textReplaceRules(settings));
         }
 
         /** 楼层正文的段落：章节标题行换成 <bt> 格式 */
@@ -3856,7 +3890,7 @@ ${blocks}`;
         function buildCardInfoRequest(opts = {}) {
             const st = finalState();
             const target = aliasTargetOf(settings);
-            const conv = (x) => applyAliases(x, textAliases(st), target);
+            const conv = (x) => applyAliases(x, textAliases(st), target, otherCharacterNames(st, textAliases(st)));
             const sums = st.summaries.map((x) => `- 第${x.layer + 1}层 ${conv(x.title)}：${conv(x.summary)}`).join('\n');
             const heroines = listHeroines().map(conv).join('、') || '（无）';
             const prompt = `你是资料整理助手。下面是一部小说已导入部分的分层摘要，主角在聊天里叫「${target}」。任务是给这部小说写角色卡信息，不是续写小说：不要接着故事往下写，不要写正文、对话。
@@ -4278,6 +4312,7 @@ ${sums}
         applyPatches,
         mergeAliases,
         applyAliases,
+        buildUserNameSection,
         selectRelevantEntries,
         mergeWorldbook,
         findEntryByKey,
