@@ -471,6 +471,20 @@ describe('运行引擎', () => {
             },
         });
 
+    it('中文也整层输出：不发补丁规则，<正文> 整层进楼层', async () => {
+        const { engine, calls } = makeEngine(
+            (layer) => `<bt>第${layer + 1}段</bt>\n<摘要>摘要</摘要>\n<正文>\n${'整层正文甲，雨一直下。'.repeat(20)}\n整层正文${layer + 1}乙。\n</正文>\n<改写判定>{"触发": false}</改写判定>\n<称呼></称呼>\n<世界书>{}</世界书>\n<表格>{}</表格>`,
+            { translateMode: 'full' },
+        );
+        await engine.run();
+        const prompt = calls[0].messages[calls[0].messages.length - 1].content;
+        expect(prompt).toContain('整层输出要求');
+        expect(prompt).not.toContain('翻译');
+        expect(prompt).not.toContain('只输出补丁');
+        expect(engine.results[0].status).toBe('done');
+        expect(engine.results[0].finalParas.join('\n')).toContain('整层正文1乙。');
+    });
+
     it('补丁写进 <改写正文> 时按补丁打到原文上，楼层里不出现补丁行', async () => {
         const { engine } = makeEngine((layer) =>
             layer === 0 ? reply({ rewritten: 'P2 | 你来了。” | +裘月寒抬眸道。\n[P3-P4 同原文]' }) : normal(layer),
