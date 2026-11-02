@@ -4432,7 +4432,7 @@
         if (!calls.length) return '';
         const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处' };
         return (
-            `<details class="nim-fold"><summary>每次请求的原始输出（${calls.length} 次）</summary>` +
+            `<details class="nim-fold"><summary>每次请求的原始输出（${calls.length} 次）</summary><div class="nim-row"><button id="nim-layer-export" class="nim-btn sm">导出这层全部为文件（正文 + 每次原始输出 + 发出去的提示词）</button></div>` +
             calls
                 .map((c, k) => {
                     const head = `第 ${k + 1} 次 · ${NAME[c.purpose] || c.purpose}${c.purpose === 'layer' ? `（第 ${c.attempt + 1} 次尝试）` : ''}${c.tokens ? ` · ${tokenText({ ...c.tokens, calls: 1 })}` : ''}`;
@@ -4631,6 +4631,22 @@
                 ].filter(Boolean);
                 const body = (r.request || []).map((m, k) => `===== 第 ${k + 1} 条消息【${m.role}】${String(m.content || '').length} 字 =====\n${m.content}`).join('\n\n');
                 download(head.join('\n') + '\n\n' + body, `${baseName()}-第${i + 1}层-完整消息.txt`, 'text/plain');
+            };
+        const allBtn = $('nim-layer-export');
+        if (allBtn)
+            allBtn.onclick = () => {
+                const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处' };
+                const floor = r.status === 'done' ? e.renderFloors().find((f) => f.layer === i) : null;
+                const parts = [`第 ${i + 1} 层 · ${e.layers[i].chars} 字原文 · 状态：${r.status}${r.error ? `（${r.error}）` : ''}${r.warnings && r.warnings.length ? ` · 提示：${r.warnings.join('；')}` : ''}`];
+                if (floor) parts.push(`===== 楼层正文（${String(floor.mes || '').length} 字）=====\n${floor.mes}`);
+                (r.calls || []).forEach((c, k) => {
+                    const head = `===== 第 ${k + 1} 次请求 · ${NAME[c.purpose] || c.purpose}${c.purpose === 'layer' ? `（第 ${c.attempt + 1} 次尝试）` : ''}${c.tokens ? ` · ${tokenText({ ...c.tokens, calls: 1 })}` : ''}${c.error ? ` · 失败：${c.error}` : ''}${c.problem ? ` · ${c.problem}` : ''} =====`;
+                    parts.push(`${head}\n----- 原始输出（${String(c.raw || '').length} 字）-----\n${c.raw || ''}`);
+                    if (c.request) parts.push(`----- 这次发出去的内容（${c.request.length} 条）-----\n` + c.request.map((m, n) => `【第 ${n + 1} 条 ${m.role}，${String(m.content || '').length} 字】\n${m.content}`).join('\n\n'));
+                });
+                if (!(r.calls || []).some((c) => c.request) && r.request) parts.push(`===== 发出去的完整消息 =====\n` + r.request.map((m, n) => `【第 ${n + 1} 条 ${m.role}，${String(m.content || '').length} 字】\n${m.content}`).join('\n\n'));
+                parts.push(`===== 原文 =====\n${e.layers[i].paras.map((p) => p.text).join('\n')}`);
+                download(parts.join('\n\n'), `${baseName()}-第${i + 1}层-全部.txt`, 'text/plain');
             };
         const redoBtn = $('nim-prompt-redo');
         if (redoBtn)
