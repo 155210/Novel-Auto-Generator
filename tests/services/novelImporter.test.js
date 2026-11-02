@@ -1024,7 +1024,10 @@ describe('运行引擎', () => {
         expect(C.isAmbiguousAlias('三', s)).toBe(true);
         expect(C.isAmbiguousAlias('老大', s)).toBe(true);
         expect(C.isAmbiguousAlias('张三', s)).toBe(false);
-        expect(C.aiAliasesOf(s, { aliases: ['张三', '三', '三哥'] })).toEqual(['三', '老大']);
+        // 只有全名（和包含全名的写法）程序换；昵称一律交给 AI，免得新人物也被这么叫时换错
+        expect(C.aiAliasesOf(s, { aliases: ['张三', '三', '三哥', '张哥', '张三君'] })).toEqual(['三', '三哥', '张哥', '老大']);
+        expect(C.isAmbiguousAlias('张三君', s, {})).toBe(false);
+        expect(C.isAmbiguousAlias('张哥', s, {})).toBe(true);
         // 没有易混称呼时，提示词里不让 AI 换名字
         const { engine, calls } = makeEngine(normal, { aliasReplaceBy: 'mixed', aliasAmbiguous: '' });
         await engine.run();
@@ -1037,7 +1040,7 @@ describe('运行引擎', () => {
         await m2.engine.run();
         const q = m2.calls[0].messages.map((m) => m.content).join('\n');
         expect(q).toContain('「远」');
-        expect(q).toContain('全名和其他称呼不用你换');
+        expect(q).toContain('全名不用你换');
     });
 
     it('程序换主角称呼时不误换别人名字里的同样几个字', () => {
