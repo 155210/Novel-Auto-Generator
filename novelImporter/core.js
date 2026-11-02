@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.50';
+    const VERSION = '1.5.51';
 
     // ============================================
     // 默认配置
@@ -888,6 +888,13 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
 - 不要添加解释、注释或原文
 - 按改写要求补充的话、因剧情改写而和原文意思不同的内容，用 ⟪ 和 ⟫ 包起来（只包新增或改动的部分，照原文翻的不包；程序会去掉这两个符号，只用来给用户标出改动）`;
 
+    const FULL_OUTPUT_RULES = `## 整层输出要求
+- **完整输出**：<正文> 里从本层第一段写到最后一段，按改写要求改好的地方直接写进去，没改的照原文写；不得省略、概括或跳过，不能用「同原文」「略」代替
+- 不要写段号（P1、[P1]），不要写补丁格式，不要复述原文对照
+- 原文的分段、换行、对话格式保留
+- 原文中单独一行的 〔插图N〕 原样保留在对应位置
+- 新增或改动的内容用 ⟪ 和 ⟫ 包起来（照原文的不包；程序会去掉这两个符号，只用来给用户标出改动）`;
+
     // ============================================
     // 术语表（翻译模式）
     // ============================================
@@ -1149,7 +1156,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         const tr = !!layer.translate;
         const parts = [];
         const ratioText = `本层补充内容合计约为原文字数的 ${s.expansionRatio}%（原文约 ${layer.chars} 字，补充约 ${Math.round((layer.chars * s.expansionRatio) / 100)} 字）`;
-        if (tr) {
+        if (tr && layer.fullZh) {
+            parts.push(`你是小说改编助手。任务：把下面这一层小说按用户的改写要求改好，整层完整输出改写后的正文，导入角色扮演聊天，同时提取世界书和记忆表格。`);
+            parts.push(FULL_OUTPUT_RULES);
+            parts.push(`## 用户的改写要求\n${(s.rewritePrompt || '').trim()}\n- ${ratioText}`);
+        } else if (tr) {
             parts.push(`你是专业的小说翻译兼改编助手。任务：把下面这一层外文小说完整翻译成简体中文，导入角色扮演聊天，同时提取世界书和记忆表格（世界书、表格一律用中文写）。`);
             parts.push(TRANSLATE_RULES);
             parts.push(`## 用户的改写要求（翻译时一并做到）\n${(s.rewritePrompt || '').trim()}\n- ${ratioText}`);
@@ -1160,13 +1171,15 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         if ((s.extraRules || '').trim()) parts.push(`## 其他规则\n${s.extraRules.trim()}`);
         if (!tr) parts.push(PATCH_RULES.replace('{MAX_PATCH}', String(s.maxPatchChars)));
         if ((extra.outputRules || '').trim()) parts.push(`## 输出要求（来自酒馆里开着的世界书，写正文时必须遵守；补丁的补充内容、<改写正文>、译文都算正文）\n${extra.outputRules.trim()}`);
-        const div = buildDivergenceSection(s, state, tr);
+        // 中文整层输出：沿用翻译的整层流程，只把「译文、翻译」的说法换成正文
+        const zhWords = (t) => (layer.fullZh ? String(t).replace(/照常完整翻译/g, '照常完整输出').replace(/译文/g, '正文') : t);
+        const div = zhWords(buildDivergenceSection(s, state, tr));
         if (div) parts.push(div);
         const alias = buildAliasSection(s, state);
         if (alias) parts.push(alias);
-        if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, state, layerText));
+        if (tr && !layer.fullZh && s.glossaryEnabled) parts.push(buildGlossarySection(s, state, layerText));
         if (s.worldbookEnabled) {
-            parts.push(buildWorldbookSection(s) + (tr ? '\n- 条目名和内容用中文译名；"关键词" 里同时写中文译名和原文写法（方便后面的层按原文找到这个条目）' : ''));
+            parts.push(buildWorldbookSection(s) + (tr && !layer.fullZh ? '\n- 条目名和内容用中文译名；"关键词" 里同时写中文译名和原文写法（方便后面的层按原文找到这个条目）' : ''));
             const ctx = worldbookContext(state.worldbook, layerText, s);
             if (ctx.text) parts.push(ctx.text);
         }
@@ -1178,13 +1191,13 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                     extra.eventRows.map((r, i) => `${i + 1}. ${r.join(' / ')}`).join('\n'),
             );
         }
-        if (extra.userPlan) parts.push(buildUserPlanSection(extra.userPlan, tr));
+        if (extra.userPlan) parts.push(zhWords(buildUserPlanSection(extra.userPlan, tr)));
         const prevSummary = recapOf(state, s)
             .map((x) => `- 第 ${x.layer + 1} 层 ${x.title}：${x.summary}`)
             .join('\n');
         if (prevSummary) parts.push(`## 前情提要（改写后的新剧情，接着这个写）\n${prevSummary}`);
         if (extra.prevTail) parts.push(`## 上一层正文的结尾（只用来承接，让本层开头衔接自然；不要重复输出这段）\n<上一层结尾>\n${extra.prevTail}\n</上一层结尾>`);
-        if (extra.prevTail && extra.prevSourceTail)
+        if (extra.prevTail && extra.prevSourceTail && !layer.fullZh)
             parts.push(
                 `## 上一层原文的结尾（和上面的译文结尾对照）\n<上一层原文结尾>\n${extra.prevSourceTail}\n</上一层原文结尾>\n- 对照看上一层译文是不是翻到了原文最后：如果原文最后几句在译文里漏掉了，本层译文开头先把漏掉的那几句译出来，再接着译本层；已经译过的不要重复`,
             );
@@ -1193,8 +1206,8 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         let format = (String(s.outputFormat || '').trim() || OUTPUT_FORMAT).replace('<bt>本层标题，10 字以内，概括本层主要剧情</bt>', titleInstruction(s, layer));
         const guide = String(s.summaryGuide || '').trim();
         if (guide) format = format.replace('<摘要>本层剧情摘要，100 到 200 字，写清楚谁做了什么</摘要>', () => `<摘要>${guide}</摘要>`);
-        if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`);
-        if (tr && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
+        if (tr) format = format.replace(/<补丁>[\s\S]*?<\/补丁>/, () => (layer.fullZh ? `<${s.bodyTag}>\n（这里写本层改写后的全部正文）\n</${s.bodyTag}>` : `<${s.bodyTag}>\n本层完整的简体中文译文\n</${s.bodyTag}>`));
+        if (tr && !layer.fullZh && s.glossaryEnabled) format += '\n<新术语>\n原文 → 译名\n</新术语>';
         if (!protagonistOf(s, state)) format += '\n<主角>主角的名字，看不出就留空</主角>';
         const custom = parseCustomTags(s.customTags).filter((t) => t.tag !== s.titleTag && t.tag !== s.bodyTag);
         for (const t of custom) format += `\n<${t.tag}>${t.rule || '按用户要求写'}</${t.tag}>`;
@@ -2910,8 +2923,14 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             const notes = new Map((E.layers || []).filter((l) => l.note && l.paras && l.paras[0]).map((l) => [l.paras[0].text, l.note]));
             E.layers = splitLayers(paras, settings);
             for (const l of E.layers) if (l.paras[0] && notes.has(l.paras[0].text)) l.note = notes.get(l.paras[0].text);
-            const translate = settings.translateMode === 'on' || (settings.translateMode === 'auto' && detectForeign(cleaned.text));
-            E.layers.forEach((l) => (l.translate = translate));
+            const foreign = settings.translateMode !== 'off' && detectForeign(cleaned.text);
+            // full：中文小说也像翻译一样整层输出正文，不用补丁（用来对比输出量）
+            const fullZh = settings.translateMode === 'full' && !foreign;
+            const translate = settings.translateMode === 'on' || settings.translateMode === 'full' || (settings.translateMode === 'auto' && foreign);
+            E.layers.forEach((l) => {
+                l.translate = translate;
+                l.fullZh = fullZh;
+            });
             E.stats.translate = translate;
             E.stats.chapterUnit = detectChapterUnit(E.layers.flatMap((l) => l.chapters || []));
             E.stats.images = (cleaned.text.match(IMAGE_MARKER_RE) || []).length;
@@ -3301,7 +3320,7 @@ ${blocks}`;
             const alias = buildAliasSection(s, st);
             if (alias) parts.push(alias);
             const layerText = layer.paras.map((p) => p.text).join('\n');
-            if (tr && s.glossaryEnabled) parts.push(buildGlossarySection(s, st, layerText));
+            if (tr && !layer.fullZh && s.glossaryEnabled) parts.push(buildGlossarySection(s, st, layerText));
             // 上一层结尾：改开头时要接得上
             const prev = i > 0 ? E.results[i - 1] : null;
             const tailN = Math.max(0, Number(s.prevTailChars) || 0);
