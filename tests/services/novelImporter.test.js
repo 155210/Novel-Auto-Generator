@@ -485,6 +485,18 @@ describe('运行引擎', () => {
         expect(engine.results[0].finalParas.join('\n')).toContain('整层正文1乙。');
     });
 
+    it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
+        const { engine } = makeEngine(normal);
+        expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
+        engine.settings.translateMode = 'full';
+        const p = engine.buildRequestFor(0).prompt;
+        expect(p).toContain('整层输出要求');
+        expect(p).not.toContain('只输出补丁');
+        expect(engine.layers[0].fullZh).toBe(true);
+        engine.settings.translateMode = 'auto';
+        expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
+    });
+
     it('补丁写进 <改写正文> 时按补丁打到原文上，楼层里不出现补丁行', async () => {
         const { engine } = makeEngine((layer) =>
             layer === 0 ? reply({ rewritten: 'P2 | 你来了。” | +裘月寒抬眸道。\n[P3-P4 同原文]' }) : normal(layer),
