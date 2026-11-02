@@ -516,7 +516,7 @@ describe('运行引擎', () => {
                 ? reply({ title: '一', wb: { 角色: { 某夫人: { 关键词: ['某夫人'], 内容: '旧内容：温柔，住在城东' } } } })
                 : reply({ title: '二', wb: { 角色: { 秦霜: { 关键词: ['秦霜', '某夫人'], 内容: '真名秦霜，会剑法' } } } });
         const { engine, merges } = makeEngine((layer, prompt) => {
-            if (prompt.includes('把新信息合进旧条目')) return '{"角色/某夫人": "真名秦霜。温柔，住在城东，会剑法"}';
+            if (prompt.includes('把新信息合进旧条目')) return JSON.stringify({ [prompt.match(/### (角色\/\S+)/)[1]]: '真名秦霜。温柔，住在城东，会剑法' });
             return wbReply(layer);
         });
         await engine.run();
@@ -527,6 +527,19 @@ describe('运行引擎', () => {
         const ent = Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - 秦霜');
         expect(ent.content).toBe('真名秦霜。温柔，住在城东，会剑法');
         expect(ent.key).toContain('某夫人');
+    });
+
+    it('合并旧条目的小请求失败：新信息先接在旧内容后面', async () => {
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('把新信息合进旧条目')) return '坏掉的回复';
+            return layer === 0
+                ? reply({ title: '一', wb: { 角色: { 某夫人: { 关键词: ['某夫人'], 内容: '旧内容甲' } } } })
+                : reply({ title: '二', wb: { 角色: { 某夫人: { 关键词: ['某夫人'], 内容: '新信息乙' } } } });
+        });
+        await engine.run();
+        const ent = Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - 某夫人');
+        expect(ent.content).toContain('旧内容甲');
+        expect(ent.content).toContain('新信息乙');
     });
 
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {

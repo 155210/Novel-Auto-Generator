@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.56';
+    const VERSION = '1.5.57';
 
     // ============================================
     // 默认配置
@@ -1920,7 +1920,13 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                 const shown = provided.has(`${category}/${existing}`);
                 let replaced = false;
                 if (opts.replaceOnly) {
-                    if (!shown) log.push({ type: 'skip', category, name: existing, reason: '没给 AI 旧内容' });
+                    // 合并旧条目的小请求失败了：先把新信息接在后面，之后哪一层把全文发给 AI、它回完整一条时再整条替换
+                    if (!shown && item._append) {
+                        if (!e.内容.includes(content)) {
+                            e.内容 = `${e.内容}\n\n${content}`;
+                            log.push({ type: 'append', category, name: existing });
+                        }
+                    } else if (!shown) log.push({ type: 'skip', category, name: existing, reason: '没给 AI 旧内容' });
                     else {
                         replaced = true;
                         if (e.内容 !== content) {
@@ -3103,9 +3109,14 @@ ${todo.map((t) => `### ${t.key}\n【旧内容】\n${t.old}\n【本层新信息�
                 ];
                 const out = parseLooseJson(await callAndLog(r, messages, { layer: i, attempt: 0, prompt, purpose: 'wb-merge' }, true));
                 const done = [];
+                const missed = [];
                 for (const t of todo) {
                     const v = out && typeof out[t.key] === 'string' ? out[t.key].trim() : '';
-                    if (!v) continue;
+                    if (!v) {
+                        t.item._append = true;
+                        missed.push(t.key);
+                        continue;
+                    }
                     t.item.内容 = v;
                     provided.add(t.key);
                     done.push(t.key);
@@ -3115,9 +3126,11 @@ ${todo.map((t) => `### ${t.key}\n【旧内容】\n${t.old}\n【本层新信息�
                     parsed.warnings.push(`世界书：${done.join('、')} 这次没发全文，已按本层新信息另外合并成完整一条`);
                     emit('layer-warn', { index: i, warnings: [parsed.warnings[parsed.warnings.length - 1]] });
                 }
+                if (missed.length) emit('layer-warn', { index: i, warnings: [`世界书：${missed.join('、')} 没合并成功，新信息先接在旧内容后面，之后发全文时再整条更新`] });
             } catch (e) {
                 if (String(e.message || e) === 'ABORTED') throw e;
-                emit('layer-warn', { index: i, warnings: [`世界书合并旧条目失败（${String(e.message || e)}），这几条只改名、加关键词：${todo.map((t) => t.key).join('、')}`] });
+                for (const t of todo) t.item._append = true;
+                emit('layer-warn', { index: i, warnings: [`世界书合并旧条目失败（${String(e.message || e)}），新信息先接在旧内容后面，之后发全文时再整条更新：${todo.map((t) => t.key).join('、')}`] });
             }
         }
 
