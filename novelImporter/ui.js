@@ -36,6 +36,10 @@
         temperature: 0.7,
         maxTokens: 16000,
         apiTimeout: 300000,
+        // 思考强度：空 = 不传，按模型和中转站默认；low/medium/high 作为 reasoning_effort 发出去
+        reasoningEffort: '',
+        // 额外请求参数（JSON），原样合并进请求体，给不认 reasoning_effort 的中转站用
+        extraBody: '',
     };
 
     const State = {
@@ -427,6 +431,19 @@
             { key: 'apiModel', label: '模型', type: 'text' },
             { key: 'temperature', label: '温度', type: 'number', step: 0.05 },
             { key: 'maxTokens', label: '最大输出 tokens', type: 'number' },
+            {
+                key: 'reasoningEffort',
+                label: '思考强度',
+                type: 'select',
+                options: [
+                    ['', '不设置（按模型和中转站默认）'],
+                    ['low', '低（low）'],
+                    ['medium', '中（medium）'],
+                    ['high', '高（high）'],
+                ],
+                hint: '发 reasoning_effort 参数，只对会思考的模型有用；中转站不认这个参数时会自动去掉再发，日志里有提示。要彻底关思考，一般是换成不带 thinking 的模型名',
+            },
+            { key: 'extraBody', label: '额外请求参数（JSON，高级）', type: 'textarea', rows: 2, hint: '原样合并进请求体，比如 {"thinking": {"type": "enabled", "budget_tokens": 4000}}；具体写法看你的中转站支持什么，留空就不加' },
             { key: 'apiTimeout', label: '无响应超时（毫秒）', type: 'number' },
             { key: 'retries', label: '格式错误重试次数', type: 'number' },
             { key: 'layerDelayMin', label: '每层之间最少等几秒', type: 'number', hint: '处理完一层后随机等一会儿再发下一层，在最少和最多之间随机取；两个都填 0 就不等' },
@@ -536,6 +553,23 @@
     /** 流式调用，超时按「多久没收到新数据」算 */
     // 有的中转站不认 stream_options，报错一次后就不再带
     let usageOptOk = true;
+    // 中转站不认 reasoning_effort 时报错一次就不再带（改了设置也不重试，刷新页面才重新试）
+    let effortOk = true;
+
+    /** 「额外请求参数」：JSON 对象，写错了直接报错，免得悄悄没生效 */
+    function parseExtraBody(text) {
+        const t = String(text || '').trim();
+        if (!t) return {};
+        let v;
+        try {
+            v = JSON.parse(t);
+        } catch (e) {
+            throw new Error(`「额外请求参数」不是合法的 JSON：${e.message}`);
+        }
+        if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('「额外请求参数」要写成 {...} 这样的 JSON 对象');
+        for (const k of ['model', 'messages', 'stream']) delete v[k];
+        return v;
+    }
 
     /** 返回回复文本；接口给了真实用量就放在 State.lastUsage */
     async function callAPI(messages, onChunk) {
@@ -545,6 +579,8 @@
         const body = { model: s.apiModel || 'gpt-4o', messages, temperature: Number(s.temperature), stream: true };
         if (s.maxTokens) body.max_tokens = Number(s.maxTokens);
         if (usageOptOk) body.stream_options = { include_usage: true };
+        if (s.reasoningEffort && effortOk) body.reasoning_effort = s.reasoningEffort;
+        Object.assign(body, parseExtraBody(s.extraBody));
         const controller = new AbortController();
         State.abort = controller;
         let timer = setTimeout(() => controller.abort(), timeout);
@@ -562,6 +598,11 @@
             const t = await resp.text().catch(() => '');
             if (usageOptOk && resp.status === 400 && /stream_options|include_usage/i.test(t)) {
                 usageOptOk = false;
+                return callAPI(messages, onChunk);
+            }
+            if (body.reasoning_effort && resp.status === 400 && /reasoning_effort|reasoning/i.test(t)) {
+                effortOk = false;
+                log('中转站不认「思考强度」（reasoning_effort），这次起不再发这个参数；可以改用「额外请求参数」');
                 return callAPI(messages, onChunk);
             }
             const err = new Error(`API 返回 ${resp.status}：${t.slice(0, 300)}`);
