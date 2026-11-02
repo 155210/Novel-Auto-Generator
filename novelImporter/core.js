@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.58';
+    const VERSION = '1.5.59';
 
     // ============================================
     // 默认配置
@@ -3062,8 +3062,10 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             if (r) (r.calls || (r.calls = [])).push(rec);
             const before = r && r.tokens ? { ...r.tokens } : { input: 0, output: 0, cached: 0 };
             try {
-                const text = addUsage(r, messages, await cfg.callModel(messages, info));
+                const res = await cfg.callModel(messages, info);
+                const text = addUsage(r, messages, res);
                 rec.raw = text;
+                if (res && typeof res === 'object' && res.think) rec.think = String(res.think);
                 if (r && r.tokens) rec.tokens = { input: r.tokens.input - before.input, output: r.tokens.output - before.output, cached: r.tokens.cached - before.cached, estimated: r.tokens.estimated };
                 return text;
             } catch (e) {

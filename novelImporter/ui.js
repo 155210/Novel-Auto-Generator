@@ -581,6 +581,7 @@
     async function callAPI(messages, onChunk) {
         const s = State.settings;
         State.lastUsage = null;
+        State.lastThink = '';
         const timeout = Number(s.apiTimeout) || 300000;
         const body = { model: s.apiModel || 'gpt-4o', messages, temperature: Number(s.temperature), stream: true };
         if (s.maxTokens) body.max_tokens = Number(s.maxTokens);
@@ -620,7 +621,10 @@
             clearTimeout(timer);
             const data = await resp.json();
             if (data && data.usage) State.lastUsage = data.usage;
-            const text = data?.choices?.[0]?.message?.content || '';
+            const msg = data?.choices?.[0]?.message || {};
+            const text = msg.content || '';
+            const th = msg.reasoning_content || msg.reasoning || msg.thinking || '';
+            if (typeof th === 'string') State.lastThink = th;
             if (onChunk) onChunk(text, text);
             return text;
         }
@@ -628,6 +632,7 @@
             return await readSSE(resp, {
                 onDelta: onChunk,
                 onUsage: (u) => (State.lastUsage = u),
+                onThink: (t) => (State.lastThink = t),
                 onTick: () => {
                     clearTimeout(timer);
                     timer = setTimeout(() => controller.abort(), timeout);
@@ -649,7 +654,7 @@
      * 读 OpenAI 格式的 SSE 流：每段增量调 onDelta(delta, full, think)，每次收到数据先调 onTick（续超时）。
      * DeepSeek 等推理模型先在 reasoning_content 里输出思考，think 是累计的思考内容，只用来显示，不算进回复。
      */
-    async function readSSE(resp, { onDelta, onUsage, onTick }) {
+    async function readSSE(resp, { onDelta, onUsage, onTick, onThink }) {
         const reader = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
@@ -679,6 +684,7 @@
                 const r = dl.reasoning_content || dl.reasoning || dl.thinking || '';
                 if (r && typeof r === 'string') {
                     think += r;
+                    if (onThink) onThink(think);
                     if (onDelta) onDelta('', full, think);
                 }
                 const delta = dl.content || j.choices?.[0]?.message?.content || '';
@@ -712,7 +718,8 @@
                     State.streamThinking = !!think && !full;
                     renderStream(info);
                 });
-                return { text, usage: State.lastUsage };
+                // 思考（reasoning_content）也交给引擎记在这次请求上，原始输出里能看到
+                return { text, usage: State.lastUsage, think: State.lastThink || '' };
             } catch (e) {
                 last = e;
                 if (!e.retryable || k === 3) throw e;
@@ -4494,7 +4501,8 @@
                     const head = `第 ${k + 1} 次 · ${NAME[c.purpose] || c.purpose}${c.purpose === 'layer' ? `（第 ${c.attempt + 1} 次尝试）` : ''}${c.tokens ? ` · ${tokenText({ ...c.tokens, calls: 1 })}` : ''}`;
                     const state = c.error ? `<div class="nim-alert danger">请求失败：${esc(c.error)}</div>` : c.problem ? `<div class="nim-alert warn">${esc(c.problem)}</div>` : '';
                     const req = c.request ? `<details class="nim-fold"><summary>发出去的内容</summary><pre class="nim-pre">${esc(c.request.map((m) => `【${m.role}】\n${m.content}`).join('\n\n'))}</pre></details>` : '';
-                    return `<details class="nim-fold"><summary>${esc(head)}</summary>${state}${req}<pre class="nim-pre">${esc(c.raw || '')}</pre></details>`;
+                    const th = c.think ? `<details class="nim-fold"><summary>思考（${String(c.think).length} 字）</summary><pre class="nim-pre">${esc(c.think)}</pre></details>` : '';
+                    return `<details class="nim-fold"><summary>${esc(head)}</summary>${state}${req}${th}<pre class="nim-pre">${esc(c.raw || '')}</pre></details>`;
                 })
                 .join('') +
             `</details>`
@@ -4725,7 +4733,8 @@
                 if (floor) parts.push(`===== 楼层正文（${String(floor.mes || '').length} 字）=====\n${floor.mes}`);
                 (r.calls || []).forEach((c, k) => {
                     const head = `===== 第 ${k + 1} 次请求 · ${NAME[c.purpose] || c.purpose}${c.purpose === 'layer' ? `（第 ${c.attempt + 1} 次尝试）` : ''}${c.tokens ? ` · ${tokenText({ ...c.tokens, calls: 1 })}` : ''}${c.error ? ` · 失败：${c.error}` : ''}${c.problem ? ` · ${c.problem}` : ''} =====`;
-                    parts.push(`${head}\n----- 原始输出（${String(c.raw || '').length} 字）-----\n${c.raw || ''}`);
+                    if (c.think) parts.push(`${head}\n----- 思考（${String(c.think).length} 字）-----\n${c.think}`);
+                    parts.push(`${c.think ? '' : `${head}\n`}----- 原始输出（${String(c.raw || '').length} 字）-----\n${c.raw || ''}`);
                     if (c.request) parts.push(`----- 这次发出去的内容（${c.request.length} 条）-----\n` + c.request.map((m, n) => `【第 ${n + 1} 条 ${m.role}，${String(m.content || '').length} 字】\n${m.content}`).join('\n\n'));
                 });
                 if (!(r.calls || []).some((c) => c.request) && r.request) parts.push(`===== 发出去的完整消息 =====\n` + r.request.map((m, n) => `【第 ${n + 1} 条 ${m.role}，${String(m.content || '').length} 字】\n${m.content}`).join('\n\n'));

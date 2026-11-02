@@ -555,6 +555,17 @@ describe('运行引擎', () => {
         expect(engine.forcePatches(0)).toBe(0);
     });
 
+    it('模型回的思考记在这次请求上', async () => {
+        const engine = C.createEngine({
+            settings: { layerChars: 500, protagonistName: '路长远', reviewMode: 'off', retries: 1 },
+            tableTemplate: TEMPLATE,
+            callModel: async (messages, info) => ({ text: normal(info.layer), think: `想了想第${info.layer + 1}层` }),
+        });
+        engine.prepare(NOVEL);
+        await engine.run();
+        expect(engine.results[0].calls[0].think).toBe('想了想第1层');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
