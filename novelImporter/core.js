@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.51';
+    const VERSION = '1.5.52';
 
     // ============================================
     // 默认配置
@@ -2923,14 +2923,12 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             const notes = new Map((E.layers || []).filter((l) => l.note && l.paras && l.paras[0]).map((l) => [l.paras[0].text, l.note]));
             E.layers = splitLayers(paras, settings);
             for (const l of E.layers) if (l.paras[0] && notes.has(l.paras[0].text)) l.note = notes.get(l.paras[0].text);
-            const foreign = settings.translateMode !== 'off' && detectForeign(cleaned.text);
-            // full：中文小说也像翻译一样整层输出正文，不用补丁（用来对比输出量）
-            const fullZh = settings.translateMode === 'full' && !foreign;
-            const translate = settings.translateMode === 'on' || settings.translateMode === 'full' || (settings.translateMode === 'auto' && foreign);
+            const foreign = detectForeign(cleaned.text);
             E.layers.forEach((l) => {
-                l.translate = translate;
-                l.fullZh = fullZh;
+                l.foreign = foreign;
+                syncTranslateMode(l);
             });
+            const translate = E.layers.length ? !!E.layers[0].translate : false;
             E.stats.translate = translate;
             E.stats.chapterUnit = detectChapterUnit(E.layers.flatMap((l) => l.chapters || []));
             E.stats.images = (cleaned.text.match(IMAGE_MARKER_RE) || []).length;
@@ -2939,8 +2937,19 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             return E.layers;
         }
 
+        // 翻译模式按当前设置算：开关改了不用重新分层，下一次跑（含重 roll）这层就按新模式
+        // full：中文小说也像翻译一样整层输出正文，不用补丁（用来对比输出量）
+        function syncTranslateMode(l) {
+            if (!l) return;
+            if (typeof l.foreign !== 'boolean') l.foreign = detectForeign(l.paras.map((p) => p.text).join('\n'));
+            const mode = settings.translateMode;
+            l.fullZh = mode === 'full' && !l.foreign;
+            l.translate = mode === 'on' || mode === 'full' || (mode === 'auto' && l.foreign);
+        }
+
         function buildRequest(i, st, extra = {}) {
             const layer = E.layers[i];
+            syncTranslateMode(layer);
             const layerText = layer.paras.map((p) => p.text).join('\n');
             const rel = settings.worldbookEnabled ? selectRelevantEntries(st.worldbook, layerText, settings.worldbookContextChars) : [];
             const askBig = needsBigSummary(st);

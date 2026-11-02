@@ -216,7 +216,7 @@
                     ['off', '不翻译'],
                     ['full', '中文也整层输出（不用补丁，对比输出量用）'],
                 ],
-                hint: '改了要重新分层',
+                hint: '改了不用重新分层，之后跑的层（包括重 roll）按新模式；已经跑完的层不变',
             },
             { key: 'glossaryEnabled', label: '翻译时用术语表统一人名地名', type: 'check', hint: '每层顺带补充新词，只发给 AI，不进正文' },
             { key: 'glossaryMax', label: '每层最多带多少条术语', type: 'number', hint: '只带本层原文里出现的，默认 300' },
