@@ -1019,6 +1019,27 @@ describe('运行引擎', () => {
         expect(r3.worldbook.角色['魅魔（白发）'].内容).toContain('追加');
     });
 
+    it('主角替换 mixed：全名程序换，单字和列出的易混称呼才交给 AI', async () => {
+        const s = { ...C.DEFAULT_SETTINGS, aliasReplaceBy: 'mixed', protagonistName: '张三', aliasAmbiguous: '老大' };
+        expect(C.isAmbiguousAlias('三', s)).toBe(true);
+        expect(C.isAmbiguousAlias('老大', s)).toBe(true);
+        expect(C.isAmbiguousAlias('张三', s)).toBe(false);
+        expect(C.aiAliasesOf(s, { aliases: ['张三', '三', '三哥'] })).toEqual(['三', '老大']);
+        // 没有易混称呼时，提示词里不让 AI 换名字
+        const { engine, calls } = makeEngine(normal, { aliasReplaceBy: 'mixed', aliasAmbiguous: '' });
+        await engine.run();
+        const p0 = calls[0].messages.map((m) => m.content).join('\n');
+        expect(p0).not.toContain('写成 {{user}}（用户的硬性要求');
+        // 导出时全名由程序换掉
+        expect(engine.renderFloors().map((f) => f.mes).join('\n')).not.toContain('路长远');
+        // 列了易混称呼：提示词只交代那几个
+        const m2 = makeEngine(normal, { aliasReplaceBy: 'mixed', aliasAmbiguous: '远' });
+        await m2.engine.run();
+        const q = m2.calls[0].messages.map((m) => m.content).join('\n');
+        expect(q).toContain('「远」');
+        expect(q).toContain('全名和其他称呼不用你换');
+    });
+
     it('合并修改给的表格操作', () => {
         const old = { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '甲', 身份: '学生' } }] };
         const m = C.mergeTableOps(old, { 事件历史: [{ 操作: '插入', 数据: { 事件: 'A' } }, { 操作: '插入', 数据: { 事件: 'B' } }], 角色特征表格: [{ 操作: '插入', 数据: { 角色名: '乙' } }] });
