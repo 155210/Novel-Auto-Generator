@@ -279,7 +279,8 @@
             },
         ],
         rewrite: [
-            { key: 'expansionRatio', label: '扩写比例 %', type: 'number', hint: '补充字数的下限：填 1 就是至少补 1%，可以多补；填 0 就是不要求，不用补的层可以不补。默认 10' },
+            { key: 'expansionRatio', label: '扩写下限 %', type: 'number', hint: '至少补原文字数的百分之几；填 0 就是不要求，不用补的层可以不补。默认 0' },
+            { key: 'expansionMax', label: '扩写上限 %', type: 'number', hint: '最多补原文字数的百分之几；填 0 就是不设上限。默认 10' },
             { key: 'maxPatchChars', label: '单条补丁最多字数', type: 'number' },
             { key: 'rewritePrompt', label: '改写要求', type: 'textarea', rows: 5 },
             {
@@ -4274,7 +4275,7 @@
             el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
             el.scrollTop = follow ? el.scrollHeight : top;
             if (lvUi.src === 'stream') updateLiveViewer(State.stream, false);
-            const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
+            const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'wb-merge' ? `第 ${info.layer + 1} 层合并世界书旧条目` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
             setStatus(State.streamThinking ? `${what.replace(/输出$/, '')}思考中 · ${State.stream.length} 字` : `${what}中 · ${State.streamBody || State.stream.length} 字`);
         });
     }
@@ -4485,7 +4486,7 @@
     function callsHtml(r) {
         const calls = r.calls || [];
         if (!calls.length) return '';
-        const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处' };
+        const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处', 'wb-merge': '合并世界书旧条目' };
         return (
             `<details class="nim-fold"><summary>每次请求的原始输出（${calls.length} 次）</summary><div class="nim-row"><button id="nim-layer-export" class="nim-btn sm">导出这层全部为文件（正文 + 每次原始输出 + 发出去的提示词）</button></div>` +
             calls
@@ -4711,7 +4712,7 @@
         const allBtn = $('nim-layer-export');
         if (allBtn)
             allBtn.onclick = () => {
-                const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处' };
+                const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处', 'wb-merge': '合并世界书旧条目' };
                 const floor = r.status === 'done' ? e.renderFloors().find((f) => f.layer === i) : null;
                 const parts = [`第 ${i + 1} 层 · ${e.layers[i].chars} 字原文 · 状态：${r.status}${r.error ? `（${r.error}）` : ''}${r.warnings && r.warnings.length ? ` · 提示：${r.warnings.join('；')}` : ''}`];
                 if (floor) parts.push(`===== 楼层正文（${String(floor.mes || '').length} 字）=====\n${floor.mes}`);
