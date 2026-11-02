@@ -338,6 +338,26 @@ describe('解析回复', () => {
         expect(r.ok).toBe(true);
         expect(r.worldbook.角色.a.内容).toBe('b');
     });
+
+    it('<改写正文> 全是补丁行时按补丁处理，不当正文', () => {
+        const r = C.parseLayerResponse(reply({ rewritten: '\nP2 | 天色渐晚 | +风吹过树梢。\n[P3-P5 同原文]\nP6 | 他推开门 | =他轻轻推开门。\n' }));
+        expect(r.ok).toBe(true);
+        expect(r.rewrittenText).toBe(null);
+        expect(r.patches.length).toBe(2);
+        expect(r.patches[0].pid).toBe(2);
+        expect(r.patches[1].op).toBe('replace');
+        expect(r.warnings.length).toBe(1);
+    });
+
+    it('<改写正文> 混进补丁行或「同原文」省略时报错重试', () => {
+        const a = C.parseLayerResponse(reply({ rewritten: '天色渐晚，他走在路上。\n[P3-P5 同原文]\n他推开了门。' }));
+        expect(a.ok).toBe(false);
+        expect(a.errors[0]).toContain('补丁行');
+        const b = C.parseLayerResponse(reply({ rewritten: '天色渐晚。\nP2 | 天色 | +风起。\nP4 | 门 | +门开了。\n他走了。' }));
+        expect(b.ok).toBe(false);
+        // 正常改写正文不受影响，译文模式也不管
+        expect(C.parseLayerResponse(reply({ rewritten: '天色渐晚，他走在路上。\n他推开了门。' })).rewrittenText).toContain('推开');
+    });
 });
 
 describe('表格相关行', () => {
@@ -434,6 +454,19 @@ describe('运行引擎', () => {
                 事件历史: [{ 操作: '插入', 数据: { 事件: `事件${layer + 1}` } }],
             },
         });
+
+    it('补丁写进 <改写正文> 时按补丁打到原文上，楼层里不出现补丁行', async () => {
+        const { engine } = makeEngine((layer) =>
+            layer === 0 ? reply({ rewritten: 'P2 | 你来了。” | +裘月寒抬眸道。\n[P3-P4 同原文]' }) : normal(layer),
+        );
+        await engine.run();
+        const r = engine.results[0];
+        expect(r.status).toBe('done');
+        const text = r.finalParas.join('\n');
+        expect(text).toContain('裘月寒抬眸道。');
+        expect(text).not.toContain('P2 |');
+        expect(text).not.toContain('同原文');
+    });
 
     it('中间层重跑后，后面的状态按新结果重新算（不用旧缓存）', async () => {
         let round = 1;
