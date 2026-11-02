@@ -1096,7 +1096,7 @@ describe('运行引擎', () => {
         expect(Object.keys(r.worldbook.角色)).toEqual(['守卫（红发）', '守卫（白发）']);
     });
 
-    it('世界书：AI 看过旧条目、整条改写时换了名字就改名，没看过只合并不改名', () => {
+    it('世界书：换了名字就改名；看过旧条目整条替换，没看过只改名不动内容', () => {
         const wb = { 角色: { 甲: { 关键词: ['甲'], 内容: 'A' }, '魅魔（白发）': { 关键词: ['魅魔（白发）'], 内容: '旧' }, 乙: { 关键词: ['乙'], 内容: 'B' } } };
         const delta = { 角色: { 拉娜: { 关键词: ['拉娜', '魅魔（白发）'], 内容: '新的完整内容' } } };
         const r = C.mergeWorldbook(wb, delta, { providedNames: new Set(['角色/魅魔（白发）']), replaceOnly: true });
@@ -1104,8 +1104,11 @@ describe('运行引擎', () => {
         expect(r.worldbook.角色.拉娜.内容).toBe('新的完整内容');
         expect(r.worldbook.角色.拉娜.关键词).toEqual(['魅魔（白发）', '拉娜']);
         expect(r.log.some((x) => x.type === 'rename' && x.from === '魅魔（白发）' && x.name === '拉娜')).toBe(true);
-        const r2 = C.mergeWorldbook(wb, delta, { replaceOnly: true });
-        expect(Object.keys(r2.worldbook.角色)).toEqual(['甲', '魅魔（白发）', '乙']);
+        // 没给 AI 看过旧内容：只改名、加关键词，旧内容不动（后面的层按新名字能挑出来带全文）
+        const r2 = C.mergeWorldbook(wb, { 角色: { 拉娜: { 关键词: ['拉娜', '魅魔（白发）'], 内容: '改名' } } }, { replaceOnly: true });
+        expect(Object.keys(r2.worldbook.角色)).toEqual(['甲', '拉娜', '乙']);
+        expect(r2.worldbook.角色.拉娜.内容).toBe('旧');
+        expect(r2.worldbook.角色.拉娜.关键词).toContain('拉娜');
         const r3 = C.mergeWorldbook(wb, { 角色: { 拉娜: { 关键词: ['魅魔（白发）'], 内容: '追加' } } }, { providedNames: new Set(['角色/魅魔（白发）']) });
         expect(r3.worldbook.角色['魅魔（白发）'].内容).toContain('追加');
     });
