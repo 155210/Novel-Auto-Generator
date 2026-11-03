@@ -983,9 +983,12 @@
         const worldName = State.meta.worldName || cardName;
         const worldbook = e.exportWorldbook();
         const persona = e.exportPersona();
-        const userName = ST.currentUserName() || 'User';
-        const chat = C.buildChatArray(floors, { charName: cardName, userName, replaceUserMacro: State.settings.userMacroToName !== false && !!ST.currentUserName() });
-        return { floors, cardName, worldName, worldbook, persona, chat, tables: e.exportTables() };
+        const stName = ST.currentUserName();
+        const userName = stName || 'User';
+        const wantName = State.settings.userMacroToName !== false;
+        const chat = C.buildChatArray(floors, { charName: cardName, userName, replaceUserMacro: wantName && !!stName });
+        const nameNote = wantName ? (stName ? `楼层里的 {{user}} 换成「${stName}」` : '没读到酒馆当前的用户名，楼层里的 {{user}} 没换（先在酒馆里选好用户角色再导出）') : '';
+        return { floors, cardName, worldName, worldbook, persona, chat, nameNote, tables: e.exportTables() };
     }
 
     async function genCardInfo() {
@@ -1018,6 +1021,7 @@
         } catch (e) {
             return toast(e.message, 'warning');
         }
+        if (out.nameNote) log(out.nameNote);
         const btn = $('nim-import');
         const box = $('nim-import-result');
         const showResult = (cls, text) => {
@@ -1114,6 +1118,7 @@
             return toast(e.message, 'warning');
         }
         const n = out.cardName;
+        if (kind === 'chat' && out.nameNote) log(out.nameNote);
         if (kind === 'chat') attachImages(out.chat, n, false).then((chat) => download(C.chatToJsonl(applyCarry(chat)), `${n}.jsonl`, 'application/jsonl'));
         else if (kind === 'world') download(JSON.stringify(out.worldbook, null, 2), `${out.worldName}.json`);
         else if (kind === 'card')
