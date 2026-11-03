@@ -606,6 +606,62 @@ describe('运行引擎', () => {
         expect(r.divergenceStart).toBe(true);
     });
 
+    it('世界书历史版本：列出每层变化，回退到旧版本后后面的层接着改；可以撤销', async () => {
+        const wbFor = (layer) => ({ 角色: { 林晚: { 关键词: ['林晚'], 写法: '完整', 内容: layer === 0 ? '林晚完整人设，很长很长很长很长很长' : layer === 1 ? '错的，被冲掉了' : '' } } });
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('把新信息合进旧条目')) return '坏';
+            return layer < 2 ? reply({ title: `第${layer + 1}段`, wb: wbFor(layer) }) : reply({ title: '第3段' });
+        });
+        await engine.run();
+        const hist = engine.entryHistory('角色', '林晚');
+        expect(hist.map((h) => h.layer)).toEqual([0, 1]);
+        expect(hist[0].kind).toBe('new');
+        engine.setEntryContent('角色', '林晚', hist[0].content);
+        const ent = () => Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - 林晚');
+        expect(ent().content).toBe('林晚完整人设，很长很长很长很长很长');
+        expect(engine.serialize().wbEdits.length).toBe(1);
+        engine.removeWbEdit(0);
+        expect(ent().content).not.toBe('林晚完整人设，很长很长很长很长很长');
+    });
+
+    it('世界书用 AI 合并：拿某个版本当底，加上之后的内容', async () => {
+        let mergePrompt = '';
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('把新信息合进旧条目')) return '坏';
+            if (prompt.includes('请合成这个条目最新的完整一条')) {
+                mergePrompt = prompt;
+                return '合成好的完整条目';
+            }
+            if (layer === 0) return reply({ title: '一', wb: { 角色: { 林晚: { 关键词: ['林晚'], 写法: '完整', 内容: '底版本内容很长很长很长很长' } } } });
+            if (layer === 1) return reply({ title: '二', wb: { 角色: { 林晚: { 关键词: ['林晚'], 写法: '完整', 内容: '短' } } } });
+            return reply({ title: '三' });
+        });
+        await engine.run();
+        const hist = engine.entryHistory('角色', '林晚');
+        const out = await engine.aiMergeEntry('角色', '林晚', hist[0].layer);
+        expect(out).toBe('合成好的完整条目');
+        expect(mergePrompt).toContain('底版本内容');
+    });
+
+    it('同一角色检查：找出疑似组，AI 确认后合成一条，关键词合在一起', async () => {
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('判断每组里哪些是同一个人')) return '{"results": [{"组": 1, "同一个": ["0109", "金发少年"], "保留名": "0109", "理由": "同一个人"}]}';
+            if (prompt.includes('写的是同一个人')) return '0109 合成后的完整人设';
+            if (layer === 0) return reply({ title: '一', wb: { 角色: { '0109': { 关键词: ['0109', '少年'], 写法: '完整', 内容: '编号 0109' }, 金发少年: { 关键词: ['金发少年', '少年'], 写法: '完整', 内容: '金发的少年' } } } });
+            return reply({ title: `第${layer + 1}段` });
+        });
+        await engine.run();
+        const groups = engine.findDuplicateGroups(['角色']);
+        expect(groups.length).toBe(1);
+        const ok = await engine.verifyDuplicateGroups(groups);
+        expect(ok[0].mainName).toBe('0109');
+        await engine.mergeDuplicateGroup(ok[0]);
+        const list = Object.values(engine.exportWorldbook().entries).filter((e) => /0109|金发少年/.test(e.comment));
+        expect(list.length).toBe(1);
+        expect(list[0].content).toBe('0109 合成后的完整人设');
+        expect(list[0].key).toContain('金发少年');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
@@ -678,8 +734,9 @@ describe('运行引擎', () => {
         expect(engine.results[0].tokens).toEqual({ input: 1000, output: 200, cached: 300, calls: 1, estimated: false });
         expect(engine.results[1].tokens.estimated).toBe(true);
         expect(engine.results[1].tokens.input).toBeGreaterThan(0);
-        expect(engine.stats.inputTokens).toBe(1000 + 1002 + engine.results[1].tokens.input);
-        expect(engine.stats.cachedTokens).toBe(600);
+        // 合并世界书旧条目的小请求也算在那一层上
+        expect(engine.stats.inputTokens).toBe(engine.results.reduce((n, r) => n + r.tokens.input, 0));
+        expect(engine.stats.cachedTokens).toBe(engine.results.reduce((n, r) => n + r.tokens.cached, 0));
     });
 
     it('界面高亮：补丁层标出补充的话，去掉标记和楼层正文一致，楼层本身不带标记', async () => {
@@ -1179,8 +1236,12 @@ describe('运行引擎', () => {
         expect(r2.worldbook.角色.林晚.内容).toBe('短');
     });
 
-    it('世界书整条替换（默认）：第 2 层没给 AI 看旧内容，输出的不用；第 3 层看过，整条替换', async () => {
-        const { engine, calls } = makeEngine(normal);
+    it('世界书整条替换（默认）：第 2 层没给 AI 看旧内容，另外合并；第 3 层看过、写了完整版，整条替换', async () => {
+        const { engine, calls } = makeEngine((layer, prompt) => {
+            if (prompt.includes('把新信息合进旧条目')) return JSON.stringify({ [prompt.match(/### (角色\/\S+)/)[1]]: '路长远第1层和第2层合并' });
+            if (layer === 2) return reply({ title: '第3段', wb: { 角色: { 路长远: { 关键词: ['路长远'], 写法: '完整', 内容: '路长远第3层，完整的一整条人设' } } } });
+            return normal(layer);
+        });
         await engine.run();
         const p1 = calls[1].messages.map((m) => m.content).join('\n');
         expect(p1).toContain('完整一整条');
@@ -1189,7 +1250,7 @@ describe('运行引擎', () => {
         const p2 = calls[2].messages.map((m) => m.content).join('\n');
         expect(p2).toContain('### 角色 / 路长远');
         const ent = Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - {{user}}');
-        expect(ent.content).toBe('{{user}}第3层');
+        expect(ent.content).toBe('{{user}}第3层，完整的一整条人设');
     });
 
     it('世界书：只共用一个泛称关键词的两条不合并，名字或别称对上才合并', () => {

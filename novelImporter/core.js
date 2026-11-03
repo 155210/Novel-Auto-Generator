@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.62';
+    const VERSION = '1.5.63';
 
     // ============================================
     // 默认配置
@@ -757,9 +757,10 @@ P段号 |  | ++新段落          在该段之后另起一段
 ${guide}
 - 条目名用原文里的正式名称；关键词是原文里实际出现的名称、别称
 - 已有条目要改名（比如知道了真名）：条目名写新名字，关键词里写上旧条目名，内容照下一条写完整版，程序会把旧条目改成新名字；不改名就照抄旧条目名
-- 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整一整条**：旧内容全部保留（可以改写整合），再加上新信息，程序会用它整条替换旧内容；只写追加的部分会把旧内容冲掉，绝对不要只写新增的那几句；没有新信息就不要输出
+- 已有条目（见下方「相关世界书条目」）如有新信息，输出**更新后的完整一整条**：旧内容全部保留（可以改写整合），再加上新信息，"写法" 写 "完整"，程序会用它整条替换旧内容；没有新信息就不要输出
+- 每条都要写 "写法"："完整"（这条从头到尾写全了，新条目也写这个）或 "新信息"（只写了本层新得到的信息，程序会另外和旧内容合并）。拿不准就写 "新信息"，旧内容不会丢
 - 只写原文明确写出的信息，不要编造
-${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? custom + '\n' : ''}格式：{"角色": {"条目名": {"关键词": ["名称", "别称"], "定位": "女主", "内容": "markdown 文本"}}, "地点": {"条目名": {"关键词": [], "内容": "markdown 文本"}}}`;
+${cats.some((c) => c.name === '角色') ? PERSONA_GUIDE + '\n' : ''}${custom ? custom + '\n' : ''}格式：{"角色": {"条目名": {"关键词": ["名称", "别称"], "定位": "女主", "写法": "完整", "内容": "markdown 文本"}}, "地点": {"条目名": {"关键词": [], "写法": "完整", "内容": "markdown 文本"}}}`;
     }
 
     /**
@@ -1820,7 +1821,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
             for (const [cat, items] of Object.entries(wb || {})) for (const n of Object.keys(items || {})) if (!shown.has(`${cat}/${n}`)) others.push(`${cat}/${n}`);
             if (others.length)
                 parts.push(
-                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n- 这些条目只给了名字，没给旧内容。本层没有它们的新信息就不要输出。\n- 本层有某一条的新信息（比如知道了真名、身份或关系变了）时，可以输出这一条："内容" 只写本层得到的新信息，不用写完整，程序会另外把它和旧内容合并成完整的一条。条目名照抄；要改名（比如知道了真名）就写新名字，并在 "关键词" 里写上旧条目名。\n- 不要换个名字或关键词重新建一条同样的。`,
+                    `## 其他已有条目（这次没给内容）\n${others.slice(0, 300).join('、')}${others.length > 300 ? ` 等 ${others.length} 条` : ''}\n- 这些条目只给了名字，没给旧内容。本层没有它们的新信息就不要输出。\n- 本层有某一条的新信息（比如知道了真名、身份或关系变了）时，可以输出这一条："写法" 写 "新信息"，"内容" 只写本层得到的新信息，不用写完整，程序会另外把它和旧内容合并成完整的一条。条目名照抄；要改名（比如知道了真名）就写新名字，并在 "关键词" 里写上旧条目名。\n- 不要换个名字或关键词重新建一条同样的。`,
                 );
         }
         return { text: parts.join('\n\n'), names };
@@ -1880,10 +1881,14 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return { total, parts, promptCopies, repeats };
     }
 
-    /** 整条替换模式下判「AI 只写了新信息」：判得保守，开头写了追加/补充/新增，或者不到旧内容三成长 */
-    function looksLikeOnlyNew(content, oldContent) {
+    // 开头写了这些字的，当成 AI 只写了新信息（「本层新信息：」「新增：」……）
+    const ONLY_NEW_RE = /^#*\s*[^\n]{0,12}(追加|补充|新增|新信息|新内容)/;
+
+    /** 整条替换模式下判「AI 只写了新信息」：写法标了新信息、开头写了追加/新增/新信息，或者不到旧内容一半长 */
+    function looksLikeOnlyNew(content, oldContent, item) {
         const c = String(content || '').trim();
-        return /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(c) || c.length < String(oldContent || '').length * 0.3;
+        if (item && String(item.写法 || '').includes('新信息')) return true;
+        return ONLY_NEW_RE.test(c) || c.length < String(oldContent || '').length * 0.5;
     }
 
     /** AI 只回了「追加」那一段：比旧内容短一大截，或者以追加、补充、新增开头 */
@@ -1930,7 +1935,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                     // 合并旧条目的小请求失败了：先把新信息接在后面，之后哪一层把全文发给 AI、它回完整一条时再整条替换
                     // 合并过的直接整条替换；看过全文却开头写了「本层新增」、又没合并过的（比如 1.5.60 以前跑的层），接在后面，免得把旧内容冲掉
                     // 这里只认开头明写了追加/补充/新增的：短的完整版照样整条替换（用户要求世界书不能一段段叠）
-                    if (item._append || (shown && !item._merged && /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(content))) {
+                    if (item._append || (shown && !item._merged && (String(item.写法 || '').includes('新信息') || ONLY_NEW_RE.test(content)))) {
                         if (!e.内容.includes(content)) {
                             e.内容 = `${e.内容}\n\n${content}`;
                             log.push({ type: 'append', category, name: existing });
@@ -2787,7 +2792,39 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             pauseRequested: false,
             stopRequested: false,
             reviewing: null, // 正在等待审阅的层号
+            // 用户手动改的世界书（回退版本、AI 合并、同一角色合并）：{layer, type, category, ...}，第 layer 层算完后套上，后面的层在这个基础上接着改
+            wbEdits: [],
+            wbEditsVer: 0,
         };
+
+        /** 把一条手动修改套到世界书上（原地改） */
+        function applyWbEdit(wb, ed) {
+            const cat = ed.category;
+            if (!cat) return;
+            wb[cat] = wb[cat] || {};
+            const items = wb[cat];
+            if (ed.type === 'set') {
+                const existing = findEntryByKey(wb, cat, ed.name, ed.keys || []);
+                const key = existing || ed.name;
+                const e = items[key] || (items[key] = { 关键词: [ed.name], 内容: '' });
+                e.内容 = String(ed.content || '');
+                if (ed.keys && ed.keys.length) e.关键词 = uniq([...(e.关键词 || []), ...ed.keys]);
+            } else if (ed.type === 'merge') {
+                const names = (ed.names || []).filter((n) => items[n]);
+                if (names.length < 2 && !(names.length === 1 && names[0] !== ed.mainName)) return;
+                const keys = [];
+                let role = '';
+                for (const n of names) {
+                    keys.push(n, ...(items[n].关键词 || []));
+                    if (!role && items[n].定位) role = items[n].定位;
+                }
+                const base = items[ed.mainName] || {};
+                const merged = { ...base, 关键词: uniq([ed.mainName, ...keys]), 内容: String(ed.content || base.内容 || '') };
+                if (role && !merged.定位) merged.定位 = role;
+                for (const n of names) if (n !== ed.mainName) delete items[n];
+                items[ed.mainName] = merged;
+            }
+        }
 
         function initialState() {
             return {
@@ -2845,7 +2882,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         const replayCache = { sig: '', states: [], refs: [] };
 
         function replay(upTo) {
-            const sig = JSON.stringify(settings) + '|' + E.layers.length;
+            const sig = JSON.stringify(settings) + '|' + E.layers.length + '|' + (E.wbEditsVer || 0);
             const gloss = cfg.seedGlossary;
             const removed = cfg.glossaryRemoved;
             const ledger = [cfg.ledgerManual, cfg.ledgerRemoved];
@@ -2908,6 +2945,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                     categories: cats,
                     replaceOnly: settings.wbUpdateMode !== 'auto',
                 }).worldbook;
+                for (const ed of E.wbEdits || []) if (ed.layer === i) applyWbEdit(next.worldbook, ed);
             }
             let tableActions = [];
             let tableLog = [];
@@ -3105,7 +3143,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                     const old = String((wb[cat][existing] || {}).内容 || '');
                     // 给了全文的条目，AI 也常常只写「本层新增：……」：整条替换会把旧内容冲掉，同样走合并
                     if (item._merged || item._append) continue;
-                    if (provided.has(`${cat}/${existing}`) && !looksLikeOnlyNew(add, old)) continue;
+                    if (provided.has(`${cat}/${existing}`) && !looksLikeOnlyNew(add, old, item)) continue;
                     todo.push({ key: `${cat}/${existing}`, item, old, add });
                 }
             }
@@ -4117,6 +4155,7 @@ ${sums}
                 stats: E.stats,
                 reviewing: E.reviewing,
                 cardInfo: E.cardInfo || null,
+                wbEdits: E.wbEdits || [],
             };
         }
 
@@ -4127,6 +4166,206 @@ ${sums}
             E.stats = data.stats || E.stats;
             E.reviewing = data.reviewing ?? null;
             E.cardInfo = data.cardInfo || null;
+            E.wbEdits = Array.isArray(data.wbEdits) ? data.wbEdits : [];
+            E.wbEditsVer = (E.wbEditsVer || 0) + 1;
+        }
+
+        // ============================================
+        // 整理世界书：历史版本、回退、AI 合并、同一角色合并
+        // ============================================
+
+        function doneCount() {
+            let n = 0;
+            while (n < E.layers.length && E.results[n] && E.results[n].status === 'done') n++;
+            return n;
+        }
+
+        /** 界面上显示的条目名（主角名会换成 {{user}}）对回内部条目名 */
+        function resolveEntry(category, displayName) {
+            const st = finalState();
+            const items = (st.worldbook || {})[category] || {};
+            if (items[displayName]) return { name: displayName, entry: items[displayName] };
+            for (const [n, e] of Object.entries(items)) if (outText(n, st) === displayName) return { name: n, entry: e };
+            return null;
+        }
+
+        function addWbEdit(ed) {
+            const n = doneCount();
+            if (!n) throw new Error('还没有处理完的层');
+            E.wbEdits.push({ ...ed, layer: n - 1, time: Date.now() });
+            E.wbEditsVer = (E.wbEditsVer || 0) + 1;
+            emit('wb-edited', { edit: E.wbEdits[E.wbEdits.length - 1] });
+        }
+
+        /**
+         * 一条世界书在每一层处理完后的样子（只列有变化的层）。
+         * kind：new 新建、replace 整条替换、append 接在后面、edit 手动修改。
+         */
+        function entryHistory(category, displayName) {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) return [];
+            const keys = hit.entry.关键词 || [];
+            const out = [];
+            let prev = null;
+            const n = doneCount();
+            for (let k = 0; k < n; k++) {
+                const st = replay(k + 1);
+                const found = findEntryByKey(st.worldbook || {}, category, hit.name, keys);
+                if (!found) continue;
+                const e = st.worldbook[category][found];
+                const content = String(e.内容 || '');
+                if (prev !== null && content === prev) continue;
+                const edited = (E.wbEdits || []).some((ed) => ed.layer === k && ed.category === category);
+                const kind = prev === null ? 'new' : edited ? 'edit' : content.startsWith(prev) ? 'append' : 'replace';
+                out.push({ layer: k, name: found, keys: e.关键词 || [], content, kind });
+                prev = content;
+            }
+            return out;
+        }
+
+        /** 把这条改成指定内容（回退到某个版本就传那个版本的内容），后面的层在这个基础上接着改 */
+        function setEntryContent(category, displayName, content) {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) throw new Error('找不到这条');
+            addWbEdit({ type: 'set', category, name: hit.name, keys: hit.entry.关键词 || [], content: String(content || '') });
+        }
+
+        async function callTool(prompt, system) {
+            const messages = [
+                { role: 'system', content: system },
+                { role: 'user', content: prompt },
+            ];
+            return callAndLog(null, messages, { layer: -1, attempt: 0, prompt, purpose: 'wb-tool' });
+        }
+
+        /** 拿第 fromLayer 层那个版本当底，加上之后各层的新信息，让 AI 合成完整一条（不保存，返回内容给界面确认） */
+        async function aiMergeEntry(category, displayName, fromLayer) {
+            const hist = entryHistory(category, displayName);
+            const base = hist.find((h) => h.layer === fromLayer);
+            if (!base) throw new Error('找不到这个版本');
+            const later = hist.filter((h) => h.layer > fromLayer);
+            if (!later.length) return base.content;
+            const pieces = later.map((h, k) => {
+                const prevContent = k === 0 ? base.content : later[k - 1].content;
+                const part = h.kind === 'append' && h.content.startsWith(prevContent) ? h.content.slice(prevContent.length).trim() : h.content;
+                return `【第 ${h.layer + 1} 层之后${h.kind === 'append' ? '接上的' : '的版本'}】\n${part}`;
+            });
+            const prompt = `下面是世界书里一个条目的一个完整版本，以及它之后各层得到的内容（有的是新信息，有的是 AI 当时写的版本，可能只写了新的部分）。请合成这个条目最新的完整一条：
+- 完整版本里仍然成立的信息都保留，和后来的信息冲突的以后来的为准
+- 后来各层的新信息都合进去，同样的信息不要重复
+- 格式、写法照完整版本，不要写「本层新增」「更新」这类字样
+- 只输出合成后的条目内容，不要写别的
+
+【完整版本（第 ${base.layer + 1} 层之后）】
+${base.content}
+
+${pieces.join('\n\n')}`;
+            const text = await callTool(prompt, '你是世界书条目整理工具。只输出合成后的完整条目内容，不写任何别的话。');
+            const out = String(text || '').replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim();
+            if (!out) throw new Error('AI 没有回内容');
+            return out;
+        }
+
+        /** 疑似同一个的条目：关键词有交集、名字互相包含、或者名字后两个字一样（和 TXT 转世界书一样的规则） */
+        function findDuplicateGroups(categories) {
+            const st = finalState();
+            const wb = st.worldbook || {};
+            const cats = categories && categories.length ? categories : Object.keys(wb);
+            const shortMatch = (a, b) => {
+                const sh = (x) => (x.length <= 3 ? x : x.slice(-2));
+                return sh(a) === sh(b) || a.includes(sh(b)) || b.includes(sh(a));
+            };
+            const groups = [];
+            for (const cat of cats) {
+                const items = wb[cat] || {};
+                const names = Object.keys(items);
+                const done = new Set();
+                for (let i = 0; i < names.length; i++) {
+                    if (done.has(names[i])) continue;
+                    const g = [names[i]];
+                    const ka = new Set(items[names[i]].关键词 || []);
+                    for (let j = i + 1; j < names.length; j++) {
+                        if (done.has(names[j])) continue;
+                        const kb = items[names[j]].关键词 || [];
+                        if (kb.some((k) => ka.has(k)) || names[i].includes(names[j]) || names[j].includes(names[i]) || shortMatch(names[i], names[j])) {
+                            g.push(names[j]);
+                            done.add(names[j]);
+                        }
+                    }
+                    if (g.length > 1) {
+                        g.forEach((n) => done.add(n));
+                        groups.push({ category: cat, names: g });
+                    }
+                }
+            }
+            return groups;
+        }
+
+        /** 让 AI 判断每组是不是同一个人/东西，返回确认是同一个的组（names、mainName、reason） */
+        async function verifyDuplicateGroups(groups) {
+            if (!groups.length) return [];
+            const wb = finalState().worldbook || {};
+            const st = finalState();
+            const show = (cat, n) => {
+                const e = (wb[cat] || {})[n] || {};
+                const c = String(e.内容 || '');
+                return `【${outText(n, st)}】关键词：${(e.关键词 || []).map((k) => outText(k, st)).join('、') || '无'}\n内容：${outText(c.slice(0, 300), st)}${c.length > 300 ? '…' : ''}`;
+            };
+            const prompt = `下面每组是世界书里名字或关键词相近的条目，请判断每组里哪些是同一个人（或同一个事物）：全名和简称、别名、昵称、代号、知道真名前后的两种叫法都算同一个；名字像但身份、经历明显不同的不算。
+
+${groups.map((g, k) => `### 第 ${k + 1} 组（${g.category}）\n${g.names.map((n) => show(g.category, n)).join('\n')}`).join('\n\n')}
+
+只输出 JSON：{"results": [{"组": 1, "同一个": ["条目名", "条目名"], "保留名": "更完整或更常用的名字", "理由": "一句话"}]}。条目名照上面【】里的原样抄；一组里没有同一个的就不写这一组；一组里有两拨不同的人就各写一条。`;
+            const text = await callTool(prompt, '你是世界书去重工具。只输出 JSON，不写任何别的话。');
+            const data = parseLooseJson(text);
+            const list = Array.isArray(data) ? data : data.results || [];
+            const out = [];
+            for (const x of list) {
+                const g = groups[Number(x.组 ?? x.group ?? x.pair) - 1];
+                if (!g) continue;
+                const back = (dn) => g.names.find((n) => n === dn || outText(n, st) === dn);
+                const names = uniq((x.同一个 || x.names || []).map(back).filter(Boolean));
+                if (names.length < 2) continue;
+                const main = back(x.保留名 || x.mainName || '') || names.slice().sort((a, b) => String(((wb[g.category] || {})[b] || {}).内容 || '').length - String(((wb[g.category] || {})[a] || {}).内容 || '').length)[0];
+                out.push({ category: g.category, names, mainName: names.includes(main) ? main : names[0], reason: String(x.理由 || x.reason || ''), display: names.map((n) => outText(n, st)) });
+            }
+            return out;
+        }
+
+        /** 把同一个人的几条合成一条：AI 合并内容（失败就按顺序拼起来），存成手动修改 */
+        async function mergeDuplicateGroup(group) {
+            const wb = finalState().worldbook || {};
+            const items = wb[group.category] || {};
+            const names = group.names.filter((n) => items[n]);
+            if (names.length < 2) throw new Error('这几条已经不在了');
+            let content = '';
+            try {
+                const prompt = `下面几条世界书条目写的是同一个人（或同一个事物），请合成完整的一条：
+- 每条里的信息都保留，重复的只写一次，冲突的以更新、更具体的为准
+- 格式、写法照最完整的那条，不要写「合并」「补充」这类字样
+- 只输出合成后的条目内容，不要写别的
+
+${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
+                content = String((await callTool(prompt, '你是世界书条目整理工具。只输出合成后的完整条目内容，不写任何别的话。')) || '').trim();
+            } catch (e) {
+                if (String(e.message || e) === 'ABORTED') throw e;
+                content = '';
+            }
+            if (!content) content = names.map((n) => items[n].内容 || '').filter(Boolean).join('\n\n');
+            addWbEdit({ type: 'merge', category: group.category, names, mainName: group.mainName, content });
+            return content;
+        }
+
+        /** 手动修改列表（新的在后），可以撤销 */
+        function listWbEdits() {
+            return (E.wbEdits || []).map((ed, k) => ({ index: k, ...ed }));
+        }
+
+        function removeWbEdit(k) {
+            if (!E.wbEdits[k]) return;
+            E.wbEdits.splice(k, 1);
+            E.wbEditsVer = (E.wbEditsVer || 0) + 1;
+            emit('wb-edited', {});
         }
 
         return Object.assign(E, {
@@ -4190,6 +4429,14 @@ ${sums}
                 emit('layer-done', { index: i, result: r });
                 return n;
             },
+            entryHistory,
+            setEntryContent,
+            aiMergeEntry,
+            findDuplicateGroups,
+            verifyDuplicateGroups,
+            mergeDuplicateGroup,
+            listWbEdits,
+            removeWbEdit,
             buildRequestFor(i) {
                 return buildRequest(i, replay(i));
             },
