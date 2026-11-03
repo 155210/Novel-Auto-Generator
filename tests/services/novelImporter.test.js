@@ -281,7 +281,7 @@ describe('记忆表格', () => {
             ],
         });
         expect(plan.actions).toEqual([
-            { type: 'update', tableIndex: 1, rowIndex: 0, data: { 3: '魔门圣女' } },
+            { type: 'update', tableIndex: 1, rowIndex: 0, data: { 0: '裘月寒', 3: '魔门圣女' } },
             { type: 'insert', tableIndex: 1, data: { 0: '苏青绮', 1: '', 2: '温柔， 稳重', 3: '' } },
         ]);
         const next = C.simulateTableActions(st, plan.actions);
@@ -289,6 +289,26 @@ describe('记忆表格', () => {
             ['裘月寒', '', '冷淡', '魔门圣女'],
             ['苏青绮', '', '温柔， 稳重', ''],
         ]);
+    });
+
+    it('名字格带外号（主名|外号）时按主名或唯一外号找行，更新带上名字', () => {
+        let st = { tables: C.createTableState(TEMPLATE) };
+        st.tables.rows[1] = [
+            ['裘月寒|圣女', '', '冷淡', ''],
+            ['苏青绮|青绮', '', '温柔', ''],
+        ];
+        const plan = C.planTableActions(st, {
+            角色特征表格: [
+                { 操作: '更新或插入', 主键: '苏青绮', 数据: { 职业: '医师' } },
+                { 操作: '更新或插入', 主键: '圣女', 数据: { 职业: '魔门圣女' } },
+                { 操作: '更新或插入', 主键: '裘月寒|月寒', 数据: { 性格: '冷淡/护短' } },
+            ],
+        });
+        expect(plan.actions).toEqual([
+            { type: 'update', tableIndex: 1, rowIndex: 1, data: { 0: '苏青绮|青绮', 3: '医师' } },
+            { type: 'update', tableIndex: 1, rowIndex: 0, data: { 0: '裘月寒|圣女', 3: '魔门圣女', 2: '冷淡/护短' } },
+        ]);
+        expect(C.simulateTableActions(st, plan.actions).rows[1].length).toBe(2);
     });
 
     it('单行表只保留一行，追加表只能插入', () => {

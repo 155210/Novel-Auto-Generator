@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.71';
+    const VERSION = '1.5.72';
 
     // ============================================
     // 默认配置
@@ -2332,6 +2332,24 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             .trim();
     }
 
+    // 记忆表格 v2 的名字格写成「主名|外号1|外号2」：找行时按主名比，外号只在恰好对上一行时用（和 v2 插件一致）
+    const NAME_PARTS = /[|｜]/;
+    const nameKey = (v) => String(v ?? '').replace(/\s+/g, '').toLowerCase();
+    const nameParts = (v) => String(v ?? '').split(NAME_PARTS).map((x) => x.trim()).filter(Boolean);
+
+    /** 按第一列找行：主名相同优先，其次外号恰好对上一行；找不到返回 -1 */
+    function findRowByKey(rows, key) {
+        const k = nameKey(nameParts(key)[0]);
+        if (!k) return -1;
+        const i = rows.findIndex((r) => nameKey(nameParts(r[0])[0]) === k);
+        if (i >= 0) return i;
+        const hits = [];
+        rows.forEach((r, ri) => {
+            if (nameParts(r[0]).slice(1).some((a) => nameKey(a) === k)) hits.push(ri);
+        });
+        return hits.length === 1 ? hits[0] : -1;
+    }
+
     function tablesForPrompt(state, text, settings) {
         const t = state.tables;
         if (!t) return '（无）';
@@ -2342,15 +2360,16 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         const memo = new Map();
         const namesFor = (key) => {
             if (memo.has(key)) return memo.get(key);
-            const out = [key];
-            for (const g of state.glossary || []) if (g && g.target === key && g.source) out.push(g.source);
+            const out = nameParts(key);
+            const main = out[0] || key;
+            for (const g of state.glossary || []) if (g && g.target === main && g.source) out.push(g.source);
             for (const items of Object.values(state.worldbook || {})) {
                 for (const [n, e] of Object.entries(items || {})) {
                     const ks = (e && e.关键词) || [];
-                    if (n === key || ks.includes(key)) out.push(n, ...ks);
+                    if (n === main || ks.includes(main)) out.push(n, ...ks);
                 }
             }
-            if (key === protagonistOf(settings, state)) out.push(...(state.aliases || []));
+            if (main === protagonistOf(settings, state)) out.push(...(state.aliases || []));
             const res = uniq(out.map((x) => String(x || '').trim()).filter((x) => x.length >= 2));
             memo.set(key, res);
             return res;
@@ -2471,7 +2490,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                     continue;
                 }
 
-                const rowIdx = key ? rows.findIndex((r) => cleanCell(r[0]) === key) : -1;
+                const rowIdx = key ? findRowByKey(rows, key) : -1;
                 if (kind === 'delete') {
                     if (rowIdx < 0) {
                         log.push(`「${tb.name}」找不到要删除的「${key}」`);
@@ -2488,7 +2507,9 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                     const prev = updated.get(tb.index)?.get(rowIdx);
                     if (prev) Object.assign(prev.data, data);
                     else {
+                        // 带上这一行的名字：v2 插件按名字核对行号，对不上时改去找名字对的那一行，不会写到别人身上
                         const a = { type: 'update', tableIndex: tb.index, rowIndex: rowIdx, data: { ...data } };
+                        if (a.data[0] === undefined && rows[rowIdx][0]) a.data[0] = rows[rowIdx][0];
                         actions.push(a);
                         if (!updated.has(tb.index)) updated.set(tb.index, new Map());
                         updated.get(tb.index).set(rowIdx, a);
