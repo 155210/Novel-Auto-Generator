@@ -3871,6 +3871,15 @@
     const findUi = { mode: 'text', q: '', hits: null, ohits: null, index: null };
     const TAB_NAMES = { file: '小说', map: '剧情地图', settings: '设置', run: '处理', export: '导入酒馆' };
 
+    /** 处理完的层的改后正文，按 searchLayers 要的样子排好 */
+    function outputLayers(e) {
+        const out = [];
+        (e.results || []).forEach((r, i) => {
+            if (r && r.status === 'done' && Array.isArray(r.finalParas)) out.push({ index: i, paras: r.finalParas.map((t) => ({ text: String(t || '') })) });
+        });
+        return out;
+    }
+
     function openFind(mode, q) {
         if (mode) findUi.mode = mode;
         if (q !== undefined) $('nim-find-q').value = q;
@@ -3878,7 +3887,7 @@
         renderFind();
         const input = $('nim-find-q');
         // 手机上弹键盘会把面板顶起来；只在电脑上自动聚焦，手机上目录和功能页不弹键盘
-        if (!window.matchMedia('(max-width: 760px)').matches || findUi.mode === 'text') setTimeout(() => input.focus(), 50);
+        if (!window.matchMedia('(max-width: 760px)').matches || findUi.mode === 'text' || findUi.mode === 'out') setTimeout(() => input.focus(), 50);
     }
 
     /** 把面板里的卡片、设置项、按钮编成可搜的功能目录 */
@@ -3920,6 +3929,7 @@
         });
         // 页面外的入口
         out.push({ text: '原文搜索、看原文', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('text') });
+        out.push({ text: '搜改后正文、和原文对比（查哪层改了称呼）', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('out') });
         out.push({ text: '目录、空章', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('toc') });
         out.push({ text: '搜大纲（剧情、人物、雷点、改写指令）', kind: 'btn', where: '右上角 🔍', desc: '', action: () => openFind('outline') });
         return out;
@@ -3988,7 +3998,7 @@
         const q = $('nim-find-q').value.trim();
         findUi.q = q;
         document.querySelectorAll('#nim-find [data-find-mode]').forEach((b) => b.classList.toggle('on', b.dataset.findMode === findUi.mode));
-        $('nim-find-q').placeholder = findUi.mode === 'text' ? '搜原文：人名、台词、情节…（/正则/ 也行）' : findUi.mode === 'outline' ? '搜大纲：剧情、人物、雷点、改写指令…' : findUi.mode === 'toc' ? '筛选章节标题' : '找功能或设置，例如 雷点、模型、清洗';
+        $('nim-find-q').placeholder = findUi.mode === 'text' ? '搜原文：人名、台词、情节…（/正则/ 也行）' : findUi.mode === 'out' ? '搜改后正文，和原文对比：称呼、名字…' : findUi.mode === 'outline' ? '搜大纲：剧情、人物、雷点、改写指令…' : findUi.mode === 'toc' ? '筛选章节标题' : '找功能或设置，例如 雷点、模型、清洗';
         const e = State.engine;
         const noBook = '<div class="nim-empty">先在「小说」页选一本小说</div>';
         if (findUi.mode === 'text') {
@@ -4005,6 +4015,44 @@
                     .map(
                         (h, k) =>
                             `<button class="nim-hit" data-hit="${k}"><div class="nim-hit-where"><b>第 ${h.layer + 1} 层</b>${h.chapter ? ` · ${esc(h.chapter)}` : ''}</div><div class="nim-hit-text">${esc(h.before)}<mark class="nim-hl">${esc(h.match)}</mark>${esc(h.after)}</div></button>`,
+                    )
+                    .join('');
+            return;
+        }
+        if (findUi.mode === 'out') {
+            if (!e || !e.layers.length) return (box.innerHTML = noBook);
+            const outs = outputLayers(e);
+            if (!outs.length) return (box.innerHTML = '<div class="nim-empty">还没有处理完的层</div>');
+            if (!q) return (box.innerHTML = '<div class="nim-empty">搜处理后的正文（补丁、改写之后的样子），同时和原文比：哪一层的次数变了会列在最上面，适合查某个称呼、名字被哪几层改掉了。<br>英文不分大小写；用 /.../ 包起来按正则搜。</div>');
+            const r = PM.searchLayers(outs, q, { limit: 400, isChapterTitle: chapterTest1() });
+            if (r.bad) return (box.innerHTML = '<div class="nim-empty">正则写得不对</div>');
+            findUi.hits = r.hits;
+            // 每层原文和改后各有几处，次数不一样的层就是改过的
+            const diff = [];
+            let srcTotal = 0;
+            for (const o of outs) {
+                const a = PM.searchLayers([e.layers[o.index]], q, { limit: 0 }).total;
+                const b = PM.searchLayers([o], q, { limit: 0 }).total;
+                srcTotal += a;
+                if (a !== b) diff.push({ layer: o.index, a, b });
+            }
+            const diffHtml = diff.length
+                ? `<div class="nim-find-sum">有 ${diff.length} 层次数和原文不一样（点开看改后，里面能跳到原文对照）</div>` +
+                  diff
+                      .map(
+                          (d) =>
+                              `<button class="nim-hit warn" data-src-layer="${d.layer}"><div class="nim-hit-where"><b>第 ${d.layer + 1} 层</b> · 原文 ${d.a} 处 → 改后 ${d.b} 处</div></button>`,
+                      )
+                      .join('')
+                : '<div class="nim-find-sum">已处理的层里，每层的次数都和原文一样</div>';
+            box.innerHTML =
+                `<div class="nim-find-sum">已处理的 ${outs.length} 层：原文 ${fmtNum(srcTotal)} 处，改后 ${fmtNum(r.total)} 处</div>` +
+                diffHtml +
+                (r.total ? `<div class="nim-find-sum">改后正文里的${r.total > r.hits.length ? `前 ${r.hits.length} 处` : ` ${r.total} 处`}</div>` : '') +
+                r.hits
+                    .map(
+                        (h, k) =>
+                            `<button class="nim-hit" data-ohit-out="${k}"><div class="nim-hit-where"><b>第 ${h.layer + 1} 层（改后）</b>${h.chapter ? ` · ${esc(h.chapter)}` : ''}</div><div class="nim-hit-text">${esc(h.before)}<mark class="nim-hl">${esc(h.match)}</mark>${esc(h.after)}</div></button>`,
                     )
                     .join('');
             return;
@@ -4123,6 +4171,17 @@
                 const h = findUi.hits[Number(hit.dataset.hit)];
                 return openSource(h.layer, { query: findUi.q, nth: h.nth });
             }
+            const oo = ev.target.closest('[data-ohit-out]');
+            if (oo) {
+                const h = findUi.hits[Number(oo.dataset.ohitOut)];
+                const r = State.engine.results[h.layer];
+                return openSource(h.layer, { query: findUi.q, nth: h.nth, excerpt: (r.finalParas || []).join('\n'), title: `第 ${h.layer + 1} 层（改后）`, gotoLayer: h.layer });
+            }
+            const sl = ev.target.closest('[data-src-layer]');
+            if (sl) {
+                const i = Number(sl.dataset.srcLayer);
+                return openSource(i, { query: findUi.q, excerpt: (State.engine.results[i].finalParas || []).join('\n'), title: `第 ${i + 1} 层（改后）`, gotoLayer: i });
+            }
             const oh = ev.target.closest('[data-ohit]');
             if (oh) {
                 const h = findUi.ohits[Number(oh.dataset.ohit)];
@@ -4170,7 +4229,7 @@
             <div class="nim-search-in grow"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="nim-find-q" type="search" enterkeyhint="search"></div>
             <button class="nim-icon-btn" data-find="close" title="关闭">✕</button>
           </div>
-          <div class="nim-seg"><button data-find-mode="text">原文</button><button data-find-mode="outline">大纲</button><button data-find-mode="toc">目录和空章</button><button data-find-mode="ui">功能和设置</button></div>
+          <div class="nim-seg"><button data-find-mode="text">原文</button><button data-find-mode="out">改后</button><button data-find-mode="outline">大纲</button><button data-find-mode="toc">目录</button><button data-find-mode="ui">功能</button></div>
           <div id="nim-find-body" class="nim-sheet-body nim-find-body"></div>
         </div></div>`;
     }
@@ -5325,7 +5384,7 @@
         <div class="nim-drop-main" id="nim-drop-text"></div>
         <div class="nim-muted">TXT 或 EPUB，按 1000 万字设计；EPUB 的插图会留在原位置</div>
       </label>
-      <button class="nim-searchbar" data-find-open="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>搜原文、看目录和空章、找功能</span></button>
+      <button class="nim-searchbar" data-find-open="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>搜原文和改后、看目录和空章、找功能</span></button>
       <div id="nim-file-issues"></div>
       <div id="nim-file-stats" class="nim-stats"></div>
       <div id="nim-guide" class="nim-guide"></div>
