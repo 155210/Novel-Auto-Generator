@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.61';
+    const VERSION = '1.5.62';
 
     // ============================================
     // 默认配置
@@ -3741,6 +3741,21 @@ ${blocks}`;
                 rec.problem = parsed.errors.join('；');
                 keepLog();
                 throw new Error(rec.problem);
+            }
+            // 正文没动：触发与否、规则、说明、接回原文照旧（AI 只看定稿正文常常判成没触发，剧情改写信息就丢了）；事实没写就沿用旧的
+            const od = (old.parsed && old.parsed.divergence) || null;
+            if (od) {
+                const nd = parsed.divergence || {};
+                if (!!nd.triggered !== !!od.triggered) parsed.warnings.push('正文没动，剧情改写判定沿用原来的');
+                parsed.divergence = {
+                    ...nd,
+                    triggered: !!od.triggered,
+                    rule: od.triggered ? od.rule || nd.rule || '' : '',
+                    note: od.triggered ? od.note || nd.note || '' : '',
+                    resume: !!od.resume,
+                    facts: nd.facts && nd.facts.length ? nd.facts : od.facts || [],
+                    dropFacts: nd.dropFacts && nd.dropFacts.length ? nd.dropFacts : od.dropFacts || [],
+                };
             }
             Object.assign(r, { raw, parsed, warnings: parsed.warnings, providedNames: uniq([...(old.providedNames || []), ...wbNames]) });
             await mergeUnseenEntries(i, st, parsed, r);
