@@ -2302,3 +2302,18 @@ describe('层与层之间随机等待', () => {
         expect(C.layerDelayMs({})).toBe(0);
     });
 });
+
+describe('楼层里写摘要', () => {
+    const floor = { heading: '第1话：借伞', body: '正文一段', extras: ['<旁白>x</旁白>'], summary: '林夏借伞给{{user}}。', tableEdit: '<tableEdit>\n<!--\n-->\n</tableEdit>' };
+    it('关着时不写', () => {
+        expect(C.buildFloorText(floor, {})).not.toContain('Plotline');
+    });
+    it('开着时按格式写在正文和其他标签后面、tableEdit 前面', () => {
+        const mes = C.buildFloorText(floor, { floorSummaryEnabled: true });
+        expect(mes).toContain('</正文>\n<旁白>x</旁白>\n<Plotline>\n<details><summary>摘要</summary>\n林夏借伞给{{user}}。\n</details>\n</Plotline>\n<tableEdit>');
+    });
+    it('自定义格式；本层没摘要时不写空壳', () => {
+        expect(C.buildFloorText(floor, { floorSummaryEnabled: true, floorSummaryTemplate: '<sum>{{ 摘要 }}</sum>' })).toContain('<sum>林夏借伞给{{user}}。</sum>');
+        expect(C.buildFloorText({ ...floor, summary: '' }, { floorSummaryEnabled: true })).not.toContain('Plotline');
+    });
+});

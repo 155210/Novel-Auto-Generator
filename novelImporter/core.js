@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.74';
+    const VERSION = '1.5.75';
 
     // ============================================
     // 默认配置
@@ -255,6 +255,9 @@ P段号 |  | ++新段落          在该段之后另起一段
         glossaryEnabled: true, // 翻译时用术语表统一人名地名（只发给 AI，不进正文）
         glossaryMax: 300, // 每层最多带多少条（只带本层原文里出现的）
         writeTableEdit: true,
+        // 每层楼在 </正文> 后面写一段摘要（总结类插件读这个），{{摘要}} 换成本层摘要
+        floorSummaryEnabled: false,
+        floorSummaryTemplate: '<Plotline>\n<details><summary>摘要</summary>\n{{摘要}}\n</details>\n</Plotline>',
 
         // 世界书
         worldbookEnabled: true,
@@ -2612,6 +2615,10 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         parts.push(`<${s.bodyTag}>\n${floor.body}\n</${s.bodyTag}>`);
         // 夹在正文里的别的标签挪到正文后面、tableEdit 前面
         for (const x of floor.extras || []) parts.push(x);
+        if (s.floorSummaryEnabled && floor.summary && String(s.floorSummaryTemplate || '').trim()) {
+            const tpl = String(s.floorSummaryTemplate).trim();
+            parts.push(/\{\{\s*摘要\s*\}\}/.test(tpl) ? tpl.replace(/\{\{\s*摘要\s*\}\}/g, () => floor.summary) : `${tpl}\n${floor.summary}`);
+        }
         if (s.writeTableEdit && floor.tableEdit) parts.push(floor.tableEdit);
         return parts.join('\n');
     }
@@ -4130,6 +4137,7 @@ ${blocks}`;
                     body: conv(parts.paras.join('\n')),
                     before: layout.before.map(conv),
                     extras: layout.after.map(conv),
+                    summary: conv(String((r.parsed && r.parsed.summary) || '').trim()),
                     tableEdit: settings.tablesEnabled ? renderTableEdit(r.tableActions || [], conv) : '',
                     divergenceStart: r.divergenceStart,
                     divergence: r.inDivergence,
