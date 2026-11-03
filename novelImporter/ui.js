@@ -4221,6 +4221,14 @@
         </div></div>`;
     }
 
+    function wbToolHtml() {
+        return `<div id="nim-wbt" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="整理世界书">
+          <div class="nim-sheet-head"><b id="nim-wbt-title">整理世界书</b><button class="nim-icon-btn" data-wbt="close" title="关闭">✕</button></div>
+          <div id="nim-wbt-body" class="nim-sheet-body"></div>
+          <div class="nim-sheet-foot"><button class="nim-btn" data-wbt="close">关闭</button></div>
+        </div></div>`;
+    }
+
     function presetEditHtml() {
         return `<div id="nim-pe" class="nim-sheet" hidden><div class="nim-sheet-box" role="dialog" aria-label="编辑预设条目">
           <div class="nim-sheet-head"><b>编辑条目</b><button class="nim-icon-btn" data-pe="cancel" title="关闭">✕</button></div>
@@ -4282,7 +4290,7 @@
             el.textContent = State.stream.length > 60000 ? '…' + State.stream.slice(-60000) : State.stream;
             el.scrollTop = follow ? el.scrollHeight : top;
             if (lvUi.src === 'stream') updateLiveViewer(State.stream, false);
-            const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'wb-merge' ? `第 ${info.layer + 1} 层合并世界书旧条目` : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
+            const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'wb-merge' ? `第 ${info.layer + 1} 层合并世界书旧条目` : info.purpose === 'wb-tool' ? '整理世界书' : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
             setStatus(State.streamThinking ? `${what.replace(/输出$/, '')}思考中 · ${State.stream.length} 字` : `${what}中 · ${State.streamBody || State.stream.length} 字`);
         });
     }
@@ -4909,19 +4917,223 @@
             box.innerHTML = '<div class="nim-muted">没有搜到</div>';
             return;
         }
-        box.innerHTML = [...groups.entries()]
+        const edits = e.listWbEdits ? e.listWbEdits().length : 0;
+        const tools = `<div class="nim-row"><button class="nim-btn sm" data-wbt-dup="1">检查同一角色</button>${edits ? `<button class="nim-btn sm ghost" data-wbt-edits="1">手动修改记录（${edits}）</button>` : ''}</div>`;
+        box.innerHTML =
+            tools +
+            [...groups.entries()]
+                .map(
+                    ([cat, list]) =>
+                        `<div class="nim-sub">${esc(cat)}（${list.length}）</div><ul class="nim-wb-list">` +
+                        list
+                            .map((x) => {
+                                const name = String(x.comment || '').replace(/^[^-]+ - /, '');
+                                return `<li><details class="nim-fold"><summary><b>${esc(name)}</b> <span class="nim-muted">${fmtNum(String(x.content || '').length)} 字${x.constant ? ' · 常驻' : ''}</span></summary>${(x.key || []).length ? `<div class="nim-muted">关键词：${esc(x.key.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(x.content || ''))}</div><div class="nim-row"><button class="nim-btn sm" data-wbt-hist="1" data-cat="${esc(cat)}" data-name="${esc(name)}">历史版本 / 修改</button></div></details></li>`;
+                            })
+                            .join('') +
+                        '</ul>',
+                )
+                .join('');
+    }
+
+    // ============================================
+    // 整理世界书：历史版本、回退、AI 合并、同一角色合并
+    // ============================================
+
+    const wbtUi = { cat: '', name: '', hist: [], groups: [], draft: null };
+    const KIND = { new: '新建', replace: '整条替换', append: '接在后面', edit: '手动修改' };
+
+    function openWbt(title, html) {
+        $('nim-wbt-title').textContent = title;
+        $('nim-wbt-body').innerHTML = html;
+        $('nim-wbt').hidden = false;
+    }
+
+    function wbtBusy() {
+        const e = State.engine;
+        if (!e) return '还没有处理结果';
+        if (e.running) return '正在处理中，先暂停再整理世界书';
+        return '';
+    }
+
+    function afterWbEdit(msg) {
+        saveProgress();
+        toast(msg, 'success');
+        log(msg);
+        renderAll();
+        if ($('nim-view-wb')?.open) renderViewWorldbook();
+    }
+
+    function openWbHistory(cat, name) {
+        const e = State.engine;
+        wbtUi.cat = cat;
+        wbtUi.name = name;
+        wbtUi.draft = null;
+        wbtUi.hist = e.entryHistory(cat, name);
+        renderWbHistory();
+    }
+
+    function renderWbHistory() {
+        const h = wbtUi.hist;
+        const cur = h.length ? h[h.length - 1].content : '';
+        const draft = wbtUi.draft;
+        const top = `<div class="nim-muted">这条在每一层处理完后的样子（只列有变化的层，新的在上面）。回退或保存修改后，后面的层在改好的内容上接着改，不用重跑。改错了可以在「手动修改记录」里撤销。</div>
+          <div class="nim-field"><label>${draft ? 'AI 合成的结果（可以再改，确认后点保存）' : '当前内容（可以直接改）'}</label><textarea id="nim-wbt-text" class="nim-input nim-textarea" rows="8">${esc(draft ?? cur)}</textarea></div>
+          <div class="nim-row"><button class="nim-btn primary sm" data-wbt-save="1">保存成这条的内容</button>${draft ? '<button class="nim-btn sm" data-wbt-cancel="1">不用 AI 的结果</button>' : ''}</div>`;
+        const list = h
+            .map((v, k) => ({ v, k }))
+            .reverse()
             .map(
-                ([cat, list]) =>
-                    `<div class="nim-sub">${esc(cat)}（${list.length}）</div><ul class="nim-wb-list">` +
-                    list
-                        .map(
-                            (x) =>
-                                `<li><details class="nim-fold"><summary><b>${esc(String(x.comment || '').replace(/^[^-]+ - /, ''))}</b> <span class="nim-muted">${fmtNum(String(x.content || '').length)} 字${x.constant ? ' · 常驻' : ''}</span></summary>${(x.key || []).length ? `<div class="nim-muted">关键词：${esc(x.key.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(x.content || ''))}</div></details></li>`,
-                        )
-                        .join('') +
-                    '</ul>',
+                ({ v, k }) =>
+                    `<details class="nim-fold"><summary>第 ${v.layer + 1} 层之后 · ${KIND[v.kind] || v.kind} · ${fmtNum(v.content.length)} 字${v.name !== h[h.length - 1].name ? ` · 当时叫 ${esc(v.name)}` : ''}</summary><div class="nim-wb-content">${esc(v.content)}</div><div class="nim-row"><button class="nim-btn sm" data-wbt-back="${k}">回退到这个版本</button>${k < h.length - 1 ? `<button class="nim-btn sm" data-wbt-ai="${k}">用 AI 合并（这个版本 + 之后的内容）</button>` : ''}</div></details>`,
             )
             .join('');
+        openWbt(`${wbtUi.cat} / ${wbtUi.name}`, top + `<div class="nim-sub">历史版本（${h.length}）</div>` + (list || '<div class="nim-muted">没有找到历史</div>'));
+    }
+
+    async function startDupCheck() {
+        const e = State.engine;
+        const groups = e.findDuplicateGroups();
+        if (!groups.length) return toast('没找到名字或关键词相近的条目', 'info');
+        if (!confirm(`找到 ${groups.length} 组名字或关键词相近的条目，让 AI 判断哪些是同一个吗？（发一次请求）`)) return;
+        State.stopped = false;
+        toast('AI 判断中…', 'info');
+        try {
+            wbtUi.groups = await e.verifyDuplicateGroups(groups);
+        } catch (err) {
+            return toast(`判断失败：${err.message}`, 'error');
+        }
+        if (!wbtUi.groups.length) return toast(`${groups.length} 组都不是同一个`, 'success');
+        renderDupGroups();
+    }
+
+    function renderDupGroups() {
+        const html =
+            `<div class="nim-muted">AI 认为下面每组是同一个人（或同一个东西）。勾上要合并的，合并时会让 AI 把几条的内容合成完整的一条，名字都留在关键词里。改错了可以在「手动修改记录」里撤销。</div>` +
+            wbtUi.groups
+                .map(
+                    (g, k) =>
+                        `<label class="nim-check" style="margin:8px 0"><input type="checkbox" data-wbt-g="${k}" checked><span class="nim-switch"></span><span>${esc(g.category)}：${esc(g.display.join(' + '))} → 保留「${esc(g.display[g.names.indexOf(g.mainName)] || g.mainName)}」${g.reason ? `<span class="nim-hint">${esc(g.reason)}</span>` : ''}</span></label>`,
+                )
+                .join('') +
+            `<div class="nim-row"><button class="nim-btn primary sm" data-wbt-merge="1">合并勾上的</button></div>`;
+        openWbt('同一角色检查', html);
+    }
+
+    function renderWbEdits() {
+        const e = State.engine;
+        const list = e.listWbEdits();
+        const desc = (ed) => (ed.type === 'merge' ? `合并 ${ed.names.join(' + ')} → ${ed.mainName}` : `改了「${ed.name}」的内容`);
+        openWbt(
+            '手动修改记录',
+            `<div class="nim-muted">这些修改在对应那层算完后套上。撤销后这条世界书按 AI 原来的结果重新算。</div>` +
+                (list.length
+                    ? list
+                          .slice()
+                          .reverse()
+                          .map((ed) => `<div class="nim-row" style="justify-content:space-between"><span>${esc(ed.category)} · ${esc(desc(ed))} <span class="nim-muted">（第 ${ed.layer + 1} 层之后）</span></span><button class="nim-btn sm ghost" data-wbt-undo="${ed.index}">撤销</button></div>`)
+                          .join('')
+                    : '<div class="nim-muted">没有</div>'),
+        );
+    }
+
+    async function onWbtClick(ev) {
+        const t = ev.target;
+        const e = State.engine;
+        if (t === $('nim-wbt') || t.closest('[data-wbt="close"]')) {
+            $('nim-wbt').hidden = true;
+            return;
+        }
+        const busy = () => {
+            const b = wbtBusy();
+            if (b) toast(b, 'warning');
+            return !!b;
+        };
+        const back = t.closest('[data-wbt-back]');
+        if (back) {
+            if (busy()) return;
+            const v = wbtUi.hist[Number(back.dataset.wbtBack)];
+            if (!confirm(`把这条改回第 ${v.layer + 1} 层之后的版本吗？之后各层写的内容不会合进来（要合进来用「用 AI 合并」）。`)) return;
+            e.setEntryContent(wbtUi.cat, wbtUi.name, v.content);
+            afterWbEdit(`世界书「${wbtUi.name}」回退到第 ${v.layer + 1} 层之后的版本`);
+            openWbHistory(wbtUi.cat, wbtUi.name);
+            return;
+        }
+        const ai = t.closest('[data-wbt-ai]');
+        if (ai) {
+            if (busy()) return;
+            const v = wbtUi.hist[Number(ai.dataset.wbtAi)];
+            State.stopped = false;
+            ai.disabled = true;
+            ai.textContent = 'AI 合并中…';
+            try {
+                wbtUi.draft = await e.aiMergeEntry(wbtUi.cat, wbtUi.name, v.layer);
+                renderWbHistory();
+                toast('合好了，看一下没问题就点保存', 'success');
+            } catch (err) {
+                ai.disabled = false;
+                ai.textContent = '用 AI 合并（这个版本 + 之后的内容）';
+                toast(`合并失败：${err.message}`, 'error');
+            }
+            return;
+        }
+        if (t.closest('[data-wbt-cancel]')) {
+            wbtUi.draft = null;
+            renderWbHistory();
+            return;
+        }
+        if (t.closest('[data-wbt-save]')) {
+            if (busy()) return;
+            const text = $('nim-wbt-text').value;
+            if (!text.trim()) return toast('内容是空的', 'warning');
+            e.setEntryContent(wbtUi.cat, wbtUi.name, text);
+            afterWbEdit(`世界书「${wbtUi.name}」已手动修改`);
+            openWbHistory(wbtUi.cat, wbtUi.name);
+            return;
+        }
+        if (t.closest('[data-wbt-merge]')) {
+            if (busy()) return;
+            const picked = [...$('nim-wbt-body').querySelectorAll('[data-wbt-g]')].filter((c) => c.checked).map((c) => wbtUi.groups[Number(c.dataset.wbtG)]);
+            if (!picked.length) return toast('没勾选', 'warning');
+            State.stopped = false;
+            t.disabled = true;
+            t.textContent = '合并中…';
+            let n = 0;
+            for (const g of picked) {
+                try {
+                    await e.mergeDuplicateGroup(g);
+                    n++;
+                } catch (err) {
+                    toast(`${g.display.join(' + ')} 合并失败：${err.message}`, 'error');
+                }
+            }
+            $('nim-wbt').hidden = true;
+            if (n) afterWbEdit(`同一角色合并了 ${n} 组`);
+            return;
+        }
+        const undo = t.closest('[data-wbt-undo]');
+        if (undo) {
+            if (busy()) return;
+            e.removeWbEdit(Number(undo.dataset.wbtUndo));
+            afterWbEdit('已撤销一条世界书手动修改');
+            renderWbEdits();
+        }
+    }
+
+    function onViewWbClick(ev) {
+        const t = ev.target;
+        const b = wbtBusy();
+        const hist = t.closest('[data-wbt-hist]');
+        if (hist) {
+            if (b) return toast(b, 'warning');
+            openWbHistory(hist.dataset.cat, hist.dataset.name);
+        } else if (t.closest('[data-wbt-dup]')) {
+            if (b) return toast(b, 'warning');
+            startDupCheck();
+        } else if (t.closest('[data-wbt-edits]')) {
+            if (b) return toast(b, 'warning');
+            renderWbEdits();
+        }
     }
 
     /** 导出页：最新表格（处理完的最后一层之后的状态） */
@@ -5277,6 +5489,7 @@
   ${presetEditHtml()}
   ${catEditHtml()}
   ${cleanLogHtml()}
+  ${wbToolHtml()}
   ${replacePreviewHtml()}
   ${glossaryHtml()}
   ${ledgerHtml()}
@@ -6044,6 +6257,8 @@ button.nim-step:hover{background:var(--surface2);}
         $('nim-view-wb')?.addEventListener('toggle', (ev) => ev.target.open && renderViewWorldbook());
         $('nim-view-tb')?.addEventListener('toggle', (ev) => ev.target.open && renderViewTables());
         on('nim-view-wb-q', 'input', renderViewWorldbook);
+        $('nim-view-wb-body')?.addEventListener('click', onViewWbClick);
+        $('nim-wbt').addEventListener('click', onWbtClick);
         on('nim-carry-changed', 'change', previewCarry);
         onFile('nim-carry-file', loadCarryFile);
         on('nim-carry-clear', 'click', () => {
