@@ -834,6 +834,10 @@
             substitute: substituteMacros,
             tableTemplate: State.tableTemplate,
             seedWorldbook: State.seedWorldbook,
+            // 默认世界书条目在整理世界书里随时能改，导出时取最新的
+            get defaultEntries() {
+                return State.settings.wbDefaultEntries || [];
+            },
             // 术语表在面板里随时能改，引擎每次取最新的
             get seedGlossary() {
                 return State.seedGlossary;
@@ -4976,8 +4980,11 @@
             box.innerHTML = '<div class="nim-muted">没有搜到</div>';
             return;
         }
+        const fixedComments = new Set(entries.filter((x) => String(x.comment || '').startsWith('剧情 - ')).map((x) => x.comment));
+        for (const d of State.settings.wbDefaultEntries || []) fixedComments.add(`${d.category || '默认'} - ${d.name}`);
         const edits = e.listWbEdits ? e.listWbEdits().length : 0;
-        const tools = `<div class="nim-row"><button class="nim-btn sm" data-wbt-dup="1">检查同一角色</button>${edits ? `<button class="nim-btn sm ghost" data-wbt-edits="1">手动修改记录（${edits}）</button>` : ''}</div>`;
+        const defs = (State.settings.wbDefaultEntries || []).length;
+        const tools = `<div class="nim-row" style="flex-wrap:wrap"><button class="nim-btn sm" data-wbt-dup="1">检查同一角色</button><button class="nim-btn sm" data-wbt-pick="1">手动合并</button><button class="nim-btn sm" data-wbt-kw="1">精简关键词</button><button class="nim-btn sm" data-wbt-clean="1">清理标签</button><button class="nim-btn sm ghost" data-wbt-defs="1">默认条目（${defs}）</button>${edits ? `<button class="nim-btn sm ghost" data-wbt-edits="1">手动修改记录（${edits}）</button>` : ''}</div>`;
         box.innerHTML =
             tools +
             [...groups.entries()]
@@ -4987,7 +4994,8 @@
                         list
                             .map((x) => {
                                 const name = String(x.comment || '').replace(/^[^-]+ - /, '');
-                                return `<li><details class="nim-fold"><summary><b>${esc(name)}</b> <span class="nim-muted">${fmtNum(String(x.content || '').length)} 字${x.constant ? ' · 常驻' : ''}</span></summary>${(x.key || []).length ? `<div class="nim-muted">关键词：${esc(x.key.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(x.content || ''))}</div><div class="nim-row"><button class="nim-btn sm" data-wbt-hist="1" data-cat="${esc(cat)}" data-name="${esc(name)}">历史版本 / 修改</button></div></details></li>`;
+                                const fixed = fixedComments.has(x.comment);
+                                return `<li><details class="nim-fold"><summary><b>${esc(name)}</b> <span class="nim-muted">${fmtNum(String(x.content || '').length)} 字${x.constant ? ' · 常驻' : ''}${x.disable ? ' · 已关闭' : ''}</span></summary>${(x.key || []).length ? `<div class="nim-muted">关键词：${esc(x.key.join('、'))}</div>` : ''}<div class="nim-wb-content">${esc(String(x.content || ''))}</div>${fixed ? `<div class="nim-muted">${cat === '剧情' ? '剧情摘要条目，跟着每层摘要走' : '默认条目，在「默认条目」里改'}</div>` : `<div class="nim-row" style="flex-wrap:wrap"><button class="nim-btn sm" data-wbt-hist="1" data-cat="${esc(cat)}" data-name="${esc(name)}">修改 / 历史版本</button><button class="nim-btn sm" data-wbt-roll="1" data-cat="${esc(cat)}" data-name="${esc(name)}">重新生成</button><button class="nim-btn sm" data-wbt-cfg="1" data-cat="${esc(cat)}" data-name="${esc(name)}">单独设置</button><button class="nim-btn sm ghost" data-wbt-del="1" data-cat="${esc(cat)}" data-name="${esc(name)}">删除</button></div>`}</details></li>`;
                             })
                             .join('') +
                         '</ul>',
@@ -4999,7 +5007,7 @@
     // 整理世界书：历史版本、回退、AI 合并、同一角色合并
     // ============================================
 
-    const wbtUi = { cat: '', name: '', hist: [], groups: [], draft: null };
+    const wbtUi = { cat: '', name: '', keys: [], hist: [], groups: [], draft: null, rolls: [], rollReq: '', pick: [], kw: [], tags: '', defEdit: null };
     const KIND = { new: '新建', replace: '整条替换', append: '接在后面', edit: '手动修改' };
 
     function openWbt(title, html) {
@@ -5023,13 +5031,166 @@
         if ($('nim-view-wb')?.open) renderViewWorldbook();
     }
 
+    /** 列表里显示的那条（关键词是换过主角名的写法） */
+    function shownEntry(cat, name) {
+        const e = State.engine;
+        return Object.values(e.exportWorldbook().entries || {}).find((x) => x.comment === `${cat} - ${name}`) || null;
+    }
+
     function openWbHistory(cat, name) {
         const e = State.engine;
         wbtUi.cat = cat;
         wbtUi.name = name;
         wbtUi.draft = null;
+        wbtUi.keys = (shownEntry(cat, name) || {}).key || [];
         wbtUi.hist = e.entryHistory(cat, name);
         renderWbHistory();
+    }
+
+    // ---- 单条重新生成：按它出现过的几层原文 + 用户要求重写，可以多来几次挑一个 ----
+    function openWbRoll(cat, name) {
+        wbtUi.cat = cat;
+        wbtUi.name = name;
+        wbtUi.rolls = [];
+        wbtUi.rollReq = '';
+        renderWbRoll();
+    }
+
+    function renderWbRoll() {
+        const e = State.engine;
+        const src = e.entrySources(wbtUi.cat, wbtUi.name);
+        const cur = (shownEntry(wbtUi.cat, wbtUi.name) || {}).content || '';
+        const rolls = wbtUi.rolls
+            .map((r, k) => ({ r, k }))
+            .reverse()
+            .map(({ r, k }) => `<details class="nim-fold"${k === wbtUi.rolls.length - 1 ? ' open' : ''}><summary>第 ${k + 1} 次 · ${fmtNum(r.length)} 字</summary><div class="nim-wb-content">${esc(r)}</div><div class="nim-row"><button class="nim-btn primary sm" data-wbt-rollpick="${k}">用这一版</button></div></details>`)
+            .join('');
+        openWbt(
+            `重新生成 / ${wbtUi.name}`,
+            `<div class="nim-muted">把这条出现、改动过的 ${src.length} 层原文（${src.map((x) => x.layer + 1).join('、') || '无'} 层）和现有内容发给 AI，重新写完整的一条。可以多来几次，挑一版再保存；保存后可以在「手动修改记录」里撤销。</div>
+            <div class="nim-field"><label>你的要求 <span class="nim-hint">· 可以不写，比如「补全外貌和说话风格」「年龄写错了，是 17 岁」</span></label><textarea id="nim-wbt-req" class="nim-input nim-textarea" rows="3">${esc(wbtUi.rollReq)}</textarea></div>
+            <div class="nim-row"><button class="nim-btn primary sm" data-wbt-rollgo="1">${wbtUi.rolls.length ? '再来一次' : '开始生成'}</button></div>
+            ${rolls ? `<div class="nim-sub">生成的版本（${wbtUi.rolls.length}）</div>${rolls}` : ''}
+            <details class="nim-fold"><summary>现在的内容 · ${fmtNum(cur.length)} 字</summary><div class="nim-wb-content">${esc(cur)}</div></details>`,
+        );
+    }
+
+    // ---- 单条设置：常驻 / 关键词触发、位置、深度、顺序、关闭 ----
+    function openWbCfg(cat, name) {
+        const e = State.engine;
+        wbtUi.cat = cat;
+        wbtUi.name = name;
+        const { own, category: cc } = e.entryConfig(cat, name);
+        const posName = (v) => (POS_OPTIONS.find(([x]) => Number(x) === Number(v)) || [, String(v)])[1];
+        const lamp = own.constant === true ? 'blue' : own.constant === false ? 'green' : '';
+        openWbt(
+            `单独设置 / ${name}`,
+            `<div class="nim-muted">只改这一条导出到酒馆时的设置，留空的跟分类走（分类现在是：${cc.constant ? '常驻' : '关键词触发'}、${esc(posName(cc.position))}、深度 ${cc.depth}、顺序 ${cc.order} 起）。</div>
+            <div class="nim-field"><label>触发方式</label><select id="nim-wbc-lamp" class="nim-input"><option value="">跟分类</option><option value="blue"${lamp === 'blue' ? ' selected' : ''}>常驻（蓝灯）</option><option value="green"${lamp === 'green' ? ' selected' : ''}>关键词触发（绿灯）</option></select></div>
+            <div class="nim-grid">
+              <div class="nim-field"><label>位置</label><select id="nim-wbc-pos" class="nim-input"><option value="">跟分类</option>${POS_OPTIONS.map(([v, l]) => `<option value="${v}"${own.position !== undefined && Number(own.position) === Number(v) ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+              <div class="nim-field"><label>深度</label><input id="nim-wbc-depth" class="nim-input" type="number" min="0" max="999" placeholder="跟分类" value="${own.depth ?? ''}"></div>
+              <div class="nim-field"><label>顺序</label><input id="nim-wbc-order" class="nim-input" type="number" placeholder="跟分类" value="${own.order ?? ''}"></div>
+            </div>
+            <label class="nim-check"><input type="checkbox" id="nim-wbc-off"${own.disable ? ' checked' : ''}><span class="nim-switch"></span><span>关闭这条<span class="nim-hint">导出时带上但不启用，酒馆里随时能打开</span></span></label>
+            <div class="nim-row"><button class="nim-btn primary sm" data-wbt-cfgsave="1">保存</button><button class="nim-btn sm ghost" data-wbt-cfgreset="1">全部跟分类</button></div>`,
+        );
+    }
+
+    // ---- 手动合并：勾几条同一分类的 ----
+    function openWbPick() {
+        const e = State.engine;
+        const groups = new Map();
+        for (const x of Object.values(e.exportWorldbook().entries || {})) {
+            const [cat, ...rest] = String(x.comment || '').split(' - ');
+            if (!rest.length || (State.settings.wbDefaultEntries || []).some((d) => `${d.category || '默认'} - ${d.name}` === x.comment) || cat === '剧情') continue;
+            if (!groups.has(cat)) groups.set(cat, []);
+            groups.get(cat).push(rest.join(' - '));
+        }
+        wbtUi.pick = [...groups.entries()];
+        openWbt(
+            '手动合并',
+            `<div class="nim-muted">勾上同一个分类里要合成一条的几条，再选保留哪个名字。AI 会把内容合成完整的一条，其他名字留在关键词里。可以在「手动修改记录」里撤销。</div>` +
+                wbtUi.pick
+                    .map(
+                        ([cat, names], ci) =>
+                            `<details class="nim-fold"><summary>${esc(cat)}（${names.length}）</summary>${names.map((n, k) => `<label class="nim-check"><input type="checkbox" data-wbt-pk="${ci}:${k}"><span class="nim-switch"></span><span>${esc(n)}</span></label>`).join('')}</details>`,
+                    )
+                    .join('') +
+                `<div class="nim-field"><label>保留的名字 <span class="nim-hint">· 不填就用勾的第一条</span></label><input id="nim-wbt-main" class="nim-input"></div><div class="nim-row"><button class="nim-btn primary sm" data-wbt-pickgo="1">合并勾上的</button></div>`,
+        );
+    }
+
+    // ---- 关键词精简 ----
+    function openWbKw() {
+        const e = State.engine;
+        const cats = Object.keys(e.finalState().worldbook || {}).filter((c) => Object.keys(e.finalState().worldbook[c] || {}).length);
+        openWbt(
+            '精简关键词',
+            `<div class="nim-muted">让 AI 把关键词里的描述词（外貌、身份、性格、关系这类不能直接叫出来的词）删掉，只留名字、简称、外号。乱触发少了，条目更准。先列出来给你看，勾选后再改；之后各层新加的关键词照样会加进来。</div>` +
+                cats.map((c) => `<label class="nim-check"><input type="checkbox" data-wbt-kwcat="${esc(c)}"${/角色|人物/.test(c) ? ' checked' : ''}><span class="nim-switch"></span><span>${esc(c)}</span></label>`).join('') +
+                `<div class="nim-row"><button class="nim-btn primary sm" data-wbt-kwgo="1">让 AI 精简</button></div>`,
+        );
+    }
+
+    function renderWbKwResult() {
+        const list = wbtUi.kw || [];
+        openWbt(
+            '精简关键词',
+            list.length
+                ? `<div class="nim-muted">${list.length} 条可以精简，删掉的词标了删除线。勾上要改的。</div>` +
+                      list
+                          .map(
+                              (x, k) =>
+                                  `<label class="nim-check" style="margin:6px 0"><input type="checkbox" data-wbt-kwi="${k}" checked><span class="nim-switch"></span><span>${esc(x.category)} / <b>${esc(x.name)}</b><span class="nim-hint">${x.before.map((w) => (x.removed.includes(w) ? `<s>${esc(w)}</s>` : esc(w))).join('、')}</span></span></label>`,
+                          )
+                          .join('') +
+                      `<div class="nim-row"><button class="nim-btn primary sm" data-wbt-kwapply="1">应用勾上的</button></div>`
+                : '<div class="nim-muted">关键词都已经很干净，没什么要删的。</div>',
+        );
+    }
+
+    // ---- 清理标签 ----
+    function openWbClean() {
+        openWbt(
+            '清理标签',
+            `<div class="nim-muted">AI 有时把思考过程或别的标签写进条目内容。写上标签名，整段（从 &lt;标签&gt; 到 &lt;/标签&gt;）删掉，落单的标签也删。</div>
+            <div class="nim-field"><label>标签名 <span class="nim-hint">· 逗号隔开</span></label><input id="nim-wbt-tags" class="nim-input" value="${esc(wbtUi.tags || 'thinking, think')}"></div>
+            <div class="nim-row"><button class="nim-btn sm" data-wbt-cleanscan="1">先看看有哪些</button></div><div id="nim-wbt-cleanout"></div>`,
+        );
+    }
+
+    // ---- 默认条目：设置里写好，导出时固定加进去 ----
+    function renderWbDefs() {
+        const list = State.settings.wbDefaultEntries || [];
+        const k = wbtUi.defEdit;
+        const d = k === null || k === undefined ? null : list[k] || { category: '默认', name: '', keys: '', content: '', constant: true, position: 0, depth: 4, order: 100 };
+        const form = d
+            ? `<div class="nim-sub">${k < list.length ? '改这条' : '新加一条'}</div>
+            <div class="nim-grid"><div class="nim-field"><label>分类</label><input id="nim-wbd-cat" class="nim-input" value="${esc(d.category || '默认')}"></div><div class="nim-field"><label>条目名</label><input id="nim-wbd-name" class="nim-input" value="${esc(d.name || '')}"></div></div>
+            <div class="nim-field"><label>关键词 <span class="nim-hint">· 逗号隔开，常驻的可以不写</span></label><input id="nim-wbd-keys" class="nim-input" value="${esc(Array.isArray(d.keys) ? d.keys.join('、') : d.keys || '')}"></div>
+            <div class="nim-field"><label>内容</label><textarea id="nim-wbd-content" class="nim-input nim-textarea" rows="6">${esc(d.content || '')}</textarea></div>
+            <div class="nim-grid">
+              <div class="nim-field"><label>位置</label><select id="nim-wbd-pos" class="nim-input">${POS_OPTIONS.map(([v, l]) => `<option value="${v}"${Number(d.position ?? 0) === Number(v) ? ' selected' : ''}>${l}</option>`).join('')}</select></div>
+              <div class="nim-field"><label>深度</label><input id="nim-wbd-depth" class="nim-input" type="number" min="0" max="999" value="${d.depth ?? 4}"></div>
+              <div class="nim-field"><label>顺序</label><input id="nim-wbd-order" class="nim-input" type="number" value="${d.order ?? 100}"></div>
+            </div>
+            <label class="nim-check"><input type="checkbox" id="nim-wbd-const"${d.constant ? ' checked' : ''}><span class="nim-switch"></span><span>常驻（蓝灯）</span></label>
+            <div class="nim-row"><button class="nim-btn primary sm" data-wbt-defsave="1">保存</button><button class="nim-btn sm ghost" data-wbt-defcancel="1">取消</button></div>`
+            : '';
+        openWbt(
+            '默认条目',
+            `<div class="nim-muted">这里的条目每次导出世界书都会原样加进去（不经过 AI），适合放世界观总述、写作要求这类固定内容。存在设置里，换书也还在。</div>` +
+                (list.length
+                    ? list
+                          .map(
+                              (x, i) =>
+                                  `<div class="nim-row" style="justify-content:space-between"><span>${esc(x.category || '默认')} / <b>${esc(x.name)}</b> <span class="nim-muted">${fmtNum(String(x.content || '').length)} 字${x.constant ? ' · 常驻' : ''}</span></span><span><button class="nim-btn sm" data-wbt-defedit="${i}">改</button><button class="nim-btn sm ghost" data-wbt-defdel="${i}">删</button></span></div>`,
+                          )
+                          .join('')
+                    : '<div class="nim-muted">还没有</div>') +
+                (d ? form : '<div class="nim-row"><button class="nim-btn sm" data-wbt-defadd="1">新加一条</button></div>'),
+        );
     }
 
     function renderWbHistory() {
@@ -5037,7 +5198,9 @@
         const cur = h.length ? h[h.length - 1].content : '';
         const draft = wbtUi.draft;
         const top = `<div class="nim-muted">这条在每一层处理完后的样子（只列有变化的层，新的在上面）。回退或保存修改后，后面的层在改好的内容上接着改，不用重跑。改错了可以在「手动修改记录」里撤销。</div>
-          <div class="nim-field"><label>${draft ? 'AI 合成的结果（可以再改，确认后点保存）' : '当前内容（可以直接改）'}</label><textarea id="nim-wbt-text" class="nim-input nim-textarea" rows="8">${esc(draft ?? cur)}</textarea></div>
+          <div class="nim-field"><label>条目名</label><input id="nim-wbt-name" class="nim-input" value="${esc(wbtUi.name)}"></div>
+          <div class="nim-field"><label>关键词 <span class="nim-hint">· 逗号或顿号隔开，整组换掉</span></label><input id="nim-wbt-keys" class="nim-input" value="${esc(wbtUi.keys.join('、'))}"></div>
+          <div class="nim-field"><label>${draft ? 'AI 写的结果（可以再改，确认后点保存）' : '当前内容（可以直接改）'}</label><textarea id="nim-wbt-text" class="nim-input nim-textarea" rows="8">${esc(draft ?? cur)}</textarea></div>
           <div class="nim-row"><button class="nim-btn primary sm" data-wbt-save="1">保存成这条的内容</button>${draft ? '<button class="nim-btn sm" data-wbt-cancel="1">不用 AI 的结果</button>' : ''}</div>`;
         const list = h
             .map((v, k) => ({ v, k }))
@@ -5082,7 +5245,14 @@
     function renderWbEdits() {
         const e = State.engine;
         const list = e.listWbEdits();
-        const desc = (ed) => (ed.type === 'merge' ? `合并 ${ed.names.join(' + ')} → ${ed.mainName}` : `改了「${ed.name}」的内容`);
+        const desc = (ed) => {
+            if (ed.type === 'merge') return `合并 ${ed.names.join(' + ')} → ${ed.mainName}`;
+            if (ed.type === 'batch') return ed.label || `批量修改 ${(ed.edits || []).length} 条`;
+            if (ed.type === 'delete') return `删除「${ed.name}」`;
+            if (ed.type === 'config') return `改了「${ed.name}」的单独设置`;
+            if (ed.type === 'edit') return `改了「${ed.name}」的${[ed.content !== undefined ? '内容' : '', ed.newName ? `名字（→ ${ed.newName}）` : '', ed.newKeys ? '关键词' : ''].filter(Boolean).join('、')}`;
+            return `改了「${ed.name}」的内容`;
+        };
         openWbt(
             '手动修改记录',
             `<div class="nim-muted">这些修改在对应那层算完后套上。撤销后这条世界书按 AI 原来的结果重新算。</div>` +
@@ -5090,7 +5260,7 @@
                     ? list
                           .slice()
                           .reverse()
-                          .map((ed) => `<div class="nim-row" style="justify-content:space-between"><span>${esc(ed.category)} · ${esc(desc(ed))} <span class="nim-muted">（第 ${ed.layer + 1} 层之后）</span></span><button class="nim-btn sm ghost" data-wbt-undo="${ed.index}">撤销</button></div>`)
+                          .map((ed) => `<div class="nim-row" style="justify-content:space-between"><span>${ed.category ? esc(ed.category) + ' · ' : ''}${esc(desc(ed))} <span class="nim-muted">（第 ${ed.layer + 1} 层之后）</span></span><button class="nim-btn sm ghost" data-wbt-undo="${ed.index}">撤销</button></div>`)
                           .join('')
                     : '<div class="nim-muted">没有</div>'),
         );
@@ -5145,9 +5315,165 @@
             if (busy()) return;
             const text = $('nim-wbt-text').value;
             if (!text.trim()) return toast('内容是空的', 'warning');
-            e.setEntryContent(wbtUi.cat, wbtUi.name, text);
+            const cur = wbtUi.hist.length ? wbtUi.hist[wbtUi.hist.length - 1].content : '';
+            const newName = $('nim-wbt-name').value.trim();
+            const keys = $('nim-wbt-keys').value;
+            const changed = e.editEntry(wbtUi.cat, wbtUi.name, {
+                content: text !== cur || wbtUi.draft !== null ? text : undefined,
+                newName: newName && newName !== wbtUi.name ? newName : undefined,
+                newKeys: keys.trim() && C.splitKeys(keys).join('、') !== wbtUi.keys.join('、') ? keys : undefined,
+            });
+            if (!changed) return toast('没有改动', 'info');
             afterWbEdit(`世界书「${wbtUi.name}」已手动修改`);
-            openWbHistory(wbtUi.cat, wbtUi.name);
+            const nn = newName && newName !== wbtUi.name ? newName : wbtUi.name;
+            if (shownEntry(wbtUi.cat, nn)) openWbHistory(wbtUi.cat, nn);
+            else $('nim-wbt').hidden = true;
+            return;
+        }
+        const rollgo = t.closest('[data-wbt-rollgo]');
+        if (rollgo) {
+            if (busy()) return;
+            wbtUi.rollReq = $('nim-wbt-req').value;
+            State.stopped = false;
+            rollgo.disabled = true;
+            rollgo.textContent = '生成中…';
+            try {
+                wbtUi.rolls.push(await e.rerollEntry(wbtUi.cat, wbtUi.name, wbtUi.rollReq));
+                renderWbRoll();
+            } catch (err) {
+                rollgo.disabled = false;
+                rollgo.textContent = wbtUi.rolls.length ? '再来一次' : '开始生成';
+                toast(`生成失败：${err.message}`, 'error');
+            }
+            return;
+        }
+        const rollpick = t.closest('[data-wbt-rollpick]');
+        if (rollpick) {
+            if (busy()) return;
+            e.editEntry(wbtUi.cat, wbtUi.name, { content: wbtUi.rolls[Number(rollpick.dataset.wbtRollpick)] });
+            afterWbEdit(`世界书「${wbtUi.name}」已换成重新生成的版本`);
+            $('nim-wbt').hidden = true;
+            return;
+        }
+        if (t.closest('[data-wbt-cfgsave]') || t.closest('[data-wbt-cfgreset]')) {
+            if (busy()) return;
+            let cfg = {};
+            if (t.closest('[data-wbt-cfgsave]')) {
+                const lamp = $('nim-wbc-lamp').value;
+                const num = (id) => ($(id).value.trim() === '' ? undefined : Number($(id).value));
+                cfg = { constant: lamp === 'blue' ? true : lamp === 'green' ? false : undefined, position: num('nim-wbc-pos'), depth: num('nim-wbc-depth'), order: num('nim-wbc-order'), disable: $('nim-wbc-off').checked || undefined };
+            }
+            e.setEntryConfig(wbtUi.cat, wbtUi.name, cfg);
+            afterWbEdit(`世界书「${wbtUi.name}」的单独设置已保存`);
+            $('nim-wbt').hidden = true;
+            return;
+        }
+        if (t.closest('[data-wbt-pickgo]')) {
+            if (busy()) return;
+            const picked = [...$('nim-wbt-body').querySelectorAll('[data-wbt-pk]')].filter((c) => c.checked).map((c) => c.dataset.wbtPk.split(':').map(Number));
+            const cats = [...new Set(picked.map(([ci]) => ci))];
+            if (picked.length < 2) return toast('至少勾两条', 'warning');
+            if (cats.length > 1) return toast('只能合并同一个分类里的', 'warning');
+            const [cat, names] = wbtUi.pick[cats[0]];
+            const list = picked.map(([, k]) => names[k]);
+            const main = $('nim-wbt-main').value.trim();
+            if (main && !list.includes(main)) return toast('保留的名字要是勾上的其中一条', 'warning');
+            State.stopped = false;
+            t.disabled = true;
+            t.textContent = '合并中…';
+            try {
+                await e.mergeEntries(cat, list, main || list[0]);
+                $('nim-wbt').hidden = true;
+                afterWbEdit(`手动合并了 ${list.length} 条：${list.join(' + ')}`);
+            } catch (err) {
+                t.disabled = false;
+                t.textContent = '合并勾上的';
+                toast(`合并失败：${err.message}`, 'error');
+            }
+            return;
+        }
+        if (t.closest('[data-wbt-kwgo]')) {
+            if (busy()) return;
+            const cats = [...$('nim-wbt-body').querySelectorAll('[data-wbt-kwcat]')].filter((c) => c.checked).map((c) => c.dataset.wbtKwcat);
+            if (!cats.length) return toast('没选分类', 'warning');
+            State.stopped = false;
+            t.disabled = true;
+            t.textContent = 'AI 精简中…';
+            try {
+                wbtUi.kw = await e.simplifyKeywords(cats);
+                renderWbKwResult();
+            } catch (err) {
+                t.disabled = false;
+                t.textContent = '让 AI 精简';
+                toast(`精简失败：${err.message}`, 'error');
+            }
+            return;
+        }
+        if (t.closest('[data-wbt-kwapply]')) {
+            if (busy()) return;
+            const items = [...$('nim-wbt-body').querySelectorAll('[data-wbt-kwi]')].filter((c) => c.checked).map((c) => wbtUi.kw[Number(c.dataset.wbtKwi)]);
+            const n = e.applyKeywordSimplify(items);
+            $('nim-wbt').hidden = true;
+            if (n) afterWbEdit(`精简了 ${n} 条的关键词`);
+            return;
+        }
+        if (t.closest('[data-wbt-cleanscan]')) {
+            wbtUi.tags = $('nim-wbt-tags').value;
+            const list = e.cleanEntryTags(wbtUi.tags, false);
+            $('nim-wbt-cleanout').innerHTML = list.length
+                ? `<div class="nim-muted">${list.length} 条里有：</div>${list.map((x) => `<div>${esc(x.category)} / ${esc(x.name)} <span class="nim-muted">删 ${fmtNum(x.removedChars)} 字</span></div>`).join('')}<div class="nim-row"><button class="nim-btn primary sm" data-wbt-cleango="1">全部清理</button></div>`
+                : '<div class="nim-muted">没有条目里有这些标签</div>';
+            return;
+        }
+        if (t.closest('[data-wbt-cleango]')) {
+            if (busy()) return;
+            const n = e.cleanEntryTags(wbtUi.tags, true).length;
+            $('nim-wbt').hidden = true;
+            if (n) afterWbEdit(`清理了 ${n} 条里的标签`);
+            return;
+        }
+        const defedit = t.closest('[data-wbt-defedit]');
+        if (defedit || t.closest('[data-wbt-defadd]')) {
+            wbtUi.defEdit = defedit ? Number(defedit.dataset.wbtDefedit) : (State.settings.wbDefaultEntries || []).length;
+            return renderWbDefs();
+        }
+        if (t.closest('[data-wbt-defcancel]')) {
+            wbtUi.defEdit = null;
+            return renderWbDefs();
+        }
+        if (t.closest('[data-wbt-defsave]')) {
+            const name = $('nim-wbd-name').value.trim();
+            const content = $('nim-wbd-content').value.trim();
+            if (!name || !content) return toast('条目名和内容都要写', 'warning');
+            const list = (State.settings.wbDefaultEntries || []).slice();
+            list[wbtUi.defEdit] = {
+                category: $('nim-wbd-cat').value.trim() || '默认',
+                name,
+                keys: C.splitKeys($('nim-wbd-keys').value),
+                content,
+                constant: $('nim-wbd-const').checked,
+                position: Number($('nim-wbd-pos').value),
+                depth: Number($('nim-wbd-depth').value) || 0,
+                order: Number($('nim-wbd-order').value) || 0,
+            };
+            State.settings.wbDefaultEntries = list;
+            saveSettings();
+            wbtUi.defEdit = null;
+            renderWbDefs();
+            if ($('nim-view-wb')?.open) renderViewWorldbook();
+            return toast('默认条目已保存', 'success');
+        }
+        const defdel = t.closest('[data-wbt-defdel]');
+        if (defdel) {
+            const list = (State.settings.wbDefaultEntries || []).slice();
+            const x = list[Number(defdel.dataset.wbtDefdel)];
+            if (!x || !confirm(`删掉默认条目「${x.name}」吗？`)) return;
+            list.splice(Number(defdel.dataset.wbtDefdel), 1);
+            State.settings.wbDefaultEntries = list;
+            saveSettings();
+            wbtUi.defEdit = null;
+            renderWbDefs();
+            if ($('nim-view-wb')?.open) renderViewWorldbook();
             return;
         }
         if (t.closest('[data-wbt-merge]')) {
@@ -5192,7 +5518,29 @@
         } else if (t.closest('[data-wbt-edits]')) {
             if (b) return toast(b, 'warning');
             renderWbEdits();
-        }
+        } else if (t.closest('[data-wbt-defs]')) {
+            wbtUi.defEdit = null;
+            renderWbDefs();
+        } else if (b && t.closest('[data-wbt-roll],[data-wbt-cfg],[data-wbt-del],[data-wbt-pick],[data-wbt-kw],[data-wbt-clean]')) {
+            toast(b, 'warning');
+        } else if (t.closest('[data-wbt-roll]')) {
+            const x = t.closest('[data-wbt-roll]');
+            openWbRoll(x.dataset.cat, x.dataset.name);
+        } else if (t.closest('[data-wbt-cfg]')) {
+            const x = t.closest('[data-wbt-cfg]');
+            openWbCfg(x.dataset.cat, x.dataset.name);
+        } else if (t.closest('[data-wbt-del]')) {
+            const x = t.closest('[data-wbt-del]');
+            if (!confirm(`删掉世界书「${x.dataset.name}」吗？可以在「手动修改记录」里撤销。之后的层如果又写到它，会重新出现。`)) return;
+            try {
+                State.engine.deleteEntry(x.dataset.cat, x.dataset.name);
+                afterWbEdit(`删除了世界书「${x.dataset.name}」`);
+            } catch (err) {
+                toast(err.message, 'error');
+            }
+        } else if (t.closest('[data-wbt-pick]')) openWbPick();
+        else if (t.closest('[data-wbt-kw]')) openWbKw();
+        else if (t.closest('[data-wbt-clean]')) openWbClean();
     }
 
     /** 导出页：最新表格（处理完的最后一层之后的状态） */
