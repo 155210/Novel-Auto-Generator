@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.60';
+    const VERSION = '1.5.61';
 
     // ============================================
     // 默认配置
@@ -1880,6 +1880,12 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return { total, parts, promptCopies, repeats };
     }
 
+    /** 整条替换模式下判「AI 只写了新信息」：判得保守，开头写了追加/补充/新增，或者不到旧内容三成长 */
+    function looksLikeOnlyNew(content, oldContent) {
+        const c = String(content || '').trim();
+        return /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(c) || c.length < String(oldContent || '').length * 0.3;
+    }
+
     /** AI 只回了「追加」那一段：比旧内容短一大截，或者以追加、补充、新增开头 */
     function isPartialWbUpdate(content, oldContent) {
         const c = String(content || '').trim();
@@ -1922,7 +1928,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                 let replaced = false;
                 if (opts.replaceOnly) {
                     // 合并旧条目的小请求失败了：先把新信息接在后面，之后哪一层把全文发给 AI、它回完整一条时再整条替换
-                    if (item._append) {
+                    // 合并过的直接整条替换；看过全文却开头写了「本层新增」、又没合并过的（比如 1.5.60 以前跑的层），接在后面，免得把旧内容冲掉
+                    // 这里只认开头明写了追加/补充/新增的：短的完整版照样整条替换（用户要求世界书不能一段段叠）
+                    if (item._append || (shown && !item._merged && /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(content))) {
                         if (!e.内容.includes(content)) {
                             e.内容 = `${e.内容}\n\n${content}`;
                             log.push({ type: 'append', category, name: existing });
@@ -3096,9 +3104,8 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                     if (!existing) continue;
                     const old = String((wb[cat][existing] || {}).内容 || '');
                     // 给了全文的条目，AI 也常常只写「本层新增：……」：整条替换会把旧内容冲掉，同样走合并
-                    // 判得保守一点：开头写了追加/补充/新增，或者不到旧内容三成长，才当成只写了新信息
-                    const partial = /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(add) || add.length < old.length * 0.3;
-                    if (provided.has(`${cat}/${existing}`) && !partial) continue;
+                    if (item._merged || item._append) continue;
+                    if (provided.has(`${cat}/${existing}`) && !looksLikeOnlyNew(add, old)) continue;
                     todo.push({ key: `${cat}/${existing}`, item, old, add });
                 }
             }
@@ -3126,6 +3133,7 @@ ${todo.map((t) => `### ${t.key}\n【旧内容】\n${t.old}\n【本层新信息�
                         continue;
                     }
                     t.item.内容 = v;
+                    t.item._merged = true;
                     provided.add(t.key);
                     done.push(t.key);
                 }
@@ -3612,6 +3620,8 @@ ${blocks}`;
             const markedNew = markedBase.length === paras.length ? applyEditOps(markedBase, markedOps).paras.concat(extras) : null;
             Object.assign(r, { raw, parsed, finalParas, markedParas: markedNew, edited: (old.edited || 0) + 1 });
             const st = replay(i);
+            parsed.warnings = [...(parsed.warnings || [])];
+            await mergeUnseenEntries(i, st, parsed, r);
             const c = commit(st, i, r);
             r.tableActions = c.out.tableActions;
             r.tableLog = c.out.tableLog;
@@ -3733,6 +3743,7 @@ ${blocks}`;
                 throw new Error(rec.problem);
             }
             Object.assign(r, { raw, parsed, warnings: parsed.warnings, providedNames: uniq([...(old.providedNames || []), ...wbNames]) });
+            await mergeUnseenEntries(i, st, parsed, r);
             const c = commit(st, i, r);
             r.tableActions = c.out.tableActions;
             r.tableLog = c.out.tableLog;
