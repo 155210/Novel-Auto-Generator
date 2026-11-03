@@ -2317,3 +2317,14 @@ describe('楼层里写摘要', () => {
         expect(C.buildFloorText({ ...floor, summary: '' }, { floorSummaryEnabled: true })).not.toContain('Plotline');
     });
 });
+
+describe('楼层摘要替换 AI 自己写的同名标签', () => {
+    it('extras 里已有 <Plotline> 时换成本层摘要，只留一份', () => {
+        const floor = { heading: 'h', body: 'b', extras: ['<Calculated_data>\nx\n</Calculated_data>', '<Plotline>\n<details><summary>摘要</summary>\n...\n</details>\n</Plotline>'], summary: '真摘要' };
+        const mes = C.buildFloorText(floor, { floorSummaryEnabled: true });
+        expect(mes.match(/<Plotline>/g).length).toBe(1);
+        expect(mes).toContain('</Calculated_data>\n<Plotline>\n<details><summary>摘要</summary>\n真摘要\n</details>\n</Plotline>');
+        expect(mes).not.toContain('...');
+        expect(C.buildFloorText(floor, {})).toContain('...');
+    });
+});

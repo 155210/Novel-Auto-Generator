@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.75';
+    const VERSION = '1.5.76';
 
     // ============================================
     // 默认配置
@@ -2611,14 +2611,16 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         let heading = floor.heading || floor.title;
         if (mark) heading = /[：:]/.test(heading) ? heading.replace(/[：:]/, (c) => c + mark) : mark + heading;
         parts.push(`<${s.titleTag}>\n${heading}\n</${s.titleTag}>`);
-        for (const x of floor.before || []) parts.push(x);
+        // 楼层摘要：AI 自己也写了同名标签（比如 <Plotline>…</Plotline>）时换成本层摘要，不重复
+        const tpl = String(s.floorSummaryTemplate || '').trim();
+        const sumOn = !!(s.floorSummaryEnabled && floor.summary && tpl);
+        const sumTag = sumOn ? (tpl.match(/^<([^\s<>/]+)[^<>]*>/) || [])[1] : '';
+        const notSum = (x) => !sumTag || !new RegExp(`^\\s*<${sumTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s>]`, 'i').test(String(x));
+        for (const x of (floor.before || []).filter(notSum)) parts.push(x);
         parts.push(`<${s.bodyTag}>\n${floor.body}\n</${s.bodyTag}>`);
         // 夹在正文里的别的标签挪到正文后面、tableEdit 前面
-        for (const x of floor.extras || []) parts.push(x);
-        if (s.floorSummaryEnabled && floor.summary && String(s.floorSummaryTemplate || '').trim()) {
-            const tpl = String(s.floorSummaryTemplate).trim();
-            parts.push(/\{\{\s*摘要\s*\}\}/.test(tpl) ? tpl.replace(/\{\{\s*摘要\s*\}\}/g, () => floor.summary) : `${tpl}\n${floor.summary}`);
-        }
+        for (const x of (floor.extras || []).filter(notSum)) parts.push(x);
+        if (sumOn) parts.push(/\{\{\s*摘要\s*\}\}/.test(tpl) ? tpl.replace(/\{\{\s*摘要\s*\}\}/g, () => floor.summary) : `${tpl}\n${floor.summary}`);
         if (s.writeTableEdit && floor.tableEdit) parts.push(floor.tableEdit);
         return parts.join('\n');
     }
