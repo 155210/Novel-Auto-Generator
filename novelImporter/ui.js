@@ -411,6 +411,8 @@
             },
             { key: 'summaryGuide', label: '每层摘要的写法', type: 'textarea', rows: 3, hint: '摘要会导出为「剧情 - 第N层」条目，也用在下一层的前情提要和角色卡简介里' },
             { key: 'plotSummaryEntries', label: '每层摘要也导出为「剧情」条目', type: 'check' },
+            { key: 'floorSummaryEnabled', label: '每层楼里也写一份摘要（放在正文结束标签后面）', type: 'check', hint: '给酒馆里读楼层摘要的插件用；世界书「剧情」条目不受影响，已生成的层直接用，不用重跑' },
+            { key: 'floorSummaryTemplate', label: '楼层摘要的格式', type: 'textarea', rows: 5, hint: '{{摘要}} 会换成本层摘要' },
             { key: 'plotPosition', label: '剧情条目的位置', type: 'select', options: POS_OPTIONS },
             { key: 'plotDepth', label: '剧情条目的深度（位置选自定义深度时）', type: 'number' },
             { key: 'plotOrder', label: '剧情条目的顺序', type: 'number', hint: '默认 50' },
