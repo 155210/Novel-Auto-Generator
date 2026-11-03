@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.73';
+    const VERSION = '1.5.74';
 
     // ============================================
     // 默认配置
@@ -2633,7 +2633,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             chat_metadata: opts.chatMetadata || {},
         };
         // opts.replaceUserMacro：酒馆显示楼层时不替换 {{user}}，导入时直接写成用户名
-        const fix = (t) => (opts.replaceUserMacro ? String(t).replace(/\{\{user\}\}/gi, userName) : t);
+        const fix = (t) => (opts.replaceUserMacro ? String(t).replace(/\{\{\s*user\s*\}\}|<user>/gi, () => userName) : t);
         const msgs = floors.map((f, i) => ({
             name: charName,
             is_user: false,

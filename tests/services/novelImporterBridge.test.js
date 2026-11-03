@@ -85,3 +85,18 @@ describe('小说导入：记忆表格插件识别原版 / v2', () => {
         await expect(ST.rebuildTables({ quietConsole: false })).rejects.toThrow('记忆表格 v2处于关闭状态');
     });
 });
+
+describe('酒馆当前用户名', () => {
+    const load = (ctxObj) => {
+        globalThis.SillyTavern = { getContext: () => ctxObj };
+        (0, eval)(SRC);
+        return globalThis.NovelImporterST;
+    };
+    it('优先读 name1', () => {
+        expect(load({ name1: 'fary' }).currentUserName()).toBe('fary');
+    });
+    it('name1 读不到时用酒馆展开的 {{user}}，没展开（还是宏）就当没读到', () => {
+        expect(load({ name1: '', substituteParams: (t) => t.replace('{{user}}', '小林') }).currentUserName()).toBe('小林');
+        expect(load({ substituteParams: (t) => t }).currentUserName()).toBe('');
+    });
+});

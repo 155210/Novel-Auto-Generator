@@ -513,12 +513,30 @@
         return avatar;
     }
 
+    /** 酒馆当前用户名：先读 name1，读不到再让酒馆自己展开 {{user}}，再不行看全局变量 */
     function currentUserName() {
+        const ok = (v) => (typeof v === 'string' && v.trim() && !/\{\{\s*user\s*\}\}/i.test(v) ? v.trim() : '');
+        let c = null;
         try {
-            return ctx().name1 || '';
+            c = ctx();
         } catch (e) {
-            return '';
+            c = null;
         }
+        const tries = [
+            () => c && c.name1,
+            () => c && typeof c.substituteParams === 'function' && c.substituteParams('{{user}}'),
+            () => root.name1,
+            () => c && c.powerUserSettings && c.powerUserSettings.personas && c.powerUserSettings.personas[c.powerUserSettings.default_persona || ''],
+        ];
+        for (const t of tries) {
+            try {
+                const v = ok(t());
+                if (v) return v;
+            } catch (e) {
+                /* 换下一个 */
+            }
+        }
+        return '';
     }
 
     /**
