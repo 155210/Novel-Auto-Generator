@@ -566,6 +566,20 @@ describe('运行引擎', () => {
         expect(engine.results[0].calls[0].think).toBe('想了想第1层');
     });
 
+    it('给了全文的条目 AI 只写「本层新增」：也走合并，不把旧内容冲掉', async () => {
+        const { engine, merges } = makeEngine((layer, prompt) => {
+            if (prompt.includes('把新信息合进旧条目')) return JSON.stringify({ [prompt.match(/### (角色\/\S+)/)[1]]: '路长远完整版：旧信息加新信息' });
+            return layer === 0
+                ? reply({ title: '一', wb: { 角色: { 路长远: { 关键词: ['路长远'], 内容: '路长远的旧信息，很长很长很长很长很长很长很长很长' } } } })
+                : reply({ title: '二', wb: { 角色: { 路长远: { 关键词: ['路长远'], 内容: '本层新增：得到一枚戒指' } } } });
+        });
+        await engine.run();
+        expect(merges.length).toBeGreaterThan(0);
+        expect(merges[0].messages[1].content).toContain('路长远的旧信息');
+        const ent = Object.values(engine.exportWorldbook().entries).find((e) => /路长远|\{\{user\}\}/.test(e.comment));
+        expect(ent.content).toBe('{{user}}完整版：旧信息加新信息');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');

@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.59';
+    const VERSION = '1.5.60';
 
     // ============================================
     // 默认配置
@@ -1922,7 +1922,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                 let replaced = false;
                 if (opts.replaceOnly) {
                     // 合并旧条目的小请求失败了：先把新信息接在后面，之后哪一层把全文发给 AI、它回完整一条时再整条替换
-                    if (!shown && item._append) {
+                    if (item._append) {
                         if (!e.内容.includes(content)) {
                             e.内容 = `${e.内容}\n\n${content}`;
                             log.push({ type: 'append', category, name: existing });
@@ -3093,8 +3093,13 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                     const add = String(item.内容 || '').trim();
                     if (!name || !add || /^(改名|无|没有)[。.]?$/.test(add)) continue;
                     const existing = findEntryByKey(wb, cat, name, keys);
-                    if (!existing || provided.has(`${cat}/${existing}`)) continue;
-                    todo.push({ key: `${cat}/${existing}`, item, old: String((wb[cat][existing] || {}).内容 || ''), add });
+                    if (!existing) continue;
+                    const old = String((wb[cat][existing] || {}).内容 || '');
+                    // 给了全文的条目，AI 也常常只写「本层新增：……」：整条替换会把旧内容冲掉，同样走合并
+                    // 判得保守一点：开头写了追加/补充/新增，或者不到旧内容三成长，才当成只写了新信息
+                    const partial = /^#*\s*[^\n]{0,12}(追加|补充|新增)/.test(add) || add.length < old.length * 0.3;
+                    if (provided.has(`${cat}/${existing}`) && !partial) continue;
+                    todo.push({ key: `${cat}/${existing}`, item, old, add });
                 }
             }
             if (!todo.length) return;
@@ -3126,7 +3131,7 @@ ${todo.map((t) => `### ${t.key}\n【旧内容】\n${t.old}\n【本层新信息�
                 }
                 r.providedNames = [...provided];
                 if (done.length) {
-                    parsed.warnings.push(`世界书：${done.join('、')} 这次没发全文，已按本层新信息另外合并成完整一条`);
+                    parsed.warnings.push(`世界书：${done.join('、')} AI 只写了本层新信息，已另外和旧内容合并成完整一条`);
                     emit('layer-warn', { index: i, warnings: [parsed.warnings[parsed.warnings.length - 1]] });
                 }
                 if (missed.length) emit('layer-warn', { index: i, warnings: [`世界书：${missed.join('、')} 没合并成功，新信息先接在旧内容后面，之后发全文时再整条更新`] });
