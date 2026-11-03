@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.70';
+    const VERSION = '1.5.71';
 
     // ============================================
     // 默认配置
@@ -139,6 +139,21 @@
         return (Array.isArray(list) ? list : []).map(normalizeCategory).filter((c) => c.name && !seen.has(c.name) && seen.add(c.name));
     }
 
+    // 整理条目（和 TXT转世界书 的「整理条目」同一个默认提示词，{CONTENT} 换成条目内容）
+    const DEFAULT_CONSOLIDATE_PROMPT = `你是世界书条目整理专家。请整理以下条目内容，去除重复信息，合并相似描述，保留所有独特细节。
+
+## 整理规则
+1. 合并重复的属性描述（如多个"性别"只保留一个）
+2. 整合相似的段落，去除冗余
+3. 保留所有独特信息，不要丢失细节
+4. 使用清晰的markdown格式输出
+5. 关键信息放在前面
+
+## 原始内容
+{CONTENT}
+
+请直接输出整理后的内容（纯文本，不要JSON包装）：`;
+
     // 主角和女主的角色条目按人设格式写，导入后可直接当用户人设 / 角色人设用
     const PERSONA_GUIDE = `- 角色条目多给一个 "定位" 字段：主角 / 女主 / 配角。女主指和主角有感情线或明显暧昧的女性角色
 - 定位为主角或女主的条目，"内容" 按人设格式写完整：**名称**、**性别**、**年龄**（原文写明才填）、**身份**、**外貌**、**性格**、**说话风格**、**背景经历**、**能力/境界**、**与主角关系**、**话语示例**（从原文摘 1 到 3 句）
@@ -249,7 +264,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         // 已有条目又被输出时：replace 一律整条替换；auto 看 AI 回的像不像只写了追加的一段，像就接在旧内容后面
         wbUpdateMode: 'replace',
         plotSummaryEntries: true,
-        wbDefaultEntries: [], // 默认世界书条目：[{category, name, keys, content, constant, position, depth, order}]，导出时固定加进去
+        wbDefaultEntries: [],
+        wbConsolidatePrompt: '', // 整理条目的提示词，空的用默认 // 默认世界书条目：[{category, name, keys, content, constant, position, depth, order}]，导出时固定加进去
         // 每层 <摘要> 的写法；摘要导出为「剧情」条目，也用作前情提要和角色卡简介
         summaryGuide: '本层剧情摘要，100 到 200 字，写清楚谁做了什么',
         // 承接上一层：带上一层正文最后多少字（0 不带），以及上一层回复里哪些标签原样一起发（逗号分隔）
@@ -4667,6 +4683,35 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             return edits.length;
         }
 
+        /** 整理一条：去掉重复信息、合并相似描述（不保存，返回整理后的内容给界面确认） */
+        async function consolidateEntry(category, displayName, template) {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) throw new Error('找不到这条');
+            const st = finalState();
+            const tpl = String(template || settings.wbConsolidatePrompt || '').trim() || DEFAULT_CONSOLIDATE_PROMPT;
+            const content = outText(String(hit.entry.内容 || ''), st);
+            const prompt = tpl.includes('{CONTENT}') ? tpl.replace('{CONTENT}', () => content) : `${tpl}\n\n## 原始内容\n${content}`;
+            let out = String((await callTool(prompt, '你是世界书条目整理工具。只输出整理后的条目内容，不写任何别的话。')) || '').trim();
+            const fenced = out.match(/```(?:markdown|md|text|txt)?\s*([\s\S]*?)```/i);
+            if (fenced) out = fenced[1].trim();
+            out = out.replace(/^整理后的内容[:：]\s*/, '').trim();
+            if (!out) throw new Error('AI 没有回内容');
+            return { before: content, after: out };
+        }
+
+        /** 应用整理结果（[{category, name, content}]），一次算一条修改，可以整体撤销 */
+        function applyConsolidated(items) {
+            const edits = [];
+            for (const it of items || []) {
+                const hit = resolveEntry(it.category, it.name);
+                if (!hit || !String(it.content || '').trim()) continue;
+                edits.push({ type: 'edit', category: it.category, name: hit.name, keys: hit.entry.关键词 || [], content: String(it.content) });
+            }
+            if (!edits.length) return 0;
+            addWbEdit({ type: 'batch', label: `整理条目 ${edits.length} 条`, edits });
+            return edits.length;
+        }
+
         /** 条目里有这些标签的（比如 AI 把 <thinking> 写进了内容），列出来；apply 为 true 就直接删掉 */
         function cleanEntryTags(tags, apply = false) {
             const st = finalState();
@@ -4778,6 +4823,8 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             simplifyKeywords,
             applyKeywordSimplify,
             cleanEntryTags,
+            consolidateEntry,
+            applyConsolidated,
             buildRequestFor(i) {
                 return buildRequest(i, replay(i));
             },
@@ -5127,6 +5174,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
         worldbookToST,
         stripTagBlocks,
         splitKeys,
+        DEFAULT_CONSOLIDATE_PROMPT,
         importWorldbook,
         parseTableTemplate,
         createTableState,

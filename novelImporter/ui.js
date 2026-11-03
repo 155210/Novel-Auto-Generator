@@ -5028,7 +5028,7 @@
         for (const d of State.settings.wbDefaultEntries || []) fixedComments.add(`${d.category || '默认'} - ${d.name}`);
         const edits = e.listWbEdits ? e.listWbEdits().length : 0;
         const defs = (State.settings.wbDefaultEntries || []).length;
-        const tools = `<div class="nim-row" style="flex-wrap:wrap"><button class="nim-btn sm" data-wbt-dup="1">检查同一角色</button><button class="nim-btn sm" data-wbt-pick="1">手动合并</button><button class="nim-btn sm" data-wbt-kw="1">精简关键词</button><button class="nim-btn sm" data-wbt-clean="1">清理标签</button><button class="nim-btn sm ghost" data-wbt-defs="1">默认条目（${defs}）</button>${edits ? `<button class="nim-btn sm ghost" data-wbt-edits="1">手动修改记录（${edits}）</button>` : ''}</div>`;
+        const tools = `<div class="nim-row" style="flex-wrap:wrap"><button class="nim-btn sm" data-wbt-dup="1">检查同一角色</button><button class="nim-btn sm" data-wbt-pick="1">手动合并</button><button class="nim-btn sm" data-wbt-cons="1">整理条目</button><button class="nim-btn sm" data-wbt-kw="1">精简关键词</button><button class="nim-btn sm" data-wbt-clean="1">清理标签</button><button class="nim-btn sm ghost" data-wbt-defs="1">默认条目（${defs}）</button>${edits ? `<button class="nim-btn sm ghost" data-wbt-edits="1">手动修改记录（${edits}）</button>` : ''}</div>`;
         box.innerHTML =
             tools +
             [...groups.entries()]
@@ -5051,7 +5051,7 @@
     // 整理世界书：历史版本、回退、AI 合并、同一角色合并
     // ============================================
 
-    const wbtUi = { cat: '', name: '', keys: [], hist: [], groups: [], draft: null, rolls: [], rollReq: '', pick: [], kw: [], tags: '', defEdit: null };
+    const wbtUi = { cons: [], consRes: [], cat: '', name: '', keys: [], hist: [], groups: [], draft: null, rolls: [], rollReq: '', pick: [], kw: [], tags: '', defEdit: null };
     const KIND = { new: '新建', replace: '整条替换', append: '接在后面', edit: '手动修改' };
 
     function openWbt(title, html) {
@@ -5191,6 +5191,52 @@
                           .join('') +
                       `<div class="nim-row"><button class="nim-btn primary sm" data-wbt-kwapply="1">应用勾上的</button></div>`
                 : '<div class="nim-muted">关键词都已经很干净，没什么要删的。</div>',
+        );
+    }
+
+    // ---- 整理条目：AI 去掉重复信息、合并相似描述（和 TXT转世界书 一样），先看结果再应用 ----
+    function openWbCons() {
+        const e = State.engine;
+        const wb = e.finalState().worldbook || {};
+        const st = e.exportWorldbook().entries || {};
+        const groups = new Map();
+        for (const x of Object.values(st)) {
+            const [cat, ...rest] = String(x.comment || '').split(' - ');
+            if (!rest.length || !wb[cat]) continue;
+            if (!groups.has(cat)) groups.set(cat, []);
+            groups.get(cat).push({ name: rest.join(' - '), len: String(x.content || '').length });
+        }
+        wbtUi.cons = [...groups.entries()];
+        const tpl = State.settings.wbConsolidatePrompt || C.DEFAULT_CONSOLIDATE_PROMPT;
+        openWbt(
+            '整理条目',
+            `<div class="nim-muted">让 AI 把条目里重复的信息去掉、相似的描述合在一起，独特的细节都保留。一条发一次请求，整理完先列出来给你看，勾选后再换上；换上后可以在「手动修改记录」里一起撤销。</div>
+            <div class="nim-row"><button class="nim-btn sm ghost" data-wbt-consall="1">全选</button><button class="nim-btn sm ghost" data-wbt-consnone="1">全不选</button><button class="nim-btn sm ghost" data-wbt-conslong="1">只选 1500 字以上的</button></div>` +
+                wbtUi.cons
+                    .map(
+                        ([cat, list], ci) =>
+                            `<details class="nim-fold"><summary>${esc(cat)}（${list.length}）</summary>${list.map((x, k) => `<label class="nim-check"><input type="checkbox" data-wbt-ck="${ci}:${k}" data-len="${x.len}"><span class="nim-switch"></span><span>${esc(x.name)} <span class="nim-hint">${fmtNum(x.len)} 字</span></span></label>`).join('')}</details>`,
+                    )
+                    .join('') +
+                `<details class="nim-fold"><summary>整理用的提示词（可以改，{CONTENT} 会换成条目内容）</summary><textarea id="nim-wbt-constpl" class="nim-input nim-textarea" rows="10">${esc(tpl)}</textarea><div class="nim-row"><button class="nim-btn sm ghost" data-wbt-constplreset="1">恢复默认</button></div></details>
+                <div class="nim-row"><button class="nim-btn primary sm" data-wbt-consgo="1">开始整理勾上的</button></div><div id="nim-wbt-consout"></div>`,
+        );
+    }
+
+    function renderWbConsResult() {
+        const list = wbtUi.consRes || [];
+        const ok = list.filter((x) => x.after);
+        openWbt(
+            '整理条目',
+            `<div class="nim-muted">整理好 ${ok.length} 条${list.length > ok.length ? `，${list.length - ok.length} 条失败（原样保留）` : ''}。变短很多的标了黄色，展开看看有没有丢信息再勾。</div>` +
+                list
+                    .map((x, k) =>
+                        x.after
+                            ? `<details class="nim-fold"><summary><label class="nim-check" style="display:inline-flex;margin:0" onclick="event.stopPropagation()"><input type="checkbox" data-wbt-cri="${k}"${x.after.length < x.before.length * 0.5 ? '' : ' checked'}><span class="nim-switch"></span></label> ${esc(x.category)} / <b>${esc(x.name)}</b> <span class="nim-hint"${x.after.length < x.before.length * 0.5 ? ' style="color:var(--warn,#e0a030)"' : ''}>${fmtNum(x.before.length)} → ${fmtNum(x.after.length)} 字</span></summary><div class="nim-sub">整理后</div><div class="nim-wb-content">${esc(x.after)}</div><div class="nim-sub">原来</div><div class="nim-wb-content">${esc(x.before)}</div></details>`
+                            : `<div class="nim-muted">${esc(x.category)} / ${esc(x.name)}：失败（${esc(x.error || '')}）</div>`,
+                    )
+                    .join('') +
+                (ok.length ? `<div class="nim-row"><button class="nim-btn primary sm" data-wbt-consapply="1">换上勾选的</button></div>` : ''),
         );
     }
 
@@ -5461,6 +5507,58 @@
             if (n) afterWbEdit(`精简了 ${n} 条的关键词`);
             return;
         }
+        if (t.closest('[data-wbt-consall]') || t.closest('[data-wbt-consnone]') || t.closest('[data-wbt-conslong]')) {
+            const mode = t.closest('[data-wbt-consall]') ? 'all' : t.closest('[data-wbt-consnone]') ? 'none' : 'long';
+            $('nim-wbt-body').querySelectorAll('[data-wbt-ck]').forEach((c) => (c.checked = mode === 'all' || (mode === 'long' && Number(c.dataset.len) >= 1500)));
+            $('nim-wbt-body').querySelectorAll('details.nim-fold').forEach((d) => d.querySelector('[data-wbt-ck]') && (d.open = true));
+            return;
+        }
+        if (t.closest('[data-wbt-constplreset]')) {
+            $('nim-wbt-constpl').value = C.DEFAULT_CONSOLIDATE_PROMPT;
+            return;
+        }
+        if (t.closest('[data-wbt-consgo]')) {
+            if (busy()) return;
+            const picked = [...$('nim-wbt-body').querySelectorAll('[data-wbt-ck]')].filter((c) => c.checked).map((c) => c.dataset.wbtCk.split(':').map(Number));
+            if (!picked.length) return toast('没勾选条目', 'warning');
+            const tpl = $('nim-wbt-constpl').value.trim();
+            State.settings.wbConsolidatePrompt = tpl === C.DEFAULT_CONSOLIDATE_PROMPT.trim() ? '' : tpl;
+            saveSettings();
+            if (picked.length > 5 && !confirm(`要整理 ${picked.length} 条，每条发一次请求，确定吗？`)) return;
+            State.stopped = false;
+            t.disabled = true;
+            const res = [];
+            for (let k = 0; k < picked.length; k++) {
+                if (State.stopped) break;
+                const [ci, ii] = picked[k];
+                const [cat, list] = wbtUi.cons[ci];
+                const name = list[ii].name;
+                t.textContent = `整理中 ${k + 1} / ${picked.length}…`;
+                try {
+                    const r = await e.consolidateEntry(cat, name, tpl);
+                    res.push({ category: cat, name, ...r });
+                } catch (err) {
+                    if (String(err.message) === 'ABORTED') break;
+                    res.push({ category: cat, name, before: '', after: '', error: err.message });
+                }
+            }
+            wbtUi.consRes = res;
+            if (!res.length) {
+                t.disabled = false;
+                t.textContent = '开始整理勾上的';
+                return toast('已停止', 'info');
+            }
+            renderWbConsResult();
+            return;
+        }
+        if (t.closest('[data-wbt-consapply]')) {
+            if (busy()) return;
+            const items = [...$('nim-wbt-body').querySelectorAll('[data-wbt-cri]')].filter((c) => c.checked).map((c) => wbtUi.consRes[Number(c.dataset.wbtCri)]);
+            const n = e.applyConsolidated(items.map((x) => ({ category: x.category, name: x.name, content: x.after })));
+            $('nim-wbt').hidden = true;
+            if (n) afterWbEdit(`整理了 ${n} 条世界书`);
+            return;
+        }
         if (t.closest('[data-wbt-cleanscan]')) {
             wbtUi.tags = $('nim-wbt-tags').value;
             const list = e.cleanEntryTags(wbtUi.tags, false);
@@ -5565,7 +5663,7 @@
         } else if (t.closest('[data-wbt-defs]')) {
             wbtUi.defEdit = null;
             renderWbDefs();
-        } else if (b && t.closest('[data-wbt-roll],[data-wbt-cfg],[data-wbt-del],[data-wbt-pick],[data-wbt-kw],[data-wbt-clean]')) {
+        } else if (b && t.closest('[data-wbt-roll],[data-wbt-cfg],[data-wbt-del],[data-wbt-pick],[data-wbt-kw],[data-wbt-clean],[data-wbt-cons]')) {
             toast(b, 'warning');
         } else if (t.closest('[data-wbt-roll]')) {
             const x = t.closest('[data-wbt-roll]');
@@ -5584,6 +5682,7 @@
             }
         } else if (t.closest('[data-wbt-pick]')) openWbPick();
         else if (t.closest('[data-wbt-kw]')) openWbKw();
+        else if (t.closest('[data-wbt-cons]')) openWbCons();
         else if (t.closest('[data-wbt-clean]')) openWbClean();
     }
 

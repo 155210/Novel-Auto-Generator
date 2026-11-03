@@ -792,6 +792,28 @@ describe('运行引擎', () => {
         expect(Object.values(e2.exportWorldbook().entries).map((e) => e.comment)).not.toContain('角色 - 坏人');
     });
 
+    it('整理条目：按提示词让 AI 去重，确认后换上，可以撤销', async () => {
+        let got = '';
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('世界书条目整理专家')) {
+                got = prompt;
+                return '```markdown\n整理后的林晚\n```';
+            }
+            if (layer === 0) return reply({ title: '一', wb: { 角色: { 林晚: { 关键词: ['林晚'], 写法: '完整', 内容: '性别：女\n性别：女\n喜欢猫' } } } });
+            return reply({ title: `第${layer + 1}段` });
+        });
+        await engine.run();
+        const r = await engine.consolidateEntry('角色', '林晚');
+        expect(got).toContain('喜欢猫');
+        expect(r.after).toBe('整理后的林晚');
+        const ent = () => Object.values(engine.exportWorldbook().entries).find((e) => e.comment === '角色 - 林晚').content;
+        expect(ent()).toContain('喜欢猫');
+        expect(engine.applyConsolidated([{ category: '角色', name: '林晚', content: r.after }])).toBe(1);
+        expect(ent()).toBe('整理后的林晚');
+        engine.removeWbEdit(0);
+        expect(ent()).toContain('喜欢猫');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
