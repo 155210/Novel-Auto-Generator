@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.67';
+    const VERSION = '1.5.68';
 
     // ============================================
     // 默认配置
@@ -3520,9 +3520,17 @@ ${blocks}`;
                 if (!keep) E.reviewing = wasReviewing;
             };
             let res;
+            // 失败、出错时这次的请求记录接到原结果上，「每次请求的原始输出」里看得到这次为什么没成
+            const keepCalls = () => {
+                const now = E.results[i];
+                const back = saved[0];
+                if (!back || !now || now === back || !now.calls) return;
+                back.calls = (back.calls || []).concat(now.calls.filter((c) => !(back.calls || []).includes(c)));
+            };
             try {
                 res = await processLayer(i, extra);
             } catch (e) {
+                keepCalls();
                 restore();
                 if (e.message !== 'ABORTED') {
                     if (!keep && wasReviewing !== null) emit('review', { index: i, result: E.results[i] });
@@ -3532,7 +3540,10 @@ ${blocks}`;
                 return null;
             }
             if (keep) {
-                if (res.status !== 'done' && saved[0]) E.results[i] = saved[0];
+                if (res.status !== 'done' && saved[0]) {
+                    keepCalls();
+                    E.results[i] = saved[0];
+                }
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
                 return res;
             }
@@ -3822,8 +3833,9 @@ ${blocks}`;
             const old = E.results[i];
             if (!old || old.status !== 'done') throw new Error('这一层还没完成');
             if (E.running) throw new Error('正在处理中');
-            // 标成运行中，界面的停止按钮才能点
+            // 标成运行中，界面的停止按钮才能点；上次点过停止留下的标记要清掉，不然 AI 回完了还会被当成已停止
             E.running = true;
+            E.stopRequested = false;
             try {
                 return await regenJsonInner(i, old, extraPrompt, opts);
             } finally {
@@ -3894,7 +3906,12 @@ ${blocks}`;
                 };
             }
             Object.assign(r, { raw, parsed, warnings: parsed.warnings, providedNames: uniq([...(old.providedNames || []), ...wbNames]) });
-            await mergeUnseenEntries(i, st, parsed, r);
+            try {
+                await mergeUnseenEntries(i, st, parsed, r);
+            } catch (err) {
+                keepLog();
+                throw err;
+            }
             const c = commit(st, i, r);
             r.tableActions = c.out.tableActions;
             r.tableLog = c.out.tableLog;

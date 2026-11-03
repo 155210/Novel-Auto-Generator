@@ -742,6 +742,25 @@ describe('运行引擎', () => {
         expect(engine.listWbEdits().length).toBe(0);
     });
 
+    it('之前点过停止，再「只重新输出 JSON」和重 roll 也能正常换上；重 roll 失败的请求记录接在原结果后面', async () => {
+        let bad = false;
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('只按要求输出这一层的')) return '<改写判定>{"触发": false}</改写判定>\n<世界书>{"角色": {"苏白": {"关键词": ["苏白"], "写法": "完整", "内容": "新的苏白"}, "路长远": {"关键词": ["路长远"], "写法": "新信息", "内容": "新"}}}</世界书>\n<表格>{}</表格>';
+            if (bad) return '坏的回复';
+            return normal(layer);
+        });
+        await engine.run();
+        engine.stopRequested = true;
+        const r = await engine.regenJson(1, '');
+        expect(r.status).toBe('done');
+        expect(Object.values(engine.exportWorldbook().entries).some((e) => e.comment === '角色 - 苏白')).toBe(true);
+        bad = true;
+        const before = engine.results[1].calls.length;
+        await engine.rerollLayer(1);
+        expect(engine.results[1].status).toBe('done');
+        expect(engine.results[1].calls.length).toBeGreaterThan(before);
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');

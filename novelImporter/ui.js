@@ -4731,11 +4731,7 @@
                     return;
                 }
                 log(`按要求重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}：${fb}`);
-                const job = e.redoWithFeedback(i, fb, { keepLater });
-                renderButtons();
-                await job;
-                saveProgress();
-                renderAll();
+                await runRedo(e.redoWithFeedback(i, fb, { keepLater }), i, '按要求重做');
             };
         const jsonBtn = $('nim-json-go');
         if (jsonBtn)
@@ -4823,11 +4819,7 @@
                 collectFields();
                 State.stopped = false;
                 log(`用改过的提示词重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}`);
-                const job = e.redoWithPrompt(i, p, { keepLater });
-                renderButtons();
-                await job;
-                saveProgress();
-                renderAll();
+                await runRedo(e.redoWithPrompt(i, p, { keepLater }), i, '用改过的提示词重做');
             };
         document.querySelectorAll('[data-force-patch]').forEach((b) => {
             b.onclick = () => {
@@ -4847,6 +4839,23 @@
                 State.hlOff = !State.hlOff;
                 renderDetail();
             };
+        /** 重做、重 roll：成功、失败、出错、停止都给个说法，不会点了没反应 */
+        async function runRedo(job, i, what) {
+            renderButtons();
+            try {
+                const res = await job;
+                if (!res) toast(`已停止，第 ${i + 1} 层保留原来的结果`, 'info');
+                else if (res.status !== 'done' || res.restored) {
+                    log(`第 ${i + 1} 层${what}没成功：${res.error || '格式一直不对'}（这次的原始输出接在「每次请求的原始输出」后面）`);
+                    toast(`第 ${i + 1} 层${what}没成功，保留了原来的结果：${res.error || ''}`, 'error');
+                } else toast(`第 ${i + 1} 层已${what}`, 'success');
+            } catch (err) {
+                log(`第 ${i + 1} 层${what}出错：${err.message || err}`);
+                toast(`第 ${i + 1} 层${what}出错，保留了原来的结果：${err.message || err}`, 'error');
+            }
+            saveProgress();
+            renderAll();
+        }
         const keepBox = $('nim-keep-later');
         if (keepBox) keepBox.onchange = () => (State.keepLater = keepBox.checked);
         const rerollBtn = $('nim-reroll');
@@ -4856,13 +4865,7 @@
                 collectFields();
                 State.stopped = false;
                 log(`只重 roll 第 ${i + 1} 层，后面的层保留`);
-                const job = e.rerollLayer(i, { keepLater: true });
-                renderButtons();
-                const res = await job;
-                if (res && res.status !== 'done') toast(`第 ${i + 1} 层重 roll 失败，保留了原来的结果：${res.error || ''}`, 'error');
-                else if (res) toast(`第 ${i + 1} 层已重 roll`, 'success');
-                saveProgress();
-                renderAll();
+                await runRedo(e.rerollLayer(i, { keepLater: true }), i, '重 roll');
             };
         $('nim-rerun').onclick = () => {
             if (!confirm(`第 ${i + 1} 层及之后的结果会清空，确定吗？`)) return;
