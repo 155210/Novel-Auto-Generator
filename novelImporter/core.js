@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.66';
+    const VERSION = '1.5.67';
 
     // ============================================
     // 默认配置
@@ -4432,24 +4432,34 @@ ${groups.map((g, k) => `### 第 ${k + 1} 组（${g.category}）\n${g.names.map((
         }
 
         /** 把同一个人的几条合成一条：AI 合并内容（失败就按顺序拼起来），存成手动修改 */
+        /** AI 拒绝合并时常见的说法 */
+        const MERGE_REFUSED_RE = /(并?不是同一个|不是同一人|完全不同的角色|不做合并|不进行合并|无法合并|不能合并|分别保留|保持原样不变)/;
+
         async function mergeDuplicateGroup(group) {
             const wb = finalState().worldbook || {};
             const items = wb[group.category] || {};
             const names = group.names.filter((n) => items[n]);
             if (names.length < 2) throw new Error('这几条已经不在了');
             let content = '';
-            try {
-                const prompt = `下面几条世界书条目写的是同一个人（或同一个事物），请合成完整的一条：
-- 每条里的信息都保留，重复的只写一次，冲突的以更新、更具体的为准
-- 格式、写法照最完整的那条，不要写「合并」「补充」这类字样
-- 只输出合成后的条目内容，不要写别的
+            const prompt = `下面几条世界书条目已经确认是同一个人（或同一个事物），请合成完整的一条，条目名用「${group.mainName}」：
+- 是不是同一个已经由用户确认过了（常见情况：知道真名前后的两种叫法、伪装或换了身份、代号和本名），不要再判断、不要质疑，也不要分开写
+- 看起来矛盾的地方（名字、身份、种族、外貌不同）按剧情先后写成前后变化，比如「起初以黑袍精灵身份出现，后来揭露是……」
+- 每条里的信息都保留，重复的只写一次；格式、写法照最完整的那条，不要写「合并」「补充」这类字样
+- 只输出合成后的一条条目内容，不要写解释、不要写别的
 
 ${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
-                content = String((await callTool(prompt, '你是世界书条目整理工具。只输出合成后的完整条目内容，不写任何别的话。')) || '').trim();
-            } catch (e) {
-                if (String(e.message || e) === 'ABORTED') throw e;
-                content = '';
+            const system = '你是世界书条目整理工具。用户已确认这几条是同一个，只输出合成后的完整一条，不写任何解释。';
+            for (let attempt = 0; attempt < 2 && !content; attempt++) {
+                try {
+                    const text = String((await callTool(attempt ? `${prompt}\n\n（上一次你没有合并，而是说它们不是同一个。用户已经确认是同一个，这次必须合成一条。）` : prompt, system)) || '').trim();
+                    // AI 不肯合（说不是同一个、分别保留），这次结果不能用
+                    if (!MERGE_REFUSED_RE.test(text)) content = text;
+                } catch (e) {
+                    if (String(e.message || e) === 'ABORTED') throw e;
+                    break;
+                }
             }
+            if (!content && group.manual) throw new Error('AI 两次都不肯合成一条（它认为不是同一个），没有改动；可以换个模型再试，或者用「修改」自己写');
             if (!content) content = names.map((n) => items[n].内容 || '').filter(Boolean).join('\n\n');
             addWbEdit({ type: 'merge', category: group.category, names, mainName: group.mainName, content });
             return content;
@@ -4503,7 +4513,7 @@ ${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
             const names = uniq(displayNames.map((d) => (resolveEntry(category, d) || {}).name).filter(Boolean));
             if (names.length < 2) throw new Error('至少选两条');
             const main = (resolveEntry(category, mainDisplay) || {}).name;
-            return mergeDuplicateGroup({ category, names, mainName: names.includes(main) ? main : names[0] });
+            return mergeDuplicateGroup({ category, names, mainName: names.includes(main) ? main : names[0], manual: true });
         }
 
         /** 这条出现、改动过的那几层原文（新的在前，总字数有上限），重新生成时给 AI 看 */

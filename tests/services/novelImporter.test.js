@@ -646,7 +646,7 @@ describe('运行引擎', () => {
     it('同一角色检查：找出疑似组，AI 确认后合成一条，关键词合在一起', async () => {
         const { engine } = makeEngine((layer, prompt) => {
             if (prompt.includes('判断每组里哪些是同一个人')) return '{"results": [{"组": 1, "同一个": ["0109", "金发少年"], "保留名": "0109", "理由": "同一个人"}]}';
-            if (prompt.includes('写的是同一个人')) return '0109 合成后的完整人设';
+            if (prompt.includes('已经确认是同一个')) return '0109 合成后的完整人设';
             if (layer === 0) return reply({ title: '一', wb: { 角色: { '0109': { 关键词: ['0109', '少年'], 写法: '完整', 内容: '编号 0109' }, 金发少年: { 关键词: ['金发少年', '少年'], 写法: '完整', 内容: '金发的少年' } } } });
             return reply({ title: `第${layer + 1}段` });
         });
@@ -701,7 +701,7 @@ describe('运行引擎', () => {
                 return '重写的林晚';
             }
             if (prompt.includes('精简每条的关键词')) return '{"results": [{"name": "林晚", "keywords": ["林晚", "晚晚", "新造的词"]}]}';
-            if (prompt.includes('写的是同一个人')) return '合成的一条';
+            if (prompt.includes('已经确认是同一个')) return '合成的一条';
             if (layer === 0) return reply({ title: '一', wb: { 角色: { 林晚: { 关键词: ['林晚', '晚晚', '银发', '学生会长'], 写法: '完整', 内容: '林晚' }, 苏白: { 关键词: ['苏白'], 写法: '完整', 内容: '苏白' } } } });
             return reply({ title: `第${layer + 1}段` });
         });
@@ -718,6 +718,28 @@ describe('运行引擎', () => {
         await engine.mergeEntries('角色', ['林晚', '苏白'], '林晚');
         expect(ent('角色 - 苏白')).toBeUndefined();
         expect(ent('角色 - 林晚').content).toBe('合成的一条');
+    });
+
+    it('手动合并时 AI 说不是同一个：重试一次，还不肯就报错、不改世界书', async () => {
+        let n = 0;
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('已经确认是同一个')) {
+                n++;
+                return '等等，这两条描述的并不是同一个人。我将分别保留两条原始条目，不做合并。';
+            }
+            if (layer === 0) return reply({ title: '一', wb: { 角色: { 辛有仪: { 关键词: ['辛有仪'], 写法: '完整', 内容: '辛家次女' }, 黑袍精灵: { 关键词: ['黑袍精灵'], 写法: '完整', 内容: '精灵族' } } } });
+            return reply({ title: `第${layer + 1}段` });
+        });
+        await engine.run();
+        let err = '';
+        try {
+            await engine.mergeEntries('角色', ['辛有仪', '黑袍精灵'], '辛有仪');
+        } catch (e) {
+            err = e.message;
+        }
+        expect(n).toBe(2);
+        expect(err).toContain('不肯合成');
+        expect(engine.listWbEdits().length).toBe(0);
     });
 
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
