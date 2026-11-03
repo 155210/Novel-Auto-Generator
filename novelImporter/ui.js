@@ -6825,8 +6825,12 @@ button.nim-step:hover{background:var(--surface2);}
             genCardInfo();
         });
         on('nim-import', 'click', importToTavern);
+        // 每次展开都重新读角色卡列表：导入后新建的卡、界面重画后清空的下拉框都能补上
         $('nim-carry')?.addEventListener('toggle', () => {
-            if ($('nim-carry').open && !Carry.listed) fillCarryChars();
+            if ($('nim-carry').open) fillCarryChars();
+        });
+        $('nim-carry-char')?.addEventListener('pointerdown', () => {
+            if ($('nim-carry-char').options.length <= 1) fillCarryChars();
         });
         on('nim-carry-char', 'change', fillCarryChats);
         on('nim-carry-load', 'click', loadCarry);
