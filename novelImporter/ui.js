@@ -4402,6 +4402,12 @@
 
     const STATE_TEXT = { todo: '未开始', running: '处理中', done: '完成', failed: '失败', review: '待审阅' };
 
+    /** 这层有哪几段 JSON 格式坏了、被跳过（宽松解析时留下的提示） */
+    function jsonBroken(r) {
+        if (!r || r.status !== 'done') return [];
+        return (r.warnings || (r.parsed && r.parsed.warnings) || []).filter((w) => /^<(世界书|表格|改写判定)> 格式坏了/.test(String(w)));
+    }
+
     function renderLayers() {
         const el = $('nim-layers');
         const e = State.engine;
@@ -4417,6 +4423,18 @@
         const from = n > 300 ? Math.max(0, focus - 100) : 0;
         const to = n > 300 ? Math.min(n, from + 200) : n;
         const rows = [];
+        // 世界书、表格、改写判定的 JSON 坏了被跳过的层：列表最上面汇总，几百层不用一层层翻
+        const broken = [];
+        e.results.forEach((r, k) => {
+            const bad = jsonBroken(r);
+            if (bad.length) broken.push({ k, bad });
+        });
+        if (broken.length)
+            rows.push(
+                `<div class="nim-alert warn nim-broken"><b>${broken.length} 层的 JSON 格式坏了，这些内容没更新：</b><div class="nim-row" style="flex-wrap:wrap;margin-top:6px">${broken
+                    .map((b) => `<button class="nim-btn sm" data-jump="${b.k}" title="${esc(b.bad.join('；'))}">第 ${b.k + 1} 层 · ${esc(b.bad.map((x) => x.replace(/^<(.+?)>.*$/, '$1')).join('、'))}</button>`)
+                    .join('')}</div><div class="nim-hint">点进去用「只重新输出 JSON」补上，补好后这里自动消失</div></div>`,
+            );
         if (from > 0) rows.push(`<div class="nim-more">前面还有 ${from} 层</div>`);
         for (let i = from; i < to; i++) {
             const l = e.layers[i];
@@ -4427,6 +4445,8 @@
             // 列表里标签用短字，给标题留地方；完整意思放 title 里
             if (r && r.divergenceStart) flags.push('<span class="nim-tag red" title="剧情改写起点">起点</span>');
             else if (r && r.inDivergence) flags.push('<span class="nim-tag orange" title="剧情改写中">改写</span>');
+            const bad = jsonBroken(r);
+            if (bad.length) flags.push(`<span class="nim-tag red" title="${esc(bad.join('；'))}">JSON坏</span>`);
             if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag" title="${r.patchStats.failed.length} 条补丁没对上">补丁×${r.patchStats.failed.length}</span>`);
             if (r && r.askedBigSummary) flags.push('<span class="nim-tag blue" title="这层写了大总结">总结</span>');
             if (l.translate) flags.push('<span class="nim-tag violet" title="翻译">译</span>');
@@ -4441,6 +4461,13 @@
         }
         if (to < n) rows.push(`<div class="nim-more">后面还有 ${n - to} 层</div>`);
         el.innerHTML = rows.join('');
+        el.querySelectorAll('[data-jump]').forEach((d) =>
+            d.addEventListener('click', () => {
+                State.selected = Number(d.dataset.jump);
+                openDetail(true);
+                renderAll();
+            }),
+        );
         el.querySelectorAll('.nim-layer').forEach((d) =>
             d.addEventListener('click', () => {
                 State.selected = Number(d.dataset.i);
@@ -6735,5 +6762,5 @@ button.nim-step:hover{background:var(--surface2);}
         if (el) el.remove();
     }
 
-    window.NovelImporter = { open, close, switchTab, _state: State, _bbiPromptHash: bbiPromptHash, _parseEpub: parseEpubWithImages };
+    window.NovelImporter = { open, close, switchTab, _state: State, _renderAll: () => renderAll(), _bbiPromptHash: bbiPromptHash, _parseEpub: parseEpubWithImages };
 })();
