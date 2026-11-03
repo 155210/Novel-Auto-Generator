@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.69';
+    const VERSION = '1.5.70';
 
     // ============================================
     // 默认配置
@@ -3539,6 +3539,8 @@ ${blocks}`;
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
                 return null;
             }
+            const label = extra.feedback ? '按要求重做' : extra.customPrompt ? '改提示词重做' : '重 roll';
+            if (res.status === 'done') pushUndo(res, saved[0], label);
             if (keep) {
                 if (res.status !== 'done' && saved[0]) {
                     keepCalls();
@@ -3774,6 +3776,7 @@ ${blocks}`;
             r.tableLog = c.out.tableLog;
             r.divergenceStart = c.out.divergenceStart;
             r.inDivergence = c.out.inDivergence;
+            pushUndo(r, old, '按要求改');
             // 换成新对象，重放缓存会从这层往后重新算
             E.results[i] = r;
             emit('layer-done', { index: i, result: r });
@@ -3917,10 +3920,37 @@ ${blocks}`;
             r.tableLog = c.out.tableLog;
             r.divergenceStart = c.out.divergenceStart;
             r.inDivergence = c.out.inDivergence;
+            pushUndo(r, old, '只重新输出 JSON');
             // 换成新对象，重放缓存会从这层往后重新算
             E.results[i] = r;
             emit('layer-done', { index: i, result: r });
             return r;
+        }
+
+        /**
+         * 换掉一层结果前，把旧结果记在新结果的 undo 里（最多 3 步），「撤销上一次修改」退回去。
+         * 请求记录不存进去：退回时用最新的请求记录，看得到每次都回了什么。
+         */
+        function pushUndo(nr, old, label) {
+            if (!nr || !old || old.status !== 'done' || nr === old) return;
+            const snap = { ...old, label, at: Date.now() };
+            delete snap.calls;
+            delete snap.undo;
+            nr.undo = [snap, ...(old.undo || [])].slice(0, 3);
+        }
+
+        /** 第 i 层退回上一次修改之前的样子；之后的层保留，世界书、表格按退回的结果重算 */
+        function undoLayer(i) {
+            if (E.running) throw new Error('正在处理中');
+            const cur = E.results[i];
+            const prev = cur && cur.undo && cur.undo[0];
+            if (!prev) throw new Error('这一层没有可以撤销的修改');
+            const back = { ...prev, calls: cur.calls, tokens: cur.tokens, undo: cur.undo.slice(1) };
+            delete back.label;
+            delete back.at;
+            E.results[i] = back;
+            emit('layer-done', { index: i, result: back });
+            return { label: prev.label, result: back };
         }
 
         /** 带修改要求重做第 i 层（不用等审阅；之后的层作废） */
@@ -4737,6 +4767,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             mergeDuplicateGroup,
             listWbEdits,
             removeWbEdit,
+            undoLayer,
             editEntry,
             deleteEntry,
             setEntryConfig,
