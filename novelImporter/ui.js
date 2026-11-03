@@ -990,7 +990,12 @@
         const wantName = State.settings.userMacroToName !== false;
         const chat = C.buildChatArray(floors, { charName: cardName, userName, replaceUserMacro: wantName && !!stName });
         const nameNote = wantName ? (stName ? `楼层里的 {{user}} 换成「${stName}」` : '没读到酒馆当前的用户名，楼层里的 {{user}} 没换（先在酒馆里选好用户角色再导出）') : '';
-        return { floors, cardName, worldName, worldbook, persona, chat, nameNote, tables: e.exportTables() };
+        let sumNote = '';
+        if (State.settings.floorSummaryEnabled) {
+            const miss = floors.filter((f) => !f.summary).map((f) => f.layer + 1);
+            sumNote = `楼层摘要：${floors.length - miss.length} 层写进去了${miss.length ? `，第 ${miss.slice(0, 20).join('、')}${miss.length > 20 ? ' 等' : ''} 层本层没有摘要，没写` : ''}`;
+        } else sumNote = '楼层摘要没开（设置 → 世界书 →「每层楼里也写一份摘要」）';
+        return { floors, cardName, worldName, worldbook, persona, chat, nameNote, sumNote, tables: e.exportTables() };
     }
 
     async function genCardInfo() {
@@ -1024,6 +1029,7 @@
             return toast(e.message, 'warning');
         }
         if (out.nameNote) log(out.nameNote);
+        if (out.sumNote) log(out.sumNote);
         const btn = $('nim-import');
         const box = $('nim-import-result');
         const showResult = (cls, text) => {
@@ -1121,6 +1127,7 @@
         }
         const n = out.cardName;
         if (kind === 'chat' && out.nameNote) log(out.nameNote);
+        if (kind === 'chat' && out.sumNote) log(out.sumNote);
         if (kind === 'chat') attachImages(out.chat, n, false).then((chat) => download(C.chatToJsonl(applyCarry(chat)), `${n}.jsonl`, 'application/jsonl'));
         else if (kind === 'world') download(JSON.stringify(out.worldbook, null, 2), `${out.worldName}.json`);
         else if (kind === 'card')
