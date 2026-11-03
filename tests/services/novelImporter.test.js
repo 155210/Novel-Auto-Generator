@@ -589,6 +589,23 @@ describe('运行引擎', () => {
         expect(r2.worldbook.角色.林晚.内容).toBe('合并好的完整版');
     });
 
+    it('只重新输出 JSON：正文没动，剧情改写判定沿用原来的', async () => {
+        let regen = false;
+        const { engine } = makeEngine((layer) => {
+            if (regen) return '<改写判定>{"触发": false}</改写判定>\n<世界书>{}</世界书>\n<表格>{}</表格>';
+            if (layer === 1) return reply({ title: '同行', rewritten: '“走吧。”\n路长远牵起她的手。', judge: { 触发: true, 规则: 'NTR', 说明: '裘月寒没有离开', 回归原文: false } });
+            return normal(layer);
+        });
+        await engine.run();
+        expect(engine.results[1].parsed.divergence.triggered).toBe(true);
+        regen = true;
+        await engine.regenJson(1, '');
+        const r = engine.results[1];
+        expect(r.parsed.divergence.triggered).toBe(true);
+        expect(r.parsed.divergence.rule).toBe('NTR');
+        expect(r.divergenceStart).toBe(true);
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
