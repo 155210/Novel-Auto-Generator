@@ -662,6 +662,64 @@ describe('运行引擎', () => {
         expect(list[0].key).toContain('金发少年');
     });
 
+    it('整理世界书：改名和关键词、删除、单独设置、默认条目、清理标签，都能撤销', async () => {
+        const { engine } = makeEngine((layer) =>
+            layer === 0
+                ? reply({ title: '一', wb: { 角色: { 林晚: { 关键词: ['林晚', '银发少女'], 写法: '完整', 内容: '林晚人设<thinking>想一想</thinking>完' }, 苏白: { 关键词: ['苏白'], 写法: '完整', 内容: '苏白' } } } })
+                : reply({ title: `第${layer + 1}段` }),
+        );
+        await engine.run();
+        const all = () => Object.values(engine.exportWorldbook().entries);
+        const ent = (c) => all().find((e) => e.comment === c);
+        expect(engine.editEntry('角色', '林晚', { newName: '林晚晴', newKeys: '林晚、晚晚' })).toBe(true);
+        expect(ent('角色 - 林晚晴').key).toEqual(['林晚晴', '林晚', '晚晚']);
+        engine.deleteEntry('角色', '苏白');
+        expect(ent('角色 - 苏白')).toBeUndefined();
+        engine.setEntryConfig('角色', '林晚晴', { constant: true, position: 4, depth: 2, order: 7, disable: true });
+        const c = ent('角色 - 林晚晴');
+        expect([c.constant, c.position, c.depth, c.order, c.disable]).toEqual([true, 4, 2, 7, true]);
+        expect(engine.cleanEntryTags('thinking').length).toBe(1);
+        engine.cleanEntryTags('thinking', true);
+        expect(ent('角色 - 林晚晴').content).toBe('林晚人设完');
+        engine.settings.wbDefaultEntries = [{ category: '规则', name: '文风', content: '用第三人称', constant: true }];
+        expect(ent('规则 - 文风').constant).toBe(true);
+        // 撤销删除：苏白回来
+        const k = engine.listWbEdits().findIndex((e) => e.type === 'delete');
+        engine.removeWbEdit(k);
+        expect(ent('角色 - 苏白')).toBeTruthy();
+        // 存档后恢复，单独设置还在
+        const { engine: e2 } = makeEngine(() => '');
+        e2.restore(engine.serialize());
+        expect(Object.values(e2.exportWorldbook().entries).find((e) => e.comment === '角色 - 林晚晴').order).toBe(7);
+    });
+
+    it('整理世界书：重新生成单条带上出现过的层原文和要求；精简关键词只留原来有的词；手动合并', async () => {
+        let rollPrompt = '';
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('请根据下面的原文，重新写世界书')) {
+                rollPrompt = prompt;
+                return '重写的林晚';
+            }
+            if (prompt.includes('精简每条的关键词')) return '{"results": [{"name": "林晚", "keywords": ["林晚", "晚晚", "新造的词"]}]}';
+            if (prompt.includes('写的是同一个人')) return '合成的一条';
+            if (layer === 0) return reply({ title: '一', wb: { 角色: { 林晚: { 关键词: ['林晚', '晚晚', '银发', '学生会长'], 写法: '完整', 内容: '林晚' }, 苏白: { 关键词: ['苏白'], 写法: '完整', 内容: '苏白' } } } });
+            return reply({ title: `第${layer + 1}段` });
+        });
+        await engine.run();
+        expect(await engine.rerollEntry('角色', '林晚', '补全外貌')).toBe('重写的林晚');
+        expect(rollPrompt).toContain('补全外貌');
+        expect(rollPrompt).toContain('【第 1 层】');
+        const kw = await engine.simplifyKeywords(['角色']);
+        expect(kw.length).toBe(1);
+        expect(kw[0].after).toEqual(['林晚', '晚晚']);
+        expect(engine.applyKeywordSimplify(kw)).toBe(1);
+        const ent = (c) => Object.values(engine.exportWorldbook().entries).find((e) => e.comment === c);
+        expect(ent('角色 - 林晚').key).toEqual(['林晚', '晚晚']);
+        await engine.mergeEntries('角色', ['林晚', '苏白'], '林晚');
+        expect(ent('角色 - 苏白')).toBeUndefined();
+        expect(ent('角色 - 林晚').content).toBe('合成的一条');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');

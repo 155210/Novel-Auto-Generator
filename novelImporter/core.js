@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.65';
+    const VERSION = '1.5.66';
 
     // ============================================
     // 默认配置
@@ -249,6 +249,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         // 已有条目又被输出时：replace 一律整条替换；auto 看 AI 回的像不像只写了追加的一段，像就接在旧内容后面
         wbUpdateMode: 'replace',
         plotSummaryEntries: true,
+        wbDefaultEntries: [], // 默认世界书条目：[{category, name, keys, content, constant, position, depth, order}]，导出时固定加进去
         // 每层 <摘要> 的写法；摘要导出为「剧情」条目，也用作前情提要和角色卡简介
         summaryGuide: '本层剧情摘要，100 到 200 字，写清楚谁做了什么',
         // 承接上一层：带上一层正文最后多少字（0 不带），以及上一层回复里哪些标签原样一起发（逗号分隔）
@@ -1983,6 +1984,23 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return { worldbook: out, log };
     }
 
+    /** 关键词：数组，或者用逗号、顿号、换行隔开的一串 */
+    function splitKeys(v) {
+        const list = Array.isArray(v) ? v : String(v || '').split(/[\n,，、;；]/);
+        return uniq(list.map((x) => String(x || '').trim()).filter(Boolean));
+    }
+
+    /** 删掉条目里的标签段：<thinking>…</thinking> 整段删，落单的 <tag> </tag> 也删 */
+    function stripTagBlocks(text, tags) {
+        let out = String(text || '');
+        for (const t of tags || []) {
+            const n = escapeRegExp(String(t).trim());
+            if (!n) continue;
+            out = out.replace(new RegExp(`<${n}(?:\\s[^>]*)?>[\\s\\S]*?</${n}>`, 'gi'), '').replace(new RegExp(`</?${n}(?:\\s[^>]*)?>`, 'gi'), '');
+        }
+        return out.replace(/\n{3,}/g, '\n\n').trim();
+    }
+
     function makeWorldEntry(uid, fields) {
         return {
             uid,
@@ -2202,19 +2220,39 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             let k = 0;
             for (const [name, item] of Object.entries(items || {})) {
                 const shown = conv(name);
+                // 单条设置（整理世界书里改的）优先于分类设置
+                const c = item._cfg || {};
                 entries[uid] = makeWorldEntry(uid, {
                     key: uniq((item.关键词 || []).map(conv)),
                     comment: `${category} - ${shown}`,
                     content: conv(item.内容 || ''),
-                    constant: cat.constant,
+                    constant: c.constant ?? cat.constant,
                     group: `${category}_${shown}`,
-                    position: cat.defaultPosition,
-                    depth: cat.defaultDepth,
-                    order: cat.autoIncrementOrder ? cat.defaultOrder + k : cat.defaultOrder,
+                    position: c.position ?? cat.defaultPosition,
+                    depth: c.depth ?? cat.defaultDepth,
+                    order: c.order ?? (cat.autoIncrementOrder ? cat.defaultOrder + k : cat.defaultOrder),
                 });
+                if (c.disable) entries[uid].disable = true;
                 uid++;
                 k++;
             }
+        }
+        // 默认条目：用户固定要加的，原样放进去（和 TXT 转世界书的「默认世界书条目」一样）
+        for (const d of opts.defaultEntries || []) {
+            if (!d || !String(d.name || '').trim() || !String(d.content || '').trim()) continue;
+            const category = String(d.category || '默认').trim() || '默认';
+            const name = conv(String(d.name).trim());
+            entries[uid] = makeWorldEntry(uid, {
+                key: uniq(splitKeys(d.keys).map(conv)),
+                comment: `${category} - ${name}`,
+                content: conv(String(d.content)),
+                constant: !!d.constant,
+                group: `${category}_${name}`,
+                position: finiteInt(d.position, 0),
+                depth: finiteInt(d.depth, 4),
+                order: finiteInt(d.order, 100, Number.MIN_SAFE_INTEGER),
+            });
+            uid++;
         }
         const plot = opts.plot || {};
         let pk = 0;
@@ -2827,8 +2865,38 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
 
         /** 把一条手动修改套到世界书上（原地改） */
         function applyWbEdit(wb, ed) {
+            if (ed.type === 'batch') {
+                for (const x of ed.edits || []) applyWbEdit(wb, x);
+                return;
+            }
             const cat = ed.category;
             if (!cat) return;
+            if (ed.type === 'edit' || ed.type === 'delete' || ed.type === 'config') {
+                const items = wb[cat];
+                const key = items && findEntryByKey(wb, cat, ed.name, ed.keys || []);
+                if (!key || !items[key]) return;
+                const e = items[key];
+                if (ed.type === 'delete') {
+                    delete items[key];
+                    return;
+                }
+                if (ed.type === 'config') {
+                    const c = {};
+                    for (const [k, v] of Object.entries(ed.cfg || {})) if (v !== null && v !== undefined && v !== '') c[k] = v;
+                    if (Object.keys(c).length) e._cfg = c;
+                    else delete e._cfg;
+                    return;
+                }
+                if (ed.content !== undefined) e.内容 = String(ed.content || '');
+                const newName = String(ed.newName || '').trim();
+                if (ed.newKeys) e.关键词 = uniq([newName || key, ...splitKeys(ed.newKeys)]);
+                if (newName && newName !== key && !items[newName]) {
+                    if (!ed.newKeys) e.关键词 = uniq([newName, ...(e.关键词 || [])]);
+                    wb[cat] = Object.fromEntries(Object.entries(items).map(([n, v]) => [n === key ? newName : n, v]));
+                }
+                return;
+            }
+            wb[cat] = wb[cat] || {};
             wb[cat] = wb[cat] || {};
             const items = wb[cat];
             if (ed.type === 'set') {
@@ -4112,6 +4180,7 @@ ${blocks}`;
                 target,
                 replace: textReplaceRules(settings),
                 plotEntries: plot,
+                defaultEntries: cfg.defaultEntries || settings.wbDefaultEntries || [],
                 plot: { position: settings.plotPosition, depth: settings.plotDepth, order: settings.plotOrder, autoIncrement: settings.plotAutoIncrement !== false },
             });
         }
@@ -4386,6 +4455,180 @@ ${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
             return content;
         }
 
+        /** 改一条：内容、条目名、关键词（关键词整组换掉），哪个没传就不动 */
+        function editEntry(category, displayName, { content, newName, newKeys } = {}) {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) throw new Error('找不到这条');
+            const st = finalState();
+            const ed = { type: 'edit', category, name: hit.name, keys: hit.entry.关键词 || [] };
+            if (content !== undefined) ed.content = String(content);
+            // 界面上看到的是换过主角名的写法；没改的就原样留着内部名字
+            const nn = String(newName || '').trim();
+            if (nn && nn !== displayName && nn !== outText(hit.name, st)) ed.newName = nn;
+            if (newKeys !== undefined) {
+                const shownKeys = (hit.entry.关键词 || []).map((k) => outText(k, st));
+                const back = (k) => {
+                    const i = shownKeys.indexOf(k);
+                    return i >= 0 ? hit.entry.关键词[i] : k;
+                };
+                const keys = splitKeys(newKeys).map(back);
+                if (keys.join('\u0001') !== (hit.entry.关键词 || []).join('\u0001')) ed.newKeys = keys;
+            }
+            if (ed.content === undefined && !ed.newName && !ed.newKeys) return false;
+            addWbEdit(ed);
+            return true;
+        }
+
+        function deleteEntry(category, displayName) {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) throw new Error('找不到这条');
+            addWbEdit({ type: 'delete', category, name: hit.name, keys: hit.entry.关键词 || [] });
+        }
+
+        /** 单条的酒馆设置：constant 常驻（蓝灯）/ false 关键词触发（绿灯）、position、depth、order、disable；传空对象就是恢复按分类 */
+        function setEntryConfig(category, displayName, cfg2) {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) throw new Error('找不到这条');
+            addWbEdit({ type: 'config', category, name: hit.name, keys: hit.entry.关键词 || [], cfg: { ...(cfg2 || {}) } });
+        }
+
+        function entryConfig(category, displayName) {
+            const hit = resolveEntry(category, displayName);
+            const cat = normalizeCategories(settings.worldbookCategories).find((c) => c.name === category) || normalizeCategory({ name: category });
+            return { own: (hit && hit.entry._cfg) || {}, category: { constant: !!cat.constant, position: cat.defaultPosition, depth: cat.defaultDepth, order: cat.defaultOrder } };
+        }
+
+        /** 手动挑几条合成一条（同一个分类） */
+        async function mergeEntries(category, displayNames, mainDisplay) {
+            const names = uniq(displayNames.map((d) => (resolveEntry(category, d) || {}).name).filter(Boolean));
+            if (names.length < 2) throw new Error('至少选两条');
+            const main = (resolveEntry(category, mainDisplay) || {}).name;
+            return mergeDuplicateGroup({ category, names, mainName: names.includes(main) ? main : names[0] });
+        }
+
+        /** 这条出现、改动过的那几层原文（新的在前，总字数有上限），重新生成时给 AI 看 */
+        function entrySources(category, displayName, maxChars = 40000) {
+            const hist = entryHistory(category, displayName);
+            const layers = [...new Set(hist.map((h) => h.layer))].sort((a, b) => b - a);
+            const out = [];
+            let used = 0;
+            for (const i of layers) {
+                const text = (E.layers[i].paras || []).map((p) => p.text).join('\n');
+                if (used && used + text.length > maxChars) break;
+                out.push({ layer: i, text: used + text.length > maxChars ? text.slice(0, maxChars) : text });
+                used += text.length;
+            }
+            return out.sort((a, b) => a.layer - b.layer);
+        }
+
+        /** 按这条出现过的几层原文和用户的要求重写这一条（不保存，返回内容给界面确认，可以多次重来） */
+        async function rerollEntry(category, displayName, requirement = '') {
+            const hit = resolveEntry(category, displayName);
+            if (!hit) throw new Error('找不到这条');
+            const st = finalState();
+            const src = entrySources(category, displayName);
+            if (!src.length) throw new Error('找不到这条出现过的层');
+            const isChar = /角色|人物/.test(category);
+            const prompt = `请根据下面的原文，重新写世界书「${category}」分类里的条目「${outText(hit.name, st)}」，写成完整的一条。
+- 只写原文里有的信息，不要编造；原文没写的就不写
+- 以原文最新的情况为准；前后有变化的写清楚现在的状态
+- 现有内容里原文能对上的信息保留，写错的改掉，漏掉的补上
+${isChar ? PERSONA_GUIDE.replace(/^- 角色条目多给一个[^\n]*\n/, '') + '\n' : ''}- 主角写成 ${aliasTargetOf(settings)}
+- 只输出条目内容，不要写条目名、标签、JSON 或别的话
+${String(requirement || '').trim() ? `
+## 用户的要求（最优先）
+${String(requirement).trim()}
+` : ''}
+## 现有内容
+关键词：${(hit.entry.关键词 || []).map((k) => outText(k, st)).join('、') || '无'}
+${outText(String(hit.entry.内容 || ''), st)}
+
+## 原文（这条出现、改动过的几层）
+${src.map((x) => `【第 ${x.layer + 1} 层】\n${x.text}`).join('\n\n')}`;
+            const text = await callTool(prompt, '你是世界书条目编写工具。只输出条目内容，不写任何别的话。');
+            const out = String(text || '').replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim();
+            if (!out) throw new Error('AI 没有回内容');
+            return out;
+        }
+
+        /** 关键词精简：AI 只留能直接叫出来的称呼（和 TXT 转世界书同样的规则），返回有变化的条目，界面勾选后再应用 */
+        async function simplifyKeywords(categories) {
+            const st = finalState();
+            const wb = st.worldbook || {};
+            const cats = (categories && categories.length ? categories : Object.keys(wb)).filter((c) => wb[c] && Object.keys(wb[c]).length);
+            const out = [];
+            for (const cat of cats) {
+                const all = Object.entries(wb[cat]).filter(([, e]) => (e.关键词 || []).length > 1);
+                const isChar = /角色|人物/.test(cat);
+                const rules = isChar
+                    ? `- 保留：本名、姓、名、全名、简称、小名、外号、绰号、代号、称号、别名
+- 删除：外貌（银发、红瞳）、身份职业（学生、队长）、性格（冷酷）、关系描述（主角的妹妹）、所属组织、能力，以及任何不能直接当称呼喊出来的词`
+                    : `- 保留：正式名称、简称、别称、俗称、旧称、代号
+- 删除：属性和状态描写、功能用途、所属关系，以及任何不能直接指代它的描述性词`;
+                for (let b = 0; b < all.length; b += 25) {
+                    const batch = all.slice(b, b + 25);
+                    const shown = batch.map(([n, e]) => ({ n, e, dn: outText(n, st), dk: (e.关键词 || []).map((k) => outText(k, st)) }));
+                    const prompt = `下面是世界书「${cat}」分类的条目，请精简每条的关键词。关键词用来在正文里触发这一条，只该留能直接指代${isChar ? '这个人' : '这个东西'}的称呼，描述性的词会乱触发。
+${rules}
+- 每条留 2 到 6 个，宁缺毋滥；不要新造原来没有的词；条目名必须留着；已经很干净的原样返回
+
+${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('、')}\n内容摘要：${String(outText(x.e.内容 || '', st)).slice(0, 150)}`).join('\n\n')}
+
+只输出 JSON：{"results": [{"name": "条目名", "keywords": ["关键词1", "关键词2"]}]}`;
+                    const data = parseLooseJson(await callTool(prompt, '你是世界书关键词整理工具。只输出 JSON，不写任何别的话。'));
+                    const list = Array.isArray(data) ? data : (data && data.results) || [];
+                    for (const r of list) {
+                        const x = shown.find((y) => y.dn === String(r.name || r.条目名 || '').trim());
+                        if (!x) continue;
+                        // 只认原来就有的词，条目名必须留着；没变少就当没精简
+                        const picked = uniq((r.keywords || r.关键词 || []).map((k) => String(k).trim())).filter((k) => x.dk.includes(k));
+                        const keep = uniq([x.dn, ...picked]);
+                        if (keep.length >= x.dk.length || !keep.length) continue;
+                        out.push({ category: cat, name: x.dn, before: x.dk, after: keep, removed: x.dk.filter((k) => !keep.includes(k)) });
+                    }
+                }
+            }
+            return out;
+        }
+
+        /** 应用精简结果（items 是 simplifyKeywords 返回的那几条），一次算一条修改，可以整体撤销 */
+        function applyKeywordSimplify(items) {
+            const st = finalState();
+            const edits = [];
+            for (const it of items || []) {
+                const hit = resolveEntry(it.category, it.name);
+                if (!hit) continue;
+                const shownKeys = (hit.entry.关键词 || []).map((k) => outText(k, st));
+                const keys = uniq(it.after.map((k) => {
+                    const i = shownKeys.indexOf(k);
+                    return i >= 0 ? hit.entry.关键词[i] : k;
+                }));
+                edits.push({ type: 'edit', category: it.category, name: hit.name, keys: hit.entry.关键词 || [], newKeys: uniq([hit.name, ...keys]) });
+            }
+            if (!edits.length) return 0;
+            addWbEdit({ type: 'batch', label: `精简关键词 ${edits.length} 条`, edits });
+            return edits.length;
+        }
+
+        /** 条目里有这些标签的（比如 AI 把 <thinking> 写进了内容），列出来；apply 为 true 就直接删掉 */
+        function cleanEntryTags(tags, apply = false) {
+            const st = finalState();
+            const list = splitKeys(tags).map((t) => t.replace(/^<\/?|>$/g, ''));
+            const out = [];
+            const edits = [];
+            for (const [cat, items] of Object.entries(st.worldbook || {})) {
+                for (const [n, e] of Object.entries(items || {})) {
+                    const before = String(e.内容 || '');
+                    const after = stripTagBlocks(before, list);
+                    if (after === before.trim() || after === before) continue;
+                    out.push({ category: cat, name: outText(n, st), removedChars: before.length - after.length });
+                    edits.push({ type: 'edit', category: cat, name: n, keys: e.关键词 || [], content: after });
+                }
+            }
+            if (apply && edits.length) addWbEdit({ type: 'batch', label: `清理标签 ${edits.length} 条`, edits });
+            return out;
+        }
+
         /** 手动修改列表（新的在后），可以撤销 */
         function listWbEdits() {
             return (E.wbEdits || []).map((ed, k) => ({ index: k, ...ed }));
@@ -4467,6 +4710,16 @@ ${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
             mergeDuplicateGroup,
             listWbEdits,
             removeWbEdit,
+            editEntry,
+            deleteEntry,
+            setEntryConfig,
+            entryConfig,
+            mergeEntries,
+            rerollEntry,
+            entrySources,
+            simplifyKeywords,
+            applyKeywordSimplify,
+            cleanEntryTags,
             buildRequestFor(i) {
                 return buildRequest(i, replay(i));
             },
@@ -4814,6 +5067,8 @@ ${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
         mergeWorldbook,
         findEntryByKey,
         worldbookToST,
+        stripTagBlocks,
+        splitKeys,
         importWorldbook,
         parseTableTemplate,
         createTableState,
