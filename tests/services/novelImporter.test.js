@@ -761,6 +761,37 @@ describe('运行引擎', () => {
         expect(engine.results[1].calls.length).toBeGreaterThan(before);
     });
 
+    it('撤销上一次修改：重新输出 JSON、重 roll 后能一步步退回，世界书跟着退', async () => {
+        let n = 0;
+        const { engine } = makeEngine((layer, prompt) => {
+            if (prompt.includes('只按要求输出这一层的')) return '<改写判定>{"触发": false}</改写判定>\n<世界书>{"角色": {"坏人": {"关键词": ["坏人"], "写法": "完整", "内容": "改坏了"}}}</世界书>\n<表格>{}</表格>';
+            if (layer === 1) n++;
+            return reply({ title: layer === 1 ? `第二层第${n}版` : `第${layer + 1}段`, wb: layer === 1 && n === 1 ? { 角色: { 好人: { 关键词: ['好人'], 写法: '完整', 内容: '原来的' } } } : {} });
+        });
+        await engine.run();
+        const names = () => Object.values(engine.exportWorldbook().entries).map((e) => e.comment);
+        await engine.regenJson(1, '');
+        expect(names()).toContain('角色 - 坏人');
+        await engine.rerollLayer(1);
+        expect(engine.results[1].parsed.title).toBe('第二层第2版');
+        expect(engine.results[1].undo.map((u) => u.label)).toEqual(['重 roll', '只重新输出 JSON']);
+        const calls = engine.results[1].calls.length;
+        expect(engine.undoLayer(1).label).toBe('重 roll');
+        expect(names()).toContain('角色 - 坏人');
+        expect(engine.results[1].calls.length).toBe(calls);
+        engine.undoLayer(1);
+        expect(names()).toContain('角色 - 好人');
+        expect(names()).not.toContain('角色 - 坏人');
+        expect(engine.results[1].parsed.title).toBe('第二层第1版');
+        expect(() => engine.undoLayer(1)).toThrow();
+        // 存档恢复后还能撤销
+        await engine.regenJson(1, '');
+        const { engine: e2 } = makeEngine(() => '');
+        e2.restore(JSON.parse(JSON.stringify(engine.serialize())));
+        e2.undoLayer(1);
+        expect(Object.values(e2.exportWorldbook().entries).map((e) => e.comment)).not.toContain('角色 - 坏人');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');

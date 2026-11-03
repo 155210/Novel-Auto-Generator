@@ -4714,7 +4714,7 @@
                  <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">${State.settings.feedbackEditMode === 'full' ? '按意见重做这层' : '按意见改这层'}</button></div>
                </div>`
             : '';
-        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><div class="nim-row" style="justify-content:flex-end">${r && (r.status === 'done' || r.status === 'failed') ? '<button id="nim-reroll" class="nim-btn sm" title="同样的提示词再要一次，后面的层保留">只重 roll 这层</button>' : ''}<button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div></div>${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}${reviewHtml}${body}`;
+        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><div class="nim-row" style="justify-content:flex-end">${r && r.undo && r.undo.length ? `<button id="nim-undo-layer" class="nim-btn sm" title="退回到「${esc(r.undo[0].label || '')}」之前的样子，还能再退 ${r.undo.length - 1} 步">撤销上一次${esc(r.undo[0].label ? `「${r.undo[0].label}」` : '修改')}</button>` : ''}${r && (r.status === 'done' || r.status === 'failed') ? '<button id="nim-reroll" class="nim-btn sm" title="同样的提示词再要一次，后面的层保留">只重 roll 这层</button>' : ''}<button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div></div>${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}${reviewHtml}${body}`;
         bindHlNav();
         const noteEl = $('nim-layer-note');
         const saveNote = () => {
@@ -4885,6 +4885,20 @@
         }
         const keepBox = $('nim-keep-later');
         if (keepBox) keepBox.onchange = () => (State.keepLater = keepBox.checked);
+        const undoBtn = $('nim-undo-layer');
+        if (undoBtn)
+            undoBtn.onclick = () => {
+                if (e.running) return toast('正在处理中，先暂停再撤销', 'warning');
+                try {
+                    const { label } = e.undoLayer(i);
+                    log(`第 ${i + 1} 层撤销了「${label}」，退回到之前的结果`);
+                    toast(`已撤销「${label}」`, 'success');
+                } catch (err) {
+                    return toast(err.message, 'error');
+                }
+                saveProgress();
+                renderAll();
+            };
         const rerollBtn = $('nim-reroll');
         if (rerollBtn)
             rerollBtn.onclick = async () => {
