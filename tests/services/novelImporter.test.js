@@ -580,6 +580,15 @@ describe('运行引擎', () => {
         expect(ent.content).toBe('{{user}}完整版：旧信息加新信息');
     });
 
+    it('看过全文却只写了「本层新增」、没合并过的（旧版跑的层）：接在后面，不冲掉旧内容', () => {
+        const wb = { 角色: { 林晚: { 关键词: ['林晚'], 内容: '旧的完整内容，很长很长很长很长很长' } } };
+        const r = C.mergeWorldbook(wb, { 角色: { 林晚: { 内容: '本层新增：得到戒指' } } }, { providedNames: new Set(['角色/林晚']), replaceOnly: true });
+        expect(r.worldbook.角色.林晚.内容).toContain('旧的完整内容');
+        expect(r.worldbook.角色.林晚.内容).toContain('得到戒指');
+        const r2 = C.mergeWorldbook(wb, { 角色: { 林晚: { 内容: '合并好的完整版', _merged: true } } }, { providedNames: new Set(['角色/林晚']), replaceOnly: true });
+        expect(r2.worldbook.角色.林晚.内容).toBe('合并好的完整版');
+    });
+
     it('分层后再切到「中文也整层输出」，不用重新分层，下一次请求就按整层输出', () => {
         const { engine } = makeEngine(normal);
         expect(engine.buildRequestFor(0).prompt).toContain('只输出补丁');
