@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.63';
+    const VERSION = '1.5.64';
 
     // ============================================
     // 默认配置
@@ -896,11 +896,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
 还不知道主角是谁。请根据本层判断主角（故事的主人公、叙述视角所跟随的人物），把主角的名字写进 <主角>：写正文里实际出现的名字（翻译时写中文译名），只写一个；本层还看不出主角名字就留空。
 - 第一人称叙述里的「我」不算称呼，不要写进 <称呼>`;
         }
-        const aliases = uniq([name, ...(state.aliases || [])]);
+        const aliases = uniq([name, ...(state.aliases || []).filter((a) => !isGenericTitle(a, settings.protagonistAliases))]);
         return `## 主角
 主角是「${name}」，已知称呼：${aliases.join('、')}
 - 正文中出现其他指代主角的称呼（外号、昵称、尊称）时，写进 <称呼>
-- 只写专指主角的称呼；像「师兄」「少爷」这种也可能指别人的，不要写进 <称呼>`;
+- 只写专指主角的称呼；像「主人」「师兄」「少爷」「大人」这种身份称谓也可能指别人的，不要写进 <称呼>`;
     }
 
     const TRANSLATE_RULES = `## 翻译要求
@@ -1717,10 +1717,25 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
     // 称呼
     // ============================================
 
+    /** 主人、少爷、师兄这类身份称谓：谁都可以被这么叫，不是名字，不换成 {{user}}（用户自己在「主角称呼」里填了的除外） */
+    const GENERIC_TITLES = new Set(
+        ('主人 主人様 主人大人 ご主人様 ご主人 マスター master 少爷 少主 少东家 公子 小姐 大小姐 老爷 夫人 太太 先生 女士 大人 阁下 殿下 陛下 主上 主公 王爷 将军 ' +
+            '哥 哥哥 大哥 姐 姐姐 大姐 弟弟 妹妹 兄长 兄上 姐上 お兄ちゃん お兄様 お姉ちゃん お姉様 兄さん 姉さん 老公 老婆 亲爱的 宝贝 ' +
+            '师父 师傅 师尊 师兄 师姐 师弟 师妹 老师 先生 学长 学姐 前辈 先辈 学弟 学妹 同学 队长 团长 会长 社长 老板 店长 指挥官 提督 博士 医生 ' +
+            '少年 少女 那人 那家伙 这家伙 他 她 你 您 我 主角 男主 女主').split(/\s+/).filter(Boolean)
+    );
+    function isGenericTitle(a, keep = []) {
+        const t = String(a || '').trim();
+        if (!t || (keep || []).map((x) => String(x).trim()).includes(t)) return false;
+        return GENERIC_TITLES.has(t) || GENERIC_TITLES.has(t.toLowerCase());
+    }
+
     function mergeAliases(current, incoming, opts = {}) {
         const black = new Set((opts.blacklist || []).map((x) => String(x).trim()));
         const name = opts.protagonistName || '';
-        const out = uniq([...(current || []), ...(incoming || [])]).filter((a) => a && !black.has(a) && a.length <= 12 && a !== opts.target);
+        const out = uniq([...(current || []), ...(incoming || [])]).filter(
+            (a) => a && !black.has(a) && a.length <= 12 && a !== opts.target && (a === name || !isGenericTitle(a, opts.keep))
+        );
         if (name && !out.includes(name)) out.unshift(name);
         return out;
     }
@@ -2080,7 +2095,10 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
     function aiAliasesOf(s, state) {
         const target = aliasTargetOf(s);
         const name = protagonistOf(s, state);
-        const all = uniq([name, ...((state && state.aliases) || []), ...ambiguousAliasList(s)]).filter((a) => a && a !== target);
+        const black = new Set((s.aliasBlacklist || []).map((x) => String(x).trim()));
+        const all = uniq([name, ...((state && state.aliases) || []).filter((a) => a === name || !isGenericTitle(a, s.protagonistAliases)), ...ambiguousAliasList(s)]).filter(
+            (a) => a && a !== target && !black.has(a)
+        );
         return all.filter((a) => isAmbiguousAlias(a, s, state));
     }
     /** 这一层要不要让 AI 把主角写成 {{user}}：ai 一律要；mixed 只有存在易混称呼时才要 */
@@ -2093,6 +2111,14 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return aiAliasesOf(s, state).length > 0;
     }
 
+    /** 告诉 AI 哪些称呼照原样留着：身份称谓 + 用户的「不要替换的称呼」 */
+    function keepTitlesLine(s) {
+        const black = uniq((s.aliasBlacklist || []).map((x) => String(x).trim()).filter(Boolean));
+        return `- 「主人」「少爷」「大人」「师兄」「哥哥」「老师」「殿下」这类身份称谓、亲属称呼不是名字，即使指的是主角也照原样保留，不要换成 ${aliasTargetOf(s)}（例如「主人，早上好」不能改成「${aliasTargetOf(s)}，早上好」）${
+            black.length ? `\n- 用户指定这些称呼不换，照原样保留：${black.map((a) => `「${a}」`).join('、')}` : ''
+        }`;
+    }
+
     function buildUserNameSection(s, state, tr) {
         if (!aiUserName(s, state, tr)) return '';
         const target = aliasTargetOf(s);
@@ -2103,12 +2129,14 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
             return `## 主角的易混称呼写成 ${target}（用户的硬性要求，必须执行）
 - 主角${name ? `「${name}」` : ''}的这几个称呼（昵称、外号、尊称）可能别人也会被这么叫：${amb.map((a) => `「${a}」`).join('、')}。只在它们确实指主角时换成 ${target}；别的角色恰好也用这个字、这个称呼时不换
 - 主角的全名不用你换，程序导出时会统一处理，不要为全名写补丁或改动
+${keepTitlesLine(s)}
 ${tr ? '' : `- 原文里确实指主角的这几个称呼，用「=」补丁换成 ${target}：锚点从原文复制包含它的一小段，一段里出现几次就写几条，锚点互不重叠；不指主角的不写补丁
 `}- <称呼> 里照常写原文里指主角的称呼（原来的写法），<主角> 里写主角原来的名字`;
         }
-        const who = name ? `主角「${name}」（已知称呼：${uniq([name, ...((state && state.aliases) || [])]).filter((a) => a !== target).join('、')}）` : '主角（按上面「主角」一节认出来的那个人）';
+        const who = name ? `主角「${name}」（已知称呼：${uniq([name, ...((state && state.aliases) || []).filter((a) => !isGenericTitle(a, s.protagonistAliases))]).filter((a) => a !== target).join('、')}）` : '主角（按上面「主角」一节认出来的那个人）';
         return `## 主角在输出里写成 ${target}（用户的硬性要求，必须执行）
-- ${who}在${tr ? '译文' : '你写的补丁、补充内容'}、标题、摘要、世界书、表格里，凡是指主角的名字、姓、名、单字昵称、外号、尊称，一律写成 ${target}
+- ${who}在${tr ? '译文' : '你写的补丁、补充内容'}、标题、摘要、世界书、表格里，凡是指主角的名字、姓、名、单字昵称、专属外号，一律写成 ${target}
+${keepTitlesLine(s)}
 - 称呼带后缀、敬称时保留后缀，只把名字部分换掉：例如「真君」「真くん」→「${target}君」，「春日同学」→「${target}同学」
 - 按语境判断：只换真正指主角的地方；别的角色恰好用同一个字、同一个名字时（例如另一个人也叫「真」），那个人不换，照常写他的名字
 - 不要以「原文就是这个名字」「保持原文设定」为理由不换；第一人称的「我」不用换
@@ -2831,6 +2859,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 aliases: mergeAliases(settings.protagonistAliases, [], {
                     protagonistName: settings.protagonistName,
                     blacklist: settings.aliasBlacklist,
+                keep: settings.protagonistAliases,
                     target: aliasTargetOf(settings),
                 }),
                 worldbook: clone(cfg.seedWorldbook || {}),
@@ -2936,6 +2965,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             next.aliases = mergeAliases(st.aliases, p.aliases, {
                 protagonistName: protagonistOf(settings, next),
                 blacklist: settings.aliasBlacklist,
+                keep: settings.protagonistAliases,
                 target: aliasTargetOf(settings),
             });
             if (settings.worldbookEnabled) {
@@ -4777,6 +4807,7 @@ ${names.map((n) => `【${n}】\n${items[n].内容 || ''}`).join('\n\n')}`;
         parseLayerResponse,
         applyPatches,
         mergeAliases,
+        isGenericTitle,
         applyAliases,
         buildUserNameSection,
         selectRelevantEntries,
