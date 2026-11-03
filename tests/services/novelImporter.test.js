@@ -1303,6 +1303,19 @@ describe('运行引擎', () => {
         expect(q).toContain('全名不用你换');
     });
 
+    it('主人、少爷这类身份称谓不当成主角称呼，提示词里也让 AI 保留', () => {
+        expect(C.isGenericTitle('主人')).toBe(true);
+        expect(C.isGenericTitle('主人', ['主人'])).toBe(false);
+        expect(C.mergeAliases(['张三'], ['主人', '少爷', '三哥'], { protagonistName: '张三' })).toEqual(['张三', '三哥']);
+        expect(C.mergeAliases(['张三', '主人'], ['主人'], { protagonistName: '张三', keep: ['主人'] })).toEqual(['张三', '主人']);
+        const s = { ...C.DEFAULT_SETTINGS, aliasReplaceBy: 'ai', protagonistName: '张三', aliasBlacklist: ['老张'] };
+        expect(C.aiAliasesOf(s, { aliases: ['张三', '主人', '老张', '三哥'] })).toEqual(['三哥']);
+        const sec = C.buildUserNameSection(s, { aliases: ['张三', '主人'] }, true);
+        expect(sec).toContain('身份称谓');
+        expect(sec).toContain('「老张」');
+        expect(/已知称呼：[^）]*主人/.test(sec)).toBe(false);
+    });
+
     it('程序换主角称呼时不误换别人名字里的同样几个字', () => {
         expect(C.applyAliases('张三和张三丰见面，张三先说话', ['张三'], '{{user}}', ['张三丰'])).toBe('{{user}}和张三丰见面，{{user}}先说话');
         expect(C.applyAliases('张三和张三丰', ['张三'], '{{user}}')).toBe('{{user}}和{{user}}丰');
