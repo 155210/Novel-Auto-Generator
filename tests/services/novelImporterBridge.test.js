@@ -100,3 +100,22 @@ describe('酒馆当前用户名', () => {
         expect(load({ substituteParams: (t) => t }).currentUserName()).toBe('');
     });
 });
+
+describe('导入后核对楼层', () => {
+    it('被旧聊天盖掉的层改回来并保存，没变的不动', async () => {
+        let saved = 0;
+        const chat = [
+            { is_user: false, mes: '<正文>a</正文>\n<Plotline>...</Plotline>\n<tableEdit>旧</tableEdit>', swipes: ['x'], swipe_id: 0 },
+            { is_user: false, mes: '<正文>b</正文>\n<Plotline>B</Plotline>\n<tableEdit>插件改过</tableEdit>' },
+        ];
+        globalThis.SillyTavern = { getContext: () => ({ chat, saveChat: async () => saved++ }) };
+        (0, eval)(SRC);
+        const want = [{}, { mes: '<正文>a</正文>\n<Plotline>A</Plotline>\n<tableEdit>新</tableEdit>' }, { mes: '<正文>b</正文>\n<Plotline>B</Plotline>\n<tableEdit>新</tableEdit>' }];
+        const fixed = await globalThis.NovelImporterST.verifyFloors(want);
+        expect(fixed).toEqual([0]);
+        expect(chat[0].mes).toBe(want[1].mes);
+        expect(chat[0].swipes[0]).toBe(want[1].mes);
+        expect(chat[1].mes).toContain('插件改过');
+        expect(saved).toBe(1);
+    });
+});

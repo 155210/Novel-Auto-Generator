@@ -543,8 +543,52 @@
      * 一键导入：存世界书 → 建卡绑世界书 → 写聊天 → 打开 → 重建表格 → 核对。
      * @param {object} p {cardName, worldName, worldbook, description, scenario, chatArray, expectedTables, onStep, onProgress}
      */
+    /** 关掉当前打开的聊天：开着旧聊天导入时，酒馆/插件切聊天的过程中会把旧聊天前几层的内容写进新聊天 */
+    async function closeCurrentChat() {
+        const c = ctx();
+        try {
+            if (!c.getCurrentChatId || !c.getCurrentChatId()) return false;
+            if (typeof c.closeCurrentChat === 'function') await c.closeCurrentChat();
+            else if (typeof c.executeSlashCommandsWithOptions === 'function') await c.executeSlashCommandsWithOptions('/closechat');
+            else if (typeof c.executeSlashCommands === 'function') await c.executeSlashCommands('/closechat');
+            else return false;
+            await sleep(500);
+            return true;
+        } catch (e) {
+            return false;
+        }
+    }
+
+    /**
+     * 打开后核对楼层：和要写的不一样的层（被旧聊天的内容盖掉了）改回来并保存。
+     * <tableEdit> 之后的部分不比（记忆插件会改写它）。返回改回来的层号（从 0 数）。
+     */
+    async function verifyFloors(chatArray) {
+        const c = ctx();
+        const live = c.chat || [];
+        const want = (chatArray || []).slice(1);
+        const head = (t) => String(t || '').split('<tableEdit>')[0].trim();
+        const fixed = [];
+        want.forEach((m, k) => {
+            const cur = live[k];
+            if (!cur || cur.is_user || head(cur.mes) === head(m.mes)) return;
+            const tail = String(cur.mes || '').includes('<tableEdit>') ? '<tableEdit>' + String(cur.mes).split('<tableEdit>').slice(1).join('<tableEdit>') : '';
+            const own = String(m.mes || '').includes('<tableEdit>');
+            cur.mes = own ? m.mes : head(m.mes) + (tail ? '\n' + tail : '');
+            if (Array.isArray(cur.swipes)) cur.swipes[cur.swipe_id || 0] = cur.mes;
+            if (m.extra) cur.extra = { ...(cur.extra || {}), ...m.extra };
+            fixed.push(k);
+        });
+        if (fixed.length) {
+            if (typeof c.saveChat === 'function') await c.saveChat();
+            if (typeof c.reloadCurrentChat === 'function') await c.reloadCurrentChat();
+        }
+        return fixed;
+    }
+
     async function importAll(p) {
         const step = p.onStep || (() => {});
+        if (await closeCurrentChat()) step('先关掉当前打开的聊天');
         step('保存世界书');
         await saveWorldbook(p.worldName, p.worldbook);
         let avatar = p.avatar;
@@ -566,6 +610,8 @@
         // 先把角色卡的当前聊天指向导入的聊天，选中角色时就不会再自动新建一个空聊天
         await updateCharacter(avatar, { chat: fileName });
         await openChat(avatar, fileName);
+        const fixed = await verifyFloors(p.chatArray).catch(() => []);
+        if (fixed.length) step(`第 ${fixed.map((k) => '#' + k).join('、')} 楼被旧聊天的内容盖掉了，已改回来`);
         let tables = null;
         if (p.rebuildTables !== false && p.expectedTables && p.expectedTables.length) {
             step('重建记忆表格');
@@ -600,5 +646,6 @@
         memorySettings,
         memoryMode,
         importAll,
+        verifyFloors,
     };
 })(typeof window !== 'undefined' ? window : globalThis);
