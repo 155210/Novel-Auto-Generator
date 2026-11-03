@@ -262,12 +262,6 @@
                 ],
             },
             {
-                key: 'userMacroToName',
-                label: '导入酒馆时把楼层里的 {{user}} 换成酒馆当前用户名',
-                type: 'check',
-                hint: '酒馆显示楼层时不会替换 {{user}}；勾上就在导入和导出聊天记录时写成你现在的用户名。世界书里的不换（酒馆发给 AI 时会自己换）',
-            },
-            {
                 key: 'imageMode',
                 label: 'EPUB 插图',
                 type: 'select',
@@ -337,6 +331,12 @@
                 ],
             },
             { key: 'aliasTarget', label: '自定义称呼', type: 'text' },
+            {
+                key: 'userMacroToName',
+                label: '导入酒馆时把楼层里的 {{user}} 换成酒馆当前用户名',
+                type: 'check',
+                hint: '酒馆显示楼层时不会替换 {{user}}；勾上就在导入和导出聊天记录时写成你现在的用户名。世界书里的不换（酒馆发给 AI 时会自己换）',
+            },
             {
                 key: 'aliasReplaceBy',
                 label: '主角替换怎么做',
@@ -5828,6 +5828,17 @@
     // 弹窗
     // ============================================
 
+    /** 卡片下面列出里面每一项的名字，不用点进去一个个找 */
+    function fieldNames(...groups) {
+        const names = [];
+        for (const g of groups) for (const x of FIELDS[g] || []) names.push(String(x.label || '').split(/[（(，,：:]/)[0].trim());
+        return names.filter(Boolean).join('、');
+    }
+    function withAll(desc, ...groups) {
+        const n = fieldNames(...groups);
+        return n ? `${desc}<div class="nim-card-all">里面有：${esc(n)}</div>` : desc;
+    }
+
     function card(id, title, desc, inner, open = false) {
         return `<details class="nim-card" ${open ? 'open' : ''} id="nim-sec-${id}">
           <summary><div><div class="nim-card-title">${title}</div>${desc ? `<div class="nim-card-desc">${desc}</div>` : ''}</div><span class="nim-chev"></span></summary>
@@ -5906,7 +5917,7 @@
       ${card(
           'api',
           'API',
-          'OpenAI 兼容接口',
+          withAll('OpenAI 兼容接口', 'api'),
           `${f('api')}
            <div class="nim-row">
              <button id="nim-models" class="nim-btn sm">拉取模型列表</button>
@@ -5918,24 +5929,24 @@
       </div>
       <div class="nim-set-gtitle">怎么改写</div>
       <div class="nim-set-list">
-      ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、送女/NTR 等改写规则、审阅', f('rewrite') + '<div class="nim-row"><button id="nim-ledger-edit2" class="nim-btn sm">查看和编辑「和原文不同的事实」</button></div>')}
-      ${card('alias', '主角与标签', '主角替换成 {{user}}、标题和正文标签', f('alias'))}
-      ${card('translate', '翻译、标题与插图', '外文整本翻译、术语表、#第X章：标题、EPUB 插图', f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
+      ${card('rewrite', '改写与剧情改写', withAll('扩写比例、改写要求、送女/NTR 等改写规则、审阅', 'rewrite'), f('rewrite') + '<div class="nim-row"><button id="nim-ledger-edit2" class="nim-btn sm">查看和编辑「和原文不同的事实」</button></div>')}
+      ${card('alias', '主角与标签', withAll('主角替换成 {{user}}、导入时 {{user}} 换成你的名字、标题和正文标签', 'alias'), f('alias'))}
+      ${card('translate', '翻译、标题与插图', withAll('外文整本翻译、术语表、#第X章：标题、EPUB 插图、标出补充的字', 'translate'), f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
       </div>
       <div class="nim-set-gtitle">生成什么</div>
       <div class="nim-set-list">
-      ${card('wb', '世界书', '提取分类（和 TXT转世界书 一样）、额外要求', categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
-      ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
+      ${card('wb', '世界书', withAll('提取分类（和 TXT转世界书 一样）、额外要求', 'worldbook'), categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
+      ${card('stwb', '酒馆世界书（输出要求）', withAll('把酒馆里开着的世界书当作写作要求发给 AI', 'stwb'), f('stwb') + stWorldsHtml())}
       ${card(
           'table',
           '记忆表格',
-          '导入表格模板、表格角色、消息模板、大总结',
+          withAll('导入表格模板、表格角色、消息模板、大总结', 'table'),
           `<div class="nim-row nim-tpl-row"><span id="nim-tpl-state2" class="nim-muted nim-grow"></span><label class="nim-btn sm">导入表格模板<input type="file" id="nim-tpl2" accept=".json" hidden></label><button id="nim-tpl-live2" class="nim-btn sm">从记忆插件读取</button></div>${f('table')}`,
       )}
       </div>
       <div class="nim-set-gtitle">分层和剧情地图</div>
       <div class="nim-set-list">
-      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog2" class="nim-btn">查看清掉的内容</button></div>`)}
+      ${card('file', '分层与清洗', withAll('每层字数、章节识别、广告和水印规则', 'layer'), `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog2" class="nim-btn">查看清掉的内容</button></div>`)}
       ${mapCfgCard()}
       </div>
       <div class="nim-set-gtitle">其他</div>
@@ -6183,6 +6194,7 @@ button.nim-stat .nim-stat-k{color:var(--accent2);}
 .nim-card>summary::-webkit-details-marker{display:none;}
 .nim-card-title{font-weight:600;}
 .nim-card-desc{font-size:12px;color:var(--muted);}
+.nim-card-all{font-size:11px;color:var(--muted);opacity:.8;margin-top:3px;line-height:1.5;}
 .nim-chev{flex:none;width:8px;height:8px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform .2s;margin-right:4px;}
 .nim-card[open]>summary .nim-chev{transform:rotate(225deg);}
 .nim-card[open]>summary{border-bottom:1px solid var(--line);}
