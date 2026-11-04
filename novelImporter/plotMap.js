@@ -441,6 +441,28 @@
             .join('\n');
     }
 
+    /**
+     * 整本书的原剧情（预扫描结果），给用户复制出去单独问 AI。
+     * 每层：一句话、摘要、出场人物、关系变化；没扫描的层标出来。
+     */
+    function plotDigest(layers, plan, { title = '' } = {}) {
+        let missing = 0;
+        const lines = layers.map((l) => {
+            const s = layerPlan(plan, l.index).scan;
+            if (!s) {
+                missing++;
+                return `第${l.index + 1}层：（没扫描）`;
+            }
+            const out = [`第${l.index + 1}层：${s.oneLine || ''}`];
+            if (s.summary && s.summary !== s.oneLine) out.push(s.summary);
+            if (s.characters && s.characters.length) out.push(`出场人物：${s.characters.join('、')}`);
+            if (s.relations && s.relations.length) out.push(`关系变化：${s.relations.map((r) => `${r.a}${r.b ? `与${r.b}` : ''}${r.change}`).join('；')}`);
+            return out.join('\n');
+        });
+        const head = `${title ? `《${title.replace(/^《|》$/g, '')}》` : '这本书'}原剧情（按层整理，共 ${layers.length} 层${missing ? `，其中 ${missing} 层没扫描` : ''}）`;
+        return { text: `${head}\n\n${lines.join('\n\n')}`, missing };
+    }
+
     function buildSuggestPrompt(layers, plan, { preference = '', toxicRules = '', protagonist = '', judgeNotes = '' } = {}) {
         return `你是网文编辑。下面是一部长篇小说按层整理的剧情地图（每层一句话概括、摘要，标了读者的雷点和涉及的人）。读者想改掉不喜欢的剧情，请找出最值得改的层，给出具体改法。
 ${protagonist ? `\n本书主角是「${protagonist}」。主角自己的感情戏、亲热戏不是雷点。\n` : ''}
@@ -776,6 +798,7 @@ ${after || '（到结尾）'}
         estimateScanCost,
         runPool,
         mapLines,
+        plotDigest,
         buildSuggestPrompt,
         buildOverallPrompt,
         parseOverallResponse,
