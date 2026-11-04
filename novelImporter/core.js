@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.81';
+    const VERSION = '1.5.82';
 
     // ============================================
     // 默认配置
@@ -3162,6 +3162,65 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             return E.layers;
         }
 
+        /**
+         * 小说更新了：读新版全文，在里面找到旧内容的结尾，只把后面新增的部分分层接在后面。
+         * 已有的层和结果一律不动。返回 { added, from }；找不到旧结尾时抛错。
+         */
+        function appendText(text) {
+            if (!E.layers || !E.layers.length) throw new Error('还没有分层，直接导入就行');
+            const cleaned = cleanText(text, adPatternsFor(settings), settings.adRemovePrevLine, settings.chapterRegex, {
+                inlinePatterns: settings.inlineAdPatterns,
+                repeatLimit: settings.repeatParaLimit,
+                repeatMinChars: settings.repeatParaMinChars,
+                keepLines: settings.cleanKeep,
+            });
+            const fresh = splitParagraphs(cleaned.text);
+            const old = E.layers.flatMap((l) => l.paras.map((p) => p.text));
+            const norm = (t) => String(t || '').replace(/\s+/g, '');
+            const oldN = old.map(norm);
+            const newN = fresh.map(norm);
+            // 从旧内容最后一段往前试（旧文件最后一段可能是半截），要求前面连着 3 段也对得上
+            let cut = -1;
+            let oldAt = -1;
+            for (let back = 0; back < Math.min(30, old.length) && cut < 0; back++) {
+                const m = old.length - 1 - back;
+                if (!oldN[m]) continue;
+                for (let j = newN.length - 1; j >= 0; j--) {
+                    if (newN[j] !== oldN[m]) continue;
+                    let ok = true;
+                    for (let d = 1; d <= 3 && m - d >= 0; d++) if (newN[j - d] !== oldN[m - d]) ok = false;
+                    if (ok) {
+                        cut = j;
+                        oldAt = m;
+                        break;
+                    }
+                }
+            }
+            if (cut < 0) throw new Error('新文件里找不到已导入部分的结尾，可能不是同一本书，或者前面的内容改动太大');
+            // 旧内容最后几段在新文件里也有的，跳过
+            let k = cut + 1;
+            for (let m = oldAt + 1; m < old.length && k < fresh.length && newN[k] === oldN[m]; m++) k++;
+            const tail = fresh.slice(k);
+            if (!tail.join('').trim()) return { added: 0, from: E.layers.length };
+            const base = E.layers.length;
+            const idBase = Math.max(0, ...E.layers.flatMap((l) => l.paras.map((p) => p.id || 0)));
+            const add = splitLayers(tail, settings).map((l, n) => ({
+                ...l,
+                index: base + n,
+                paras: l.paras.map((p) => ({ ...p, id: p.id + idBase })),
+            }));
+            const foreign = detectForeign(tail.join('\n'));
+            add.forEach((l) => {
+                l.foreign = foreign;
+                syncTranslateMode(l);
+            });
+            E.layers = E.layers.concat(add);
+            E.results = E.results.concat(add.map(() => null));
+            E.stats.images = (cleaned.text.match(IMAGE_MARKER_RE) || []).length;
+            emit('prepared', { layers: E.layers.length, appended: add.length });
+            return { added: add.length, from: base };
+        }
+
         // 翻译模式按当前设置算：开关改了不用重新分层，下一次跑（含重 roll）这层就按新模式
         // full：中文小说也像翻译一样整层输出正文，不用补丁（用来对比输出量）
         function syncTranslateMode(l) {
@@ -4873,6 +4932,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             listWbEdits,
             removeWbEdit,
             undoLayer,
+            appendText,
             manualEditLayer,
             editEntry,
             deleteEntry,

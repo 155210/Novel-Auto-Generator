@@ -1511,6 +1511,43 @@
         await prepareLayers();
     }
 
+    /** 小说更新：读新版本，只把新增部分分层接在后面，已有的层和结果不动 */
+    async function onNovelUpdate(file) {
+        const e = State.engine;
+        if (!e || !e.layers.length) return onNovelFile(file);
+        if (e.running) return toast('正在处理中，先暂停再导入新版本', 'warning');
+        let text;
+        let images = null;
+        try {
+            if (/\.epub$/i.test(file.name)) {
+                setStatus('正在读取 EPUB...');
+                const r = await parseEpubWithImages(await file.arrayBuffer());
+                text = r.text;
+                images = r.images;
+            } else text = await decodeTxt(file);
+        } catch (err) {
+            setStatus('');
+            return toast(`读取失败：${err.message}`, 'error');
+        }
+        setStatus('');
+        collectFields();
+        let res;
+        try {
+            res = e.appendText(text);
+        } catch (err) {
+            log(`导入新版本失败：${err.message}`);
+            return toast(err.message, 'error');
+        }
+        if (!res.added) return toast('新版本里没有新增的内容', 'info');
+        State.text = text;
+        State.planBook = PM.hashText(text);
+        if (images) State.images = images;
+        log(`已读取新版本 ${file.name}：新增 ${res.added} 层（第 ${res.from + 1} 到 ${res.from + res.added} 层），前面 ${res.from} 层不动。点「开始」接着处理新的层`);
+        toast(`新增 ${res.added} 层`, 'success');
+        saveProgress();
+        renderAll();
+    }
+
     function applyTemplate(tpl, messageTemplate, source) {
         State.tableTemplate = tpl;
         const withNotes = tpl.tables.filter((t) => t.note || t.insertNode || t.updateNode || t.deleteNode).length;
@@ -5795,6 +5832,8 @@
         if (head) head.textContent = State.fileName ? `${State.fileName} · ${fmtNum(State.text.length)} 字${e ? ` · ${e.layers.length} 层` : ''}` : '把小说一层层导入成角色卡、世界书和聊天';
         const drop = $('nim-drop-text');
         if (drop) drop.textContent = State.fileName ? `已选 ${State.fileName}，点这里换一本` : '点这里选择小说，或把文件拖进来';
+        const upd = $('nim-file-update');
+        if (upd) upd.hidden = !(e && e.layers.length && e.results.some((r) => r && r.status === 'done'));
         const chips = $('nim-file-stats');
         if (chips) {
             const c = [];
@@ -5947,6 +5986,7 @@
       </label>
       <button class="nim-searchbar" data-find-open="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>搜原文和改后、看目录和空章、找功能</span></button>
       <div id="nim-file-issues"></div>
+      <div id="nim-file-update" class="nim-row" hidden><label class="nim-btn sm">小说更新了？导入新版本<input type="file" id="nim-file-new" accept=".txt,.epub" hidden></label><span class="nim-muted">已处理的层不动，只把新增的章节接在后面</span></div>
       <div id="nim-file-stats" class="nim-stats"></div>
       <div id="nim-guide" class="nim-guide"></div>
       <div class="nim-sub nim-sec-title">素材（可选）</div>
@@ -6657,6 +6697,7 @@ button.nim-step:hover{background:var(--surface2);}
         on('nim-detail-back', 'click', () => openDetail(false));
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
         onFile('nim-file', onNovelFile);
+        onFile('nim-file-new', onNovelUpdate);
         const drop = $('nim-drop');
         ['dragenter', 'dragover'].forEach((t) =>
             drop.addEventListener(t, (ev) => {
