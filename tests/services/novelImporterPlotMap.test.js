@@ -356,3 +356,14 @@ describe('剧情地图：改写点逐层意见', () => {
         expect(M.pointKey(pts[0])).not.toBe(M.pointKey({ layer: 1, change: '别的' }));
     });
 });
+
+describe('复制全书原剧情', () => {
+    it('每层一句话、摘要、人物、关系，没扫描的标出来', () => {
+        const plan = { layers: { 0: { scan: { oneLine: '借伞', summary: '林夏借伞给主角。', characters: ['林夏'], relations: [{ a: '林夏', b: '主角', change: '认识' }], toxic: [] } } } };
+        const d = M.plotDigest([{ index: 0 }, { index: 1 }], plan, { title: '雨夜' });
+        expect(d.missing).toBe(1);
+        expect(d.text).toContain('《雨夜》原剧情（按层整理，共 2 层，其中 1 层没扫描）');
+        expect(d.text).toContain('第1层：借伞\n林夏借伞给主角。\n出场人物：林夏\n关系变化：林夏与主角认识');
+        expect(d.text).toContain('第2层：（没扫描）');
+    });
+});

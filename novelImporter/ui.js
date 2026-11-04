@@ -88,6 +88,23 @@
         return new Promise((r) => setTimeout(r, ms));
     }
 
+    /** 复制到剪贴板；有的手机浏览器不给写剪贴板，退回用选中文字的老办法 */
+    async function copyToClipboard(text, okMsg) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return toast(okMsg, 'success');
+        } catch (err) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand && document.execCommand('copy');
+            ta.remove();
+            toast(ok ? okMsg : '复制不了，用「导出为文件」', ok ? 'success' : 'warning');
+        }
+    }
+
     function download(content, filename, mime = 'application/json') {
         const blob = content instanceof Blob ? content : new Blob([content], { type: `${mime};charset=utf-8` });
         const a = document.createElement('a');
@@ -2789,6 +2806,7 @@
           <div class="nim-vol-cards">${cards.join('')}</div>
           ${overallHtml}
           ${sg}
+          ${scanned ? '<div class="nim-row"><button class="nim-btn sm" data-map-act="digest-copy">复制全书原剧情</button><button class="nim-btn sm ghost" data-map-act="digest-file">导出为文件</button><span class="nim-muted">预扫描的每层剧情，拿去单独问 AI</span></div>' : ''}
           <div class="nim-row nim-map-filters"><button class="nim-chip ${mapUi.brief ? 'on' : ''}" data-map-act="brief">只看大纲</button>${filters.map(([k, t]) => `<button class="nim-chip ${mapUi.filter === k ? 'on' : ''}" data-map-filter="${k}">${t}</button>`).join('')}
             <select id="nim-map-char" class="nim-input nim-map-char"><option value="">所有人物</option>${names.map((x) => `<option ${mapUi.char === x.name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
           ${body || '<div class="nim-empty">这个筛选下没有层</div>'}`;
@@ -3472,6 +3490,11 @@
             } else if (act === 'source') openSource(i, { query: mapUi.char || '' });
             else if (act === 'scan-one') runScan(false, i);
             else if (act === 'nav') revealMapLayer(i, { dir: b.dataset.dir, top: b.getBoundingClientRect().top });
+            else if (act === 'digest-copy' || act === 'digest-file') {
+                const d = PM.plotDigest(State.engine.layers, State.plan, { title: State.meta.cardName || baseName() });
+                if (act === 'digest-file') download(d.text, `${baseName()}-原剧情.txt`, 'text/plain');
+                else copyToClipboard(d.text, `已复制全书原剧情（${d.text.length} 字${d.missing ? `，${d.missing} 层没扫描` : ''}）`);
+            }
             else if (act === 'brief') {
                 mapUi.brief = !mapUi.brief;
                 renderMap();
