@@ -812,6 +812,30 @@ describe('运行引擎', () => {
         expect(Object.values(e2.exportWorldbook().entries).map((e) => e.comment)).not.toContain('角色 - 坏人');
     });
 
+    it('小说更新：只把新增章节接在后面，已有的层和结果不动', async () => {
+        const { engine } = makeEngine((layer) => reply({ title: `第${layer + 1}段` }));
+        await engine.run();
+        const n = engine.layers.length;
+        const done = engine.results.slice();
+        const old = engine.layers.flatMap((l) => l.paras.map((p) => p.text)).join('\n');
+        const more = '\n第九十九章 新的一章\n' + Array.from({ length: 40 }, (_, k) => `新内容第${k}段，雨还在下，人还在等，故事还在继续往前走。`).join('\n');
+        const res = engine.appendText(old + more);
+        expect(res.from).toBe(n);
+        expect(res.added).toBeGreaterThan(0);
+        expect(engine.layers.length).toBe(n + res.added);
+        engine.results.slice(0, n).forEach((r, k) => expect(r).toBe(done[k]));
+        expect(engine.results[n]).toBeNull();
+        expect(engine.layers[n].index).toBe(n);
+        expect(engine.layers[n].paras[0].text).toContain('第九十九章');
+        const lastOldId = Math.max(...engine.layers.slice(0, n).flatMap((l) => l.paras.map((p) => p.id)));
+        expect(engine.layers[n].paras[0].id).toBe(lastOldId + 1);
+        expect(engine.appendText(old + more).added).toBe(0);
+        expect(() => engine.appendText('完全不同的一本书\n第一章\n别的内容')).toThrow('找不到');
+        await engine.run();
+        expect(engine.results.every((r) => r && r.status === 'done')).toBe(true);
+        engine.results.slice(0, n).forEach((r, k) => expect(r).toBe(done[k]));
+    });
+
     it('手动编辑一层：标题、正文、摘要换掉，导出用新的，后面的层保留，可以撤销', async () => {
         const { engine } = makeEngine((layer) => reply({ title: `第${layer + 1}段` }));
         await engine.run();
