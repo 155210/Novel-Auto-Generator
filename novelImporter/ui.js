@@ -1512,7 +1512,7 @@
     }
 
     /** 小说更新：读新版本，只把新增部分分层接在后面，已有的层和结果不动 */
-    async function onNovelUpdate(file) {
+    async function onNovelUpdate(file, opts = {}) {
         const e = State.engine;
         if (!e || !e.layers.length) return onNovelFile(file);
         if (e.running) return toast('正在处理中，先暂停再导入新版本', 'warning');
@@ -1531,6 +1531,16 @@
         }
         setStatus('');
         collectFields();
+        // 只有新章节的文件：接在旧全文后面一起清洗，重复垃圾段按全书算；有重叠的旧章节会自动跳过
+        if (opts.onlyNew) {
+            if (!State.text) return toast('找不到原来的小说全文，用「导入完整新版本」', 'warning');
+            if (images && images.length) {
+                const off = Math.max(0, ...(State.images || []).map((im) => Number(im.id) || 0));
+                text = text.replace(/〔插图(\d+)〕/g, (_, n) => `〔插图${Number(n) + off}〕`);
+                images = (State.images || []).concat(images.map((im) => ({ ...im, id: Number(im.id) + off })));
+            }
+            text = `${State.text}\n${text}`;
+        }
         let res;
         try {
             res = e.appendText(text);
@@ -5986,7 +5996,7 @@
       </label>
       <button class="nim-searchbar" data-find-open="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>搜原文和改后、看目录和空章、找功能</span></button>
       <div id="nim-file-issues"></div>
-      <div id="nim-file-update" class="nim-row" hidden><label class="nim-btn sm">小说更新了？导入新版本<input type="file" id="nim-file-new" accept=".txt,.epub" hidden></label><span class="nim-muted">已处理的层不动，只把新增的章节接在后面</span></div>
+      <div id="nim-file-update" class="nim-row" hidden><span class="nim-muted">小说更新了？</span><label class="nim-btn sm">导入完整新版本<input type="file" id="nim-file-new" accept=".txt,.epub" hidden></label><label class="nim-btn sm">只导入新章节<input type="file" id="nim-file-chap" accept=".txt,.epub" hidden></label><span class="nim-muted">已处理的层不动，新增的章节接在后面</span></div>
       <div id="nim-file-stats" class="nim-stats"></div>
       <div id="nim-guide" class="nim-guide"></div>
       <div class="nim-sub nim-sec-title">素材（可选）</div>
@@ -6697,7 +6707,8 @@ button.nim-step:hover{background:var(--surface2);}
         on('nim-detail-back', 'click', () => openDetail(false));
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
         onFile('nim-file', onNovelFile);
-        onFile('nim-file-new', onNovelUpdate);
+        onFile('nim-file-new', (f) => onNovelUpdate(f));
+        onFile('nim-file-chap', (f) => onNovelUpdate(f, { onlyNew: true }));
         const drop = $('nim-drop');
         ['dragenter', 'dragover'].forEach((t) =>
             drop.addEventListener(t, (ev) => {

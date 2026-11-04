@@ -836,6 +836,19 @@ describe('运行引擎', () => {
         engine.results.slice(0, n).forEach((r, k) => expect(r).toBe(done[k]));
     });
 
+    it('只导入新章节：接在旧全文后面，开头和旧结尾重叠的几段不重复', async () => {
+        const { engine } = makeEngine((layer) => reply({ title: `第${layer + 1}段` }));
+        await engine.run();
+        const old = engine.layers.flatMap((l) => l.paras.map((p) => p.text));
+        const chunk = old.slice(-4).join('\n') + '\n第九十九章 新的一章\n' + Array.from({ length: 40 }, (_, k) => `新内容第${k}段，故事接着往下走。`).join('\n');
+        const n = engine.layers.length;
+        const res = engine.appendText(old.join('\n') + '\n' + chunk);
+        expect(res.added).toBeGreaterThan(0);
+        const added = engine.layers.slice(n).flatMap((l) => l.paras.map((p) => p.text));
+        expect(added[0]).toContain('第九十九章');
+        expect(added.some((t) => old.slice(-4).includes(t))).toBe(false);
+    });
+
     it('手动编辑一层：标题、正文、摘要换掉，导出用新的，后面的层保留，可以撤销', async () => {
         const { engine } = makeEngine((layer) => reply({ title: `第${layer + 1}段` }));
         await engine.run();
