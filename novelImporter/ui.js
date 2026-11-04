@@ -4685,6 +4685,12 @@
             if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
             body += `<div class="nim-sub">楼层内容${State.hlOff ? '' : '<span class="nim-muted">（<mark class="nim-hl">高亮</mark>是 AI 补充的，只在这里显示，导出不带）</span>'}<button id="nim-hl-toggle" class="nim-btn ghost sm" style="margin-left:8px">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div>${State.hlOff ? '' : '<div class="nim-row nim-hl-nav" id="nim-hl-nav" hidden><button class="nim-btn sm" data-hl-go="-1">↑ 上一处</button><span id="nim-hl-pos" class="nim-muted"></span><button class="nim-btn sm" data-hl-go="1">下一处 ↓</button></div>'}<pre class="nim-pre" id="nim-floor-pre">${floorHtml(e, i, floor)}</pre>`;
+            body += `<details class="nim-fold" id="nim-medit"><summary>手动编辑这层（标题、正文、摘要）</summary>
+              <div class="nim-field"><label>标题</label><input id="nim-medit-title" class="nim-input" value="${esc(r.parsed.title || '')}"></div>
+              <div class="nim-field"><label>正文<span class="nim-muted">（一行一段；&lt;bbi_image&gt;、插图标记那几行别删）</span></label><textarea id="nim-medit-body" class="nim-input nim-textarea" rows="14">${esc((r.finalParas || []).join('\n'))}</textarea></div>
+              <div class="nim-field"><label>摘要</label><textarea id="nim-medit-sum" class="nim-input nim-textarea" rows="4">${esc(r.parsed.summary || '')}</textarea></div>
+              <div class="nim-row"><button id="nim-medit-save" class="nim-btn sm primary">保存修改</button><span class="nim-muted">后面的层保留；改错了可以点上面的「撤销」</span></div>
+            </details>`;
             if (r.patchStats.failed.length) {
                 const long = r.patchStats.failed.filter((f) => /超过 \d+ 字/.test(f.reason)).length;
                 body += `<div class="nim-sub">没对上的补丁${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div><div class="nim-pre">${r.patchStats.failed
@@ -4899,6 +4905,22 @@
         }
         const keepBox = $('nim-keep-later');
         if (keepBox) keepBox.onchange = () => (State.keepLater = keepBox.checked);
+        const meditBtn = $('nim-medit-save');
+        if (meditBtn)
+            meditBtn.onclick = () => {
+                if (e.running) return toast('正在处理中，先暂停再改', 'warning');
+                let nr;
+                try {
+                    nr = e.manualEditLayer(i, { title: $('nim-medit-title').value, body: $('nim-medit-body').value, summary: $('nim-medit-sum').value });
+                } catch (err) {
+                    return toast(err.message, 'error');
+                }
+                if (!nr) return toast('没有改动', 'info');
+                log(`第 ${i + 1} 层手动编辑已保存`);
+                toast('已保存', 'success');
+                saveProgress();
+                renderAll();
+            };
         const undoBtn = $('nim-undo-layer');
         if (undoBtn)
             undoBtn.onclick = () => {

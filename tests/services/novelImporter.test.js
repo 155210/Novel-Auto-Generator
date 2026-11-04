@@ -812,6 +812,23 @@ describe('运行引擎', () => {
         expect(Object.values(e2.exportWorldbook().entries).map((e) => e.comment)).not.toContain('角色 - 坏人');
     });
 
+    it('手动编辑一层：标题、正文、摘要换掉，导出用新的，后面的层保留，可以撤销', async () => {
+        const { engine } = makeEngine((layer) => reply({ title: `第${layer + 1}段` }));
+        await engine.run();
+        const later = engine.results[2];
+        const oldBody = engine.results[1].finalParas.join('\n');
+        const nr = engine.manualEditLayer(1, { title: '我改的标题', body: '第一段我改了\n第二段', summary: '我写的摘要' });
+        expect(nr.parsed.title).toBe('我改的标题');
+        const f = engine.renderFloors().find((x) => x.layer === 1);
+        expect(f.body).toContain('第一段我改了');
+        expect(f.summary).toBe('我写的摘要');
+        expect(engine.results[2]).toBe(later);
+        expect(engine.manualEditLayer(1, { title: '我改的标题', body: '第一段我改了\n第二段', summary: '我写的摘要' })).toBeNull();
+        expect(() => engine.manualEditLayer(1, { body: '  \n ' })).toThrow('正文不能是空的');
+        expect(engine.undoLayer(1).label).toBe('手动编辑');
+        expect(engine.results[1].finalParas.join('\n')).toBe(oldBody);
+    });
+
     it('整理条目：按提示词让 AI 去重，确认后换上，可以撤销', async () => {
         let got = '';
         const { engine } = makeEngine((layer, prompt) => {

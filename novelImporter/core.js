@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.79';
+    const VERSION = '1.5.80';
 
     // ============================================
     // 默认配置
@@ -3985,6 +3985,35 @@ ${blocks}`;
             nr.undo = [snap, ...(old.undo || [])].slice(0, 3);
         }
 
+        /**
+         * 手动编辑第 i 层：标题、正文、摘要直接换成用户写的。之后的层保留，世界书、表格按这层重算；可以撤销。
+         * edit：{ title?, body?, summary? }，没给的不变。返回新结果。
+         */
+        function manualEditLayer(i, edit = {}) {
+            if (E.running) throw new Error('正在处理中');
+            const r = E.results[i];
+            if (!r || r.status !== 'done' || r.skipped) throw new Error('这一层还没有生成好');
+            const parsed = { ...r.parsed };
+            if (typeof edit.title === 'string') parsed.title = edit.title.trim();
+            if (typeof edit.summary === 'string') parsed.summary = edit.summary.trim();
+            const nr = { ...r, parsed };
+            if (typeof edit.body === 'string') {
+                const paras = edit.body.replace(/\r\n?/g, '\n').split('\n');
+                while (paras.length && !paras[paras.length - 1].trim()) paras.pop();
+                if (!paras.some((p) => p.trim())) throw new Error('正文不能是空的');
+                if (paras.join('\n') !== (r.finalParas || []).join('\n')) {
+                    nr.finalParas = paras;
+                    nr.markedParas = null; // 高亮对不上了，不标
+                }
+            }
+            if (JSON.stringify([nr.finalParas, parsed.title, parsed.summary]) === JSON.stringify([r.finalParas, r.parsed.title, r.parsed.summary])) return null;
+            nr.manualEdited = (r.manualEdited || 0) + 1;
+            pushUndo(nr, r, '手动编辑');
+            E.results[i] = nr;
+            emit('layer-done', { index: i, result: nr });
+            return nr;
+        }
+
         /** 第 i 层退回上一次修改之前的样子；之后的层保留，世界书、表格按退回的结果重算 */
         function undoLayer(i) {
             if (E.running) throw new Error('正在处理中');
@@ -4844,6 +4873,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             listWbEdits,
             removeWbEdit,
             undoLayer,
+            manualEditLayer,
             editEntry,
             deleteEntry,
             setEntryConfig,
