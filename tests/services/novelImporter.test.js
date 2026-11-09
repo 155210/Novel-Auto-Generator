@@ -2382,3 +2382,11 @@ describe('楼层摘要替换 AI 自己写的同名标签', () => {
         expect(C.buildFloorText(floor, {})).toContain('...');
     });
 });
+
+describe('楼层正文前后空行', () => {
+    it('默认 <正文> 后、</正文> 前各空一行，关掉就不空', () => {
+        const floor = { heading: 'h', body: '第一行\n第二行' };
+        expect(C.buildFloorText(floor, {})).toContain('<正文>\n\n第一行\n第二行\n\n</正文>');
+        expect(C.buildFloorText(floor, { bodyBlankLines: false })).toContain('<正文>\n第一行\n第二行\n</正文>');
+    });
+});
