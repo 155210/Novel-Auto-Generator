@@ -179,6 +179,8 @@
         out.worldbookCategories = C.normalizeCategories(saved.worldbookCategories || d.worldbookCategories);
         out.preset = saved.preset ? C.normalizePreset(saved.preset) : saved.messageChain ? C.presetFromMessageChain(saved.messageChain) : d.preset;
         delete out.messageChain;
+        // 章节正则还是旧版默认值（没改过）的，换成新的默认值
+        if ((C.LEGACY_CHAPTER_REGEXES || []).includes(saved.chapterRegex)) out.chapterRegex = d.chapterRegex;
         // 旧版默认改写要求里的「补说话人」两行删掉（只删原样没改过的那两行，只做一次）
         if (!saved.speakerRuleDropped) {
             out.rewritePrompt = C.dropOldSpeakerRule(out.rewritePrompt).trim() || d.rewritePrompt;

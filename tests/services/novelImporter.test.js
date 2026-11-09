@@ -2390,3 +2390,18 @@ describe('楼层正文前后空行', () => {
         expect(C.buildFloorText(floor, { bodyBlankLines: false })).toContain('<正文>\n第一行\n第二行\n</正文>');
     });
 });
+
+describe('数字-标题的章节和 null 前缀', () => {
+    it('null  36-贤妻的条件 认成第 36 章标题，正文里的「3-5分钟后…。」不算', () => {
+        const paras = C.splitParagraphs('◇◆◇◆◇\nnull  36-贤妻的条件\n「嗯……」\n3-5分钟后，他回来了。');
+        expect(paras[1]).toBe('36-贤妻的条件');
+        const layers = C.splitLayers(paras, { chapterRegex: C.DEFAULT_CHAPTER_REGEX });
+        expect(layers[0].chapters).toEqual(['36-贤妻的条件']);
+    });
+});
+
+describe('数字-标题解析', () => {
+    it('原文标题模式下 36-贤妻的条件 → 第36章：贤妻的条件', () => {
+        expect(C.formatHeading({ index: 0, chapters: ['36-贤妻的条件'] }, '', { titleMode: 'original', chapterUnit: '章' }, '章')).toBe('#第36章：贤妻的条件');
+    });
+});
