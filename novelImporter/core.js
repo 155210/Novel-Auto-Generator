@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.87';
+    const VERSION = '1.5.88';
 
     // ============================================
     // 默认配置
@@ -345,7 +345,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         const t = String(line || '').trim();
         let m = new RegExp(`^第\\s*([${CN_NUM}]+)\\s*([章话話回节節])\\s*[：:、.．\\-—\\s]*(.*)$`).exec(t);
         if (m) return { num: cnToInt(m[1]), unit: /[话話]/.test(m[2]) ? '话' : '章', title: m[3].trim() };
-        m = /^([0-9]{1,5})\s*[.．、 \-－—]\s*(.*)$/.exec(t);
+        // 「36-贤妻的条件」「76——春天的风」：横线可以连着两三个
+        m = /^([0-9]{1,5})\s*(?:[.．、 ]|[\-－—–]+)\s*(.*)$/.exec(t);
         if (m) return { num: Number(m[1]), unit: '', title: m[2].trim() };
         m = /^(?:Chapter|CHAPTER|Ch\.)\s*([0-9]+)\s*[:：.\-—\s]*(.*)$/.exec(t);
         if (m) return { num: Number(m[1]), unit: '', title: m[2].trim() };
@@ -477,16 +478,41 @@ P段号 |  | ++新段落          在该段之后另起一段
         const s = { ...DEFAULT_SETTINGS, ...settings };
         const fmt = bodyTitleFormatOf(s);
         const re = new RegExp(`^第\\s*[${CN_NUM}]+\\s*[章话話回节節]`);
+        // 去掉 Markdown 记号（AI 有时把标题写成 **第二话 xxx** 或 ## 第二话），再去掉转码留在章号前面的符号（「,./第64话」）
+        const plain = (line) =>
+            stripMarks(line)
+                .trim()
+                .replace(/^(?:#+\s*|[*_]{1,3})|[*_]{1,3}$/g, '')
+                .trim()
+                .replace(/^[\s,，.。、/\\|>»·•~\-—_=+]+(?=第)/, '');
+        // 「64-标题」「76——标题」「64」这种只有数字的标题行
+        const numbered = (t) => {
+            const m = t && t.length <= 45 ? /^([0-9０-９]{1,5})(?:\s*[\-－—–]+\s*(\S.*))?$/.exec(t) : null;
+            return m ? { num: cnToInt(m[1]), title: (m[2] || '').trim() } : null;
+        };
+        // 分层时认成章节标题的行（按用户的章节规则）：这些行即使只是「36-标题」也当标题排
+        const known = new Set((opts.chapters || []).map((x) => String(x).trim()));
         const out = [];
         let first = true;
-        for (const line of paras) {
-            // AI 有时把标题写成 **第二话 xxx** 或 ## 第二话，先去掉 Markdown 记号再判断
-            const t = stripMarks(line).trim().replace(/^(?:#+\s*|[*_]{1,3})|[*_]{1,3}$/g, '').trim();
+        for (let k = 0; k < paras.length; k++) {
+            const line = paras[k];
+            const t = plain(line);
             // 「第3话说的是……」这种句子不算：章号后面要有空格/冒号，或者整行很短又没有句读
             const m = t && t.length <= 40 ? re.exec(t) : null;
             const rest = m ? t.slice(m[0].length) : '';
             const ok = m && (!rest || /^[\s：:、.．\-—]/.test(rest) || (t.length <= 20 && !/[。，！？…“”「」,!?]/.test(rest)));
-            const p = ok ? parseChapterTitle(t) : null;
+            let p = ok ? parseChapterTitle(t) : null;
+            if (p && !p.title && k + 1 < paras.length) {
+                // 有的书章号和章名分两行：「第64话」下面一行才是「64-用一根橡皮筋就能原谅的恋情」，合成一个标题
+                const nx = numbered(plain(paras[k + 1]));
+                if (nx && nx.num === p.num) {
+                    p = { ...p, title: nx.title };
+                    k++;
+                }
+            } else if (!p && known.has(stripMarks(line).trim())) {
+                const nx = numbered(t);
+                if (nx && nx.title) p = { num: nx.num, unit: '', title: nx.title };
+            }
             const wasFirst = first;
             if (t && !SEPARATOR_RE.test(t)) first = false;
             if (!p) {
@@ -4397,7 +4423,7 @@ ${blocks}`;
             const split = splitBodyBlocks(paras.join('\n'), settings.bodyTag);
             const clean = split.body.split('\n').filter((l) => stripMarks(l).trim().length > 0);
             const dropFirst = settings.titleMode === 'original' && !!(layer.chapters || []).length;
-            return { paras: fixSeparators(formatBodyHeadings(clean, settings, E.stats.chapterUnit, { dropFirst }), settings.titleTag), extras: split.extras };
+            return { paras: fixSeparators(formatBodyHeadings(clean, settings, E.stats.chapterUnit, { dropFirst, chapters: layer.chapters }), settings.titleTag), extras: split.extras };
         }
 
         function finalState() {
