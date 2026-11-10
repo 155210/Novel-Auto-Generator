@@ -179,6 +179,8 @@
         out.worldbookCategories = C.normalizeCategories(saved.worldbookCategories || d.worldbookCategories);
         out.preset = saved.preset ? C.normalizePreset(saved.preset) : saved.messageChain ? C.presetFromMessageChain(saved.messageChain) : d.preset;
         delete out.messageChain;
+        // 章节正则还是旧版默认值（没改过）的，换成新的默认值
+        if ((C.LEGACY_CHAPTER_REGEXES || []).includes(saved.chapterRegex)) out.chapterRegex = d.chapterRegex;
         // 旧版默认改写要求里的「补说话人」两行删掉（只删原样没改过的那两行，只做一次）
         if (!saved.speakerRuleDropped) {
             out.rewritePrompt = C.dropOldSpeakerRule(out.rewritePrompt).trim() || d.rewritePrompt;
@@ -267,6 +269,7 @@
                     ['话', '第X话'],
                 ],
             },
+            { key: 'bodyBlankLines', label: '楼层里正文标签前后空一行（酒馆里分段显示）', type: 'check', hint: '不空的话，酒馆没装美化正则时正文的换行会被吞掉，整层挤成一坨；你的正则要是对不上了再关掉' },
             {
                 key: 'importHighlight',
                 label: '导入酒馆时标出 AI 补充的字',

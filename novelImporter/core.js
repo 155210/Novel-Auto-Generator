@@ -15,14 +15,16 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.83';
+    const VERSION = '1.5.85';
 
     // ============================================
     // 默认配置
     // ============================================
 
     const CN_NUM = '0-9０-９一二三四五六七八九十百千万零两';
-    const DEFAULT_CHAPTER_REGEX = `^(?:第[${CN_NUM}]+[章话話回节節卷篇幕][^\\n]{0,40}|[0-9]{1,5}[.．、 ][^\\n]{1,40}|(?:Chapter|CHAPTER|Ch\\.)\\s*[0-9]+[^\\n]{0,60}|제\\s*[0-9]+\\s*[화장][^\\n]{0,40}|(?:序章|楔子|尾声|尾聲|终章|終章|番外|プロローグ|エピローグ|Prologue|Epilogue|PROLOGUE|EPILOGUE)[^\\n]{0,40})$`;
+    const LEGACY_CHAPTER_REGEX_1 = `^(?:第[${CN_NUM}]+[章话話回节節卷篇幕][^\\n]{0,40}|[0-9]{1,5}[.．、 ][^\\n]{1,40}|(?:Chapter|CHAPTER|Ch\\.)\\s*[0-9]+[^\\n]{0,60}|제\\s*[0-9]+\\s*[화장][^\\n]{0,40}|(?:序章|楔子|尾声|尾聲|终章|終章|番外|プロローグ|エピローグ|Prologue|Epilogue|PROLOGUE|EPILOGUE)[^\\n]{0,40})$`;
+    // 「36-贤妻的条件」这种「数字-标题」也算章节
+    const DEFAULT_CHAPTER_REGEX = `^(?:第[${CN_NUM}]+[章话話回节節卷篇幕][^\\n]{0,40}|[0-9]{1,5}[.．、 \\-－—][^\\n]{1,40}|(?:Chapter|CHAPTER|Ch\\.)\\s*[0-9]+[^\\n]{0,60}|제\\s*[0-9]+\\s*[화장][^\\n]{0,40}|(?:序章|楔子|尾声|尾聲|终章|終章|番外|プロローグ|エピローグ|Prologue|Epilogue|PROLOGUE|EPILOGUE)[^\\n]{0,40})$`;
 
     const DEFAULT_AD_PATTERNS = [
         '^=+$',
@@ -255,6 +257,8 @@ P段号 |  | ++新段落          在该段之后另起一段
         glossaryEnabled: true, // 翻译时用术语表统一人名地名（只发给 AI，不进正文）
         glossaryMax: 300, // 每层最多带多少条（只带本层原文里出现的）
         writeTableEdit: true,
+        // 楼层里正文标签前后各空一行：酒馆的 Markdown 会把夹在 <正文>…</正文> 里的换行吞掉，没有美化正则时整层挤成一坨
+        bodyBlankLines: true,
         // 每层楼在 </正文> 后面写一段摘要（总结类插件读这个），{{摘要}} 换成本层摘要
         floorSummaryEnabled: false,
         floorSummaryTemplate: '<Plotline>\n<details><summary>摘要</summary>\n{{摘要}}\n</details>\n</Plotline>',
@@ -341,7 +345,7 @@ P段号 |  | ++新段落          在该段之后另起一段
         const t = String(line || '').trim();
         let m = new RegExp(`^第\\s*([${CN_NUM}]+)\\s*([章话話回节節])\\s*[：:、.．\\-—\\s]*(.*)$`).exec(t);
         if (m) return { num: cnToInt(m[1]), unit: /[话話]/.test(m[2]) ? '话' : '章', title: m[3].trim() };
-        m = /^([0-9]{1,5})\s*[.．、 ]\s*(.*)$/.exec(t);
+        m = /^([0-9]{1,5})\s*[.．、 \-－—]\s*(.*)$/.exec(t);
         if (m) return { num: Number(m[1]), unit: '', title: m[2].trim() };
         m = /^(?:Chapter|CHAPTER|Ch\.)\s*([0-9]+)\s*[:：.\-—\s]*(.*)$/.exec(t);
         if (m) return { num: Number(m[1]), unit: '', title: m[2].trim() };
@@ -558,6 +562,8 @@ P段号 |  | ++新段落          在该段之后另起一段
             .replace(/^﻿/, '')
             .split('\n')
             .map((l) => l.replace(/^[\s　]+|[\s　]+$/g, ''))
+            // EPUB 转出来的章节标题前面常带一个「null」（目录取不到值），去掉
+            .map((l) => l.replace(/^null[\s　]+(?=\S)/, ''))
             .join('\n');
     }
 
@@ -707,7 +713,7 @@ P段号 |  | ++新段落          在该段之后另起一段
     }
 
     // 「1、xxx」「2. xxx」这种数字开头的，带句末标点的多半是正文里的列表，不当章节标题
-    const NUMBERED_LINE = /^[0-9０-９]{1,5}[.．、 ]/;
+    const NUMBERED_LINE = /^[0-9０-９]{1,5}[.．、 \-－—]/;
     const SENTENCE_TAIL = /[。！？!?；;…]["”’」』]?$/;
 
     function isChapterTitle(line, regex) {
@@ -2617,7 +2623,8 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         const sumTag = sumOn ? (tpl.match(/^<([^\s<>/]+)[^<>]*>/) || [])[1] : '';
         const notSum = (x) => !sumTag || !new RegExp(`^\\s*<${sumTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s>]`, 'i').test(String(x));
         for (const x of (floor.before || []).filter(notSum)) parts.push(x);
-        parts.push(`<${s.bodyTag}>\n${floor.body}\n</${s.bodyTag}>`);
+        const gap = s.bodyBlankLines === false ? '' : '\n';
+        parts.push(`<${s.bodyTag}>\n${gap}${floor.body}\n${gap}</${s.bodyTag}>`);
         // 夹在正文里的别的标签挪到正文后面、tableEdit 前面
         for (const x of (floor.extras || []).filter(notSum)) parts.push(x);
         if (sumOn) parts.push(/\{\{\s*摘要\s*\}\}/.test(tpl) ? tpl.replace(/\{\{\s*摘要\s*\}\}/g, () => floor.summary) : `${tpl}\n${floor.summary}`);
@@ -5210,6 +5217,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
         VERSION,
         DEFAULT_SETTINGS,
         DEFAULT_CHAPTER_REGEX,
+        LEGACY_CHAPTER_REGEXES: [LEGACY_CHAPTER_REGEX_1],
         DEFAULT_AD_PATTERNS,
         adPatternsFor,
         DEFAULT_INLINE_AD_PATTERNS,
