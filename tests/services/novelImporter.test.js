@@ -2006,6 +2006,16 @@ describe('翻译模式', () => {
             '第3话说的是……这句不是标题因为太长了太长了太长了太长了太长了太长了太长了太长了',
         ]);
         expect(C.formatBodyHeadings(['第一章雨夜'], {}, '章')).toEqual(['<bt>\n#第1章：雨夜\n</bt>']);
+        // 章号和章名分两行（章号前面还带着转码留下的符号）：合成一个标题
+        expect(C.formatBodyHeadings(['上一话的后记。', ',./第64话', '64-用一根橡皮筋就能原谅的恋情', '（好了，该怎么办呢……）'], {}, '章')).toEqual(['上一话的后记。', '<bt>\n#第64话：用一根橡皮筋就能原谅的恋情\n</bt>', '（好了，该怎么办呢……）']);
+        expect(C.formatBodyHeadings(['第76话', '76——春天吹起清爽的风', '正文'], {}, '话')).toEqual(['<bt>\n#第76话：春天吹起清爽的风\n</bt>', '正文']);
+        expect(C.formatBodyHeadings(['第8话', '8', '正文'], {}, '话')).toEqual(['<bt>\n#第8话\n</bt>', '正文']);
+        // 编号对不上的下一行不动
+        expect(C.formatBodyHeadings(['第9话', '10-别的', '正文'], {}, '话')).toEqual(['<bt>\n#第9话\n</bt>', '10-别的', '正文']);
+        // 「36-标题」只有分层时认成了章节标题才排成标题，正文里别的「3-4个人」不动
+        expect(C.formatBodyHeadings(['36-贤妻的条件', '正文', '3-4个人'], {}, '章', { chapters: ['36-贤妻的条件'] })).toEqual(['<bt>\n#第36章：贤妻的条件\n</bt>', '正文', '3-4个人']);
+        expect(C.formatBodyHeadings(['36-贤妻的条件', '正文'], {}, '章')).toEqual(['36-贤妻的条件', '正文']);
+        expect(C.parseChapterTitle('76——春天吹起清爽的风')).toEqual({ num: 76, unit: '', title: '春天吹起清爽的风' });
         expect(C.formatBodyHeadings(['', '第1话 雨夜', '正文', '\uE000第2章 新\uE001'], { chapterUnit: '话' }, '章', { dropFirst: true })).toEqual(['', '正文', '<bt>\n#第2话：新\n</bt>']);
     });
 
