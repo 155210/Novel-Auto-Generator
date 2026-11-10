@@ -2300,7 +2300,7 @@ describe('从旧聊天搬柏宝绘插图', () => {
         expect(st[C.bbiHash(tagA)]).toEqual([entry('/user/images/a.png', 0)]);
         expect(st[C.bbiHash(book)]).toEqual([entry('/user/images/book2.png', 1)]);
         expect(st[C.bbiHash(tagB)]).toEqual([entry('/user/images/b.png', 2)]);
-        expect(stats).toEqual({ layers: 1, tags: 2, images: 2, exact: 2, approx: 0, dropped: 0 });
+        expect(stats).toEqual({ layers: 1, tags: 2, images: 2, exact: 2, approx: 0, dropped: 0, charFloors: 0, charOps: 0, charBase: false });
         expect(m.extra.novel_importer.layer).toBe(0);
     });
 
@@ -2403,5 +2403,24 @@ describe('数字-标题的章节和 null 前缀', () => {
 describe('数字-标题解析', () => {
     it('原文标题模式下 36-贤妻的条件 → 第36章：贤妻的条件', () => {
         expect(C.formatHeading({ index: 0, chapters: ['36-贤妻的条件'] }, '', { titleMode: 'original', chapterUnit: '章' }, '章')).toBe('#第36章：贤妻的条件');
+    });
+});
+
+describe('搬柏宝绘的本聊天角色', () => {
+    const floor = (layer, mes, extra = {}) => ({ name: 'x', is_user: false, mes, swipe_id: 0, extra: { novel_importer: { layer }, ...extra } });
+    it('手动基线搬到新聊天头，每层增量搬到同一层，没了的层并到前面最近的一层', () => {
+        const base = { version: 3, entries: [{ name: '冬岛', fields: { hair: 'black hair' } }] };
+        const oldChat = [
+            { chat_metadata: { baibai_image_char_tags: base } },
+            floor(0, 'a', { bbiCharChanges: { v: 1, swipe: 0, ops: [{ kind: 'new', name: '春町' }] } }),
+            floor(1, 'b', { bbiCharChanges: { v: 1, swipe: 0, ops: [{ kind: 'set', name: '春町', field: 'hair', value: 'red hair' }] } }),
+            floor(2, 'c', { bbiCharChanges: { v: 1, swipe: 1, ops: [{ kind: 'set', name: '别的 swipe' }] } }),
+        ];
+        const fresh = C.buildChatArray([{ layer: 0, mes: 'a' }, { layer: 2, mes: 'c' }]);
+        const { chat, stats } = C.carryBbiImages(fresh, oldChat);
+        expect(chat[0].chat_metadata.baibai_image_char_tags).toEqual(base);
+        expect(chat[1].extra.bbiCharChanges.ops.map((o) => o.kind)).toEqual(['new', 'set']);
+        expect(chat[2].extra.bbiCharChanges).toBeUndefined();
+        expect([stats.charBase, stats.charFloors, stats.charOps]).toEqual([true, 1, 2]);
     });
 });
