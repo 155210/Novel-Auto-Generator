@@ -1386,6 +1386,7 @@
         if (!Carry.source) return chat;
         const r = C.carryBbiImages(chat, Carry.source, { changed: $('nim-carry-changed')?.checked !== false });
         const st = r.stats;
+        if (st.charBase || st.charOps) log(`从「${Carry.label}」搬了柏宝绘的本聊天角色：${st.charBase ? '手动角色库' : ''}${st.charBase && st.charOps ? '，' : ''}${st.charOps ? `${st.charFloors} 层楼里的 ${st.charOps} 条建档/外貌变化` : ''}`);
         log(st.tags ? `从「${Carry.label}」搬了 ${st.layers} 层、${st.images} 张柏宝绘插图：${st.exact} 个原样放回，${st.approx} 个按大概位置放${st.dropped ? `，${st.dropped} 个对不上没搬` : ''}` : `「${Carry.label}」里没有能对上的柏宝绘插图`);
         return r.chat;
     }

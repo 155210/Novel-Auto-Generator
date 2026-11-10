@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.85';
+    const VERSION = '1.5.86';
 
     // ============================================
     // 默认配置
@@ -2815,7 +2815,58 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             if (Object.keys(srcs).length) extra.bbiPassageSources = { ...(extra.bbiPassageSources || {}), 0: { ...((extra.bbiPassageSources || {})['0'] || {}), ...srcs } };
             return { ...msg, mes, swipes: [mes], swipe_id: 0, extra };
         });
+        carryBbiCharacters(chat, oldChat, oldFloors, byLayer, useOrder, isFloor, stats);
         return { chat, stats };
+    }
+
+    /**
+     * 柏宝绘的「本聊天角色」：手动基线在聊天头的 chat_metadata.baibai_image_char_tags，
+     * AI 建档和外貌变化是每层楼 extra.bbiCharChanges（{v:1, swipe, ops}）里的增量，按楼层顺序重放。
+     * 新聊天没有这些，角色库就空了：基线照搬；每层的增量搬到同一层，那层没了就并到它前面最近的一层。
+     */
+    function carryBbiCharacters(chat, oldChat, oldFloors, byLayer, useOrder, isFloor, stats) {
+        stats.charFloors = 0;
+        stats.charOps = 0;
+        stats.charBase = false;
+        const head = chat[0] && !isFloor(chat[0]) && chat[0].chat_metadata ? chat[0] : null;
+        const oldHead = (oldChat || [])[0];
+        const base = oldHead && oldHead.chat_metadata && oldHead.chat_metadata.baibai_image_char_tags;
+        if (head && base && !head.chat_metadata.baibai_image_char_tags) {
+            head.chat_metadata = { ...head.chat_metadata, baibai_image_char_tags: JSON.parse(JSON.stringify(base)) };
+            stats.charBase = true;
+        }
+        const newFloors = [];
+        chat.forEach((m, k) => isFloor(m) && newFloors.push(k));
+        if (!newFloors.length) return;
+        const layerOf = (m) => (m.extra && m.extra.novel_importer ? m.extra.novel_importer.layer : undefined);
+        const targetOf = (old, n) => {
+            if (useOrder) return newFloors[Math.min(n, newFloors.length - 1)];
+            const L = layerOf(old);
+            let best = newFloors[0];
+            for (const k of newFloors) {
+                const l = layerOf(chat[k]);
+                if (Number.isInteger(l) && Number.isInteger(L) && l <= L) best = k;
+            }
+            return best;
+        };
+        const acc = new Map();
+        oldFloors.forEach((old, n) => {
+            const d = old.extra && old.extra.bbiCharChanges;
+            if (!d || d.v !== 1 || !Array.isArray(d.ops) || !d.ops.length) return;
+            if ((typeof d.swipe === 'number' ? d.swipe : 0) !== (old.swipe_id || 0)) return; // 不是当前显示的那个 swipe 的，酒馆里本来就不生效
+            const k = targetOf(old, n);
+            if (!acc.has(k)) acc.set(k, []);
+            acc.get(k).push(...JSON.parse(JSON.stringify(d.ops)));
+        });
+        for (const [k, ops] of acc) {
+            const m = chat[k];
+            const extra = { ...(m.extra || {}) };
+            const cur = extra.bbiCharChanges && Array.isArray(extra.bbiCharChanges.ops) ? extra.bbiCharChanges.ops : [];
+            extra.bbiCharChanges = { v: 1, swipe: m.swipe_id || 0, ops: cur.concat(ops) };
+            chat[k] = { ...m, extra };
+            stats.charFloors++;
+            stats.charOps += ops.length;
+        }
     }
 
     /** 酒馆导出的 .jsonl 聊天：第一行元数据，之后每行一条消息 */
