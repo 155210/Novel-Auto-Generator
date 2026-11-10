@@ -603,6 +603,8 @@
             step('创建角色卡');
             avatar = await createCharacter({ name: p.cardName, description: p.description, scenario: p.scenario, worldName: p.worldName });
         }
+        // 角色卡一建好就告诉界面记下来：后面哪一步失败了，重试时更新这张卡，不会再建一张重复的
+        if (p.onCard) p.onCard(avatar);
         const fileName = p.chatFileName || `${p.cardName} - 导入 ${humanDate(new Date())}`;
         step('写入聊天');
         await saveChat(avatar, p.cardName, fileName, p.chatArray);
@@ -613,13 +615,19 @@
         const fixed = await verifyFloors(p.chatArray).catch(() => []);
         if (fixed.length) step(`第 ${fixed.map((k) => '#' + k).join('、')} 楼被旧聊天的内容盖掉了，已改回来`);
         let tables = null;
+        let tableError = '';
         if (p.rebuildTables !== false && p.expectedTables && p.expectedTables.length) {
             step('重建记忆表格');
-            const tpl = checkTemplate(p.expectedTables);
-            if (!tpl.ok && !tpl.unknown) throw new Error('记忆表格模板对不上：' + (tpl.reason || tpl.problems.join('；')));
-            tables = await rebuildTables({ expected: p.expectedTables, onProgress: p.onProgress, onMode: p.onMode, shouldStop: p.shouldStop });
+            // 走到这里角色卡、世界书、聊天都已经写进酒馆了：表格这步出错不算整个导入失败，单独报
+            try {
+                const tpl = checkTemplate(p.expectedTables);
+                if (!tpl.ok && !tpl.unknown) throw new Error('记忆表格模板对不上：' + (tpl.reason || tpl.problems.join('；')));
+                tables = await rebuildTables({ expected: p.expectedTables, onProgress: p.onProgress, onMode: p.onMode, shouldStop: p.shouldStop });
+            } catch (e) {
+                tableError = String((e && e.message) || e);
+            }
         }
-        return { avatar, fileName, tables };
+        return { avatar, fileName, tables, tableError };
     }
 
     root.NovelImporterST = {

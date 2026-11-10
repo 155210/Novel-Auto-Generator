@@ -1690,6 +1690,20 @@ describe('运行引擎', () => {
         expect(engine.results[1]).toBe(null);
     });
 
+    it('整本处理中点停止：写到一半的那层回到未开始，不会一直标着处理中', async () => {
+        const { engine } = makeEngine((layer) => {
+            if (layer === 1) {
+                engine.stop();
+                throw new Error('aborted');
+            }
+            return normal(layer);
+        });
+        await engine.run();
+        expect(engine.running).toBe(false);
+        expect(engine.results[0].status).toBe('done');
+        expect(engine.results[1]).toBe(null);
+    });
+
     it('单层重做时可以停止，停了原来的结果放回去', async () => {
         let hang = false;
         let runningDuring = null;

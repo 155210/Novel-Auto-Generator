@@ -836,7 +836,7 @@
         if (snap.engine) {
             State.engine = makeEngine(snap.engine.settings);
             State.engine.restore(snap.engine);
-        }
+        } else State.engine = null;
     }
 
     // ============================================
@@ -845,17 +845,20 @@
 
     function makeEngine(settingsOverride) {
         const s = { ...State.settings, ...(settingsOverride || {}) };
-        // 剧情地图预扫描认出的主角，引擎每次取最新的
-        Object.defineProperty(s, 'protagonistGuess', { get: () => (State.plan && State.plan.hero) || '', enumerable: true, configurable: true });
-        return C.createEngine({
+        const engine = C.createEngine({
             settings: s,
             // 取最新的预设：导入、开关、排序后不用重建引擎
             get preset() {
                 return State.settings.preset;
             },
             substitute: substituteMacros,
-            tableTemplate: State.tableTemplate,
-            seedWorldbook: State.seedWorldbook,
+            // 表格模板、初始世界书分好层以后再导入也要马上生效，所以每次取最新的
+            get tableTemplate() {
+                return State.tableTemplate;
+            },
+            get seedWorldbook() {
+                return State.seedWorldbook;
+            },
             // 默认世界书条目在整理世界书里随时能改，导出时取最新的
             get defaultEntries() {
                 return State.settings.wbDefaultEntries || [];
@@ -882,6 +885,9 @@
             callModel,
             onEvent: onEngineEvent,
         });
+        // 剧情地图预扫描认出的主角，引擎每次取最新的。要定义在引擎自己的 settings 上：引擎建的时候会把设置抄一份，定义在传进去的对象上就成了死值
+        Object.defineProperty(engine.settings, 'protagonistGuess', { get: () => (State.plan && State.plan.hero) || '', set: () => {}, enumerable: true, configurable: true });
+        return engine;
     }
 
     function onEngineEvent(type, p) {
@@ -916,15 +922,25 @@
             saveProgress();
         } else if (type === 'review') {
             State.selected = p.index;
-            switchTab('run');
-            openDetail(true);
             saveProgress();
+            if ($('nim-modal')) {
+                switchTab('run');
+                openDetail(true);
+            }
         } else if (type === 'error') log(`出错：${p.error}`);
         renderAll();
     }
 
+    /** 正在处理时不能把引擎换掉：旧的还在后台调 API 花钱，结果却没地方放 */
+    function runningBlock(what) {
+        if (!(State.engine && State.engine.running)) return false;
+        toast(`正在处理中，先点「停止」再${what}`, 'warning');
+        return true;
+    }
+
     async function prepareLayers() {
         if (!State.text) return toast('请先选择小说文件', 'warning');
+        if (runningBlock('重新分层')) return;
         if (State.engine && State.engine.results.some((r) => r && r.status === 'done')) {
             if (!confirm('重新分层会清空已处理的结果，确定吗？')) return;
         }
@@ -957,11 +973,15 @@
         if (State.engine.reviewing !== null) State.engine.accept();
         State.stopped = false;
         renderAll();
-        await State.engine.run();
+        const e = State.engine;
+        await e.run();
+        if (State.engine !== e) return;
         renderAll();
-        if (State.engine.reviewing === null && State.engine.results.every((r) => r && r.status === 'done')) {
+        if (e.reviewing === null && e.results.every((r) => r && r.status === 'done')) {
             log('全部层已完成，可以在「导入酒馆」一键导入');
-            switchTab('export');
+            // 正在别处打字（比如写某层的修改要求）就不抢着换页
+            if (typingIn($('nim-modal'))) toast('全部层已完成，可以去「导入酒馆」一键导入', 'success');
+            else switchTab('export');
         }
     }
 
@@ -1081,6 +1101,10 @@
                     log(`导入：${s}`);
                     showResult('', `正在导入：${s}`);
                 },
+                onCard: (avatar) => {
+                    State.meta.avatar = avatar;
+                    saveProgress();
+                },
                 onProgress: (i, n) => setStatus(`重建表格 ${i}/${n}`),
                 onMode: logMemoryMode,
                 shouldStop: () => State.stopped,
@@ -1088,6 +1112,12 @@
             State.meta.avatar = res.avatar;
             saveProgress();
             log(`已导入：角色卡 ${res.avatar}，聊天 ${res.fileName}`);
+            if (res.tableError) {
+                log(`⚠️ 记忆表格没建成：${res.tableError}`);
+                toast('导入完成，但记忆表格没建成', 'warning');
+                showResult('warn', `⚠️ ${new Date().toLocaleTimeString()} 角色卡「${out.cardName}」、世界书「${out.worldName}」、${out.floors.length} 层楼层都已导入并打开，但记忆表格没建成：${res.tableError}。解决后点下面的「只在当前聊天重建表格」就行，不用重新导入。`);
+                return;
+            }
             if (res.tables) {
                 if (res.tables.ok) log(`记忆表格核对通过：${res.tables.live.map((t) => `${t.name} ${t.data.length - 1} 行`).join('，')}`);
                 else log(`⚠️ 记忆表格和预期不一致：${res.tables.diffs.map((d) => `${d.table}：${d.reason}`).join('；')}`);
@@ -1198,9 +1228,15 @@
     }
 
     async function importTask(file) {
+        if (runningBlock('导入任务进度')) return;
         try {
             const snap = JSON.parse(await readFileText(file));
+            if (!snap || typeof snap !== 'object' || (!snap.text && !snap.engine)) throw new Error('这不是导出的任务进度文件');
+            if (runningBlock('导入任务进度')) return;
             restoreSnapshot(snap);
+            State.selected = State.engine && State.engine.reviewing !== null ? State.engine.reviewing : null;
+            fillMapFields();
+            renderExport();
             saveProgress();
             renderAll();
             toast('任务已恢复', 'success');
@@ -1487,21 +1523,27 @@
     // ============================================
 
     async function onNovelFile(file) {
+        if (runningBlock('换小说')) return;
+        const had = State.engine ? State.engine.results.filter((r) => r && r.status === 'done').length : 0;
+        if (had && !confirm(`现在这本已经处理了 ${had} 层，换一本会清空这些结果，确定吗？\n\n只是小说更新了的话点「取消」，用下面的「导入完整新版本」，已处理的层会留着。`)) return;
         let text;
-        State.images = [];
-        State.imagePaths = null;
+        let images = [];
         try {
             if (/\.epub$/i.test(file.name)) {
                 setStatus('正在读取 EPUB...');
                 const r = await parseEpubWithImages(await file.arrayBuffer());
                 text = r.text;
-                State.images = r.images;
+                images = r.images;
             } else text = await decodeTxt(file);
         } catch (e) {
             setStatus('');
             return toast(`读取失败：${e.message}`, 'error');
         }
         setStatus('');
+        if (runningBlock('换小说')) return;
+        // 读成功了才换掉上一本的插图
+        State.images = images;
+        State.imagePaths = null;
         // 换了一本书：剧情地图和既成事实是上一本的，清掉；同一本重新导入就保留
         const book = PM.hashText(text);
         if (State.planBook !== book) resetBookPlan();
@@ -1563,6 +1605,7 @@
     }
 
     function applyTemplate(tpl, messageTemplate, source) {
+        if (runningBlock('换表格模板')) return;
         State.tableTemplate = tpl;
         const withNotes = tpl.tables.filter((t) => t.note || t.insertNode || t.updateNode || t.deleteNode).length;
         if (messageTemplate) {
@@ -1603,6 +1646,7 @@
     }
 
     async function onWorldbookFile(file) {
+        if (runningBlock('换初始世界书')) return;
         try {
             State.seedWorldbook = C.importWorldbook(JSON.parse(await readFileText(file)));
             const n = Object.values(State.seedWorldbook).reduce((a, x) => a + Object.keys(x).length, 0);
@@ -1615,6 +1659,7 @@
     }
 
     function setSeedGlossary(list, source) {
+        if (runningBlock('换术语表')) return;
         State.seedGlossary = C.normalizeGlossary(list);
         log(`${source}：术语 ${State.seedGlossary.length} 条`);
         toast(`术语表 ${State.seedGlossary.length} 条`, 'success');
@@ -3202,7 +3247,7 @@
                 }
                 mapUi.scan.done++;
                 renderScanState();
-                if (mapUi.scan.done % 5 === 0 || single !== null) renderMap();
+                if (mapUi.scan.done % 5 === 0 || single !== null) renderMapSoft();
             },
             () => ctl.signal.aborted,
         );
@@ -3215,7 +3260,7 @@
         }
         const added = addNamesFromScan();
         renderScanState();
-        renderMap();
+        renderMapSoft();
         const foreign = notChineseLayers().length;
         toast(`${added ? `人物名单加了 ${added} 个人。` : ''}${foreign ? `有 ${foreign} 层总结没翻成中文，可以点「重扫没翻成中文的层」。` : ''}扫描完成 ${sc.done - sc.failed} 层${sc.failed ? `，失败 ${sc.failed} 层（日志里有原因）` : ''}${sc.tokens ? `，用了约 ${fmtNum(sc.tokens)} token` : ''}`, sc.failed ? 'warning' : 'success');
     }
@@ -3499,6 +3544,7 @@
     function applyToxicToRules() {
         const t = (State.settings.mapToxic || '').trim();
         if (!t) return toast('先填雷点清单', 'warning');
+        if (runningBlock('改规则')) return;
         const cur = State.settings.divergenceRules || '';
         const add = t.split('\n').filter((line) => line.trim() && !cur.includes(line.trim()));
         if (!add.length) return toast('雷点都已经在改写规则里了', 'info');
@@ -3645,7 +3691,7 @@
         on('nim-map-suggest', 'click', suggestPoints);
         on('nim-map-overall', 'click', () => overallPlan(false));
         // 意见框在地图里，地图重画时靠 mapUi 里存的草稿填回去
-        document.addEventListener('input', (ev) => {
+        $('nim-modal').addEventListener('input', (ev) => {
             const t = ev.target;
             if (!t) return;
             if (t.id === 'nim-map-overall-fb') mapUi.overallFb = t.value;
@@ -4189,7 +4235,7 @@
                           .slice(0, 3000)
                           .map((c) => `<button class="nim-toc" data-toc-layer="${c.layer}" data-toc="${esc(c.title)}"><span class="nim-toc-title">${esc(c.title)}</span><span class="nim-muted">第 ${c.layer + 1} 层</span></button>`)
                           .join('')
-                    : '<div class="nim-empty">没有识别出章节标题，可以在设置「分层与清洗」里改章节标题规则</div>');
+                    : `<div class="nim-empty">${q && toc.length ? '没有标题里带这个词的章节' : '没有识别出章节标题，可以在设置「分层与清洗」里改章节标题规则'}</div>`);
             return;
         }
         // 功能和设置
@@ -4448,6 +4494,7 @@
 
     function switchTab(name) {
         State.tab = name;
+        if (!$('nim-modal')) return; // 窗口关了：记下要去哪页，下次打开就在那页
         $('nim-modal').classList.toggle('on-map', name === 'map');
         if (name === 'map') renderMapFooter();
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
@@ -4738,6 +4785,84 @@
         return b ? b.checked : false;
     }
 
+    // --------- 重画时不打断正在做的事（手机上处理中会不停重画）---------
+
+    /** 焦点在这块里的输入框上（手机键盘开着） */
+    function typingIn(box) {
+        const a = document.activeElement;
+        if (!box || !a || a === box || !box.contains(a)) return false;
+        if (a.tagName === 'TEXTAREA' || a.tagName === 'SELECT') return true;
+        return a.tagName === 'INPUT' && !/^(checkbox|radio|button|submit|file|range)$/.test(a.type);
+    }
+
+    /** 正在这块里打字就先不重画（重画会换掉输入框：键盘收起、没保存的字丢掉），等焦点离开再补画。返回 true 表示这次跳过 */
+    function deferWhileTyping(box, redraw) {
+        if (!typingIn(box)) return false;
+        if (!box._nimDefer) {
+            box._nimDefer = true;
+            box.addEventListener('focusout', () =>
+                // 等一会儿：点按钮时焦点先离开、点击后到，马上重画会把正要点的按钮换掉
+                setTimeout(() => {
+                    if (!box._nimStale || !box.isConnected || typingIn(box)) return;
+                    box._nimStale = false;
+                    box._nimRedraw();
+                }, 350),
+            );
+        }
+        box._nimStale = true;
+        box._nimRedraw = redraw;
+        return true;
+    }
+
+    const resultIds = new WeakMap();
+    let resultSeq = 0;
+    /** 这层结果换没换过：换过就不把没保存的输入放回去，免得旧字盖在新结果上 */
+    function resultToken(r) {
+        if (!r) return '';
+        if (!resultIds.has(r)) resultIds.set(r, ++resultSeq);
+        return `${resultIds.get(r)}:${r.status}:${(r.undo || []).length}:${(r.finalParas || []).length}`;
+    }
+
+    function foldKey(d) {
+        if (d.id) return '#' + d.id;
+        const s = d.querySelector(':scope > summary');
+        return ((s && s.textContent) || '').replace(/[（(：:0-9].*$/s, '').trim();
+    }
+
+    /** 重画前记下：哪些折叠开着、滚到哪、哪些输入框改了还没保存 */
+    function snapshotUi(el, token) {
+        const snap = { token, folds: new Map(), scroll: [], fields: [] };
+        for (const d of el.querySelectorAll('details')) {
+            const k = foldKey(d);
+            if (k && !snap.folds.has(k)) snap.folds.set(k, d.open);
+        }
+        for (const p of el.querySelectorAll('[id]')) if (p.scrollTop) snap.scroll.push([p.id, p.scrollTop]);
+        for (let p = el; p && p.id !== 'nim-modal'; p = p.parentElement) if (p.scrollTop) snap.scroll.push([p, p.scrollTop]);
+        for (const f of el.querySelectorAll('textarea[id], input[id]')) {
+            if (f.type === 'checkbox') {
+                if (f.checked !== f.defaultChecked) snap.fields.push([f.id, 'checked', f.checked]);
+            } else if (f.value !== f.defaultValue) snap.fields.push([f.id, 'value', f.value]);
+        }
+        return snap;
+    }
+
+    function restoreUi(el, snap, token) {
+        if (!snap) return;
+        for (const d of el.querySelectorAll('details')) {
+            const k = foldKey(d);
+            if (k && snap.folds.has(k)) d.open = snap.folds.get(k);
+        }
+        if (snap.token === token)
+            for (const [id, prop, v] of snap.fields) {
+                const f = $(id);
+                if (f && el.contains(f)) f[prop] = v;
+            }
+        for (const [t, top] of snap.scroll) {
+            const p = typeof t === 'string' ? $(t) : t;
+            if (p && p.isConnected) p.scrollTop = top;
+        }
+    }
+
     function renderDetail() {
         const el = $('nim-detail');
         const e = State.engine;
@@ -4745,10 +4870,17 @@
         const i = State.selected;
         if (!e || i === null || i === undefined || !e.layers[i]) {
             el.innerHTML = '<div class="nim-empty">选一层查看结果</div>';
+            delete el.dataset.view;
             return;
         }
         const r = e.results[i];
         const reviewing = e.reviewing === i;
+        // 同一层重画：正在打字就等会儿再画；要画也把折叠、滚动位置、没保存的输入留住
+        const view = `${i}:${reviewing ? 'review' : ''}`;
+        const sameView = el.dataset.view === view;
+        if (sameView && deferWhileTyping(el, renderDetail)) return;
+        const keep = sameView ? snapshotUi(el, resultToken(r)) : null;
+        el.dataset.view = view;
         const hasLater = e.results.slice(i + 1).some((x) => x);
         let body = '';
         if (r && r.status === 'done' && r.skipped) {
@@ -4809,6 +4941,7 @@
                </div>`
             : '';
         el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><div class="nim-row" style="justify-content:flex-end">${r && r.undo && r.undo.length ? `<button id="nim-undo-layer" class="nim-btn sm" title="退回到「${esc(r.undo[0].label || '')}」之前的样子，还能再退 ${r.undo.length - 1} 步">撤销上一次${esc(r.undo[0].label ? `「${r.undo[0].label}」` : '修改')}</button>` : ''}${r && (r.status === 'done' || r.status === 'failed') ? '<button id="nim-reroll" class="nim-btn sm" title="同样的提示词再要一次，后面的层保留">只重 roll 这层</button>' : ''}<button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div></div>${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}${reviewHtml}${body}`;
+        restoreUi(el, keep, resultToken(r));
         bindHlNav();
         const noteEl = $('nim-layer-note');
         const saveNote = () => {
@@ -5927,8 +6060,19 @@
         if (badge) badge.hidden = !(e && e.reviewing !== null);
     }
 
+    /** 处理、扫描过程中顺带刷新剧情地图：正在地图里打字就等焦点离开再画 */
+    function renderMapSoft() {
+        const box = $('nim-map');
+        if (!box) return renderMap();
+        if (deferWhileTyping(box, renderMapSoft)) return;
+        const keep = snapshotUi(box, '');
+        renderMap();
+        restoreUi(box, keep, '');
+    }
+
     function renderAll() {
-        if (State.tab === 'map') renderMap();
+        if (!$('nim-modal')) return; // 窗口关了，后台还在跑
+        if (State.tab === 'map') renderMapSoft();
         renderInfo();
         renderProgress();
         renderLayers();
@@ -6811,6 +6955,7 @@ button.nim-step:hover{background:var(--surface2);}
         on('nim-preset-libdel', 'click', deletePresetFromLibrary);
         on('nim-gloss-clear', 'click', () => setSeedGlossary([], '已清除初始术语表'));
         on('nim-clear-wb', 'click', () => {
+            if (runningBlock('清除初始世界书')) return;
             State.seedWorldbook = null;
             if (State.engine) State.engine = rebuildEngineKeepResults();
             saveProgress();
@@ -6997,6 +7142,9 @@ button.nim-step:hover{background:var(--surface2);}
                 log(`已恢复上次的任务：${State.fileName}`);
             }
         }
+        // 上次停在等审阅的层：直接选中它，不用自己去列表里找
+        if (State.engine && State.engine.reviewing !== null && (State.selected === null || State.selected === undefined)) State.selected = State.engine.reviewing;
+        fillMapFields(); // 设置页里的「剧情地图」卡片也要填上，不然没去过地图页就是空的
         renderExport();
         renderAll();
     }

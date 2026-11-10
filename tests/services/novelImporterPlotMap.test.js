@@ -168,6 +168,15 @@ describe('剧情地图：改写安排进引擎', () => {
         expect(engine.renderFloors().map((f) => f.layer)).toEqual([0, 2]);
     });
 
+    it('跳过的层不出空的剧情条目，也不进角色卡简介的摘要', async () => {
+        const { engine } = makeEngine((layer) => reply({ summary: `摘要${layer + 1}` }), { 1: { skip: true } });
+        await engine.run();
+        const entries = Object.values(engine.exportWorldbook().entries).filter((e) => /^剧情/.test(e.comment || ''));
+        expect(entries.length).toBe(2);
+        expect(entries.every((e) => e.content.trim())).toBe(true);
+        expect(engine.buildCardInfoRequest().prompt).not.toContain('第2层');
+    });
+
     it('H3：审阅设成剧情改写时，有改写安排的层停下来', async () => {
         const { engine } = makeEngine(() => reply({ rewritten: 'z', judge: { 触发: true, 规则: '用户指令' } }), { 0: { instruction: '改' } }, { reviewMode: 'divergence' });
         await engine.run();
