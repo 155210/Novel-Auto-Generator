@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.5.86';
+    const VERSION = '1.5.87';
 
     // ============================================
     // 默认配置
@@ -3635,6 +3635,8 @@ ${blocks}`;
                 if (e.message !== 'ABORTED') emit('error', { error: String(e.message || e) });
             } finally {
                 E.running = false;
+                // 点了停止，写到一半的那层还标着「处理中」：改回未开始（和重新打开后看到的一样），不然列表里一直转圈
+                E.results = E.results.map((r) => (r && r.status === 'running' ? null : r));
                 emit('run-end', { done: E.results.filter((r) => r && r.status === 'done').length, total: E.layers.length });
             }
         }
@@ -4407,8 +4409,9 @@ ${blocks}`;
         function exportWorldbook() {
             const st = finalState();
             const target = aliasTargetOf(settings);
+            // 没有摘要的层（剧情地图里标了跳过的层、AI 没写摘要的层）不出剧情条目，免得世界书里多出内容是空的条目
             const plot = settings.plotSummaryEntries
-                ? st.summaries.map((s) => ({
+                ? st.summaries.filter((s) => String(s.summary || '').trim()).map((s) => ({
                       title: `第${s.layer + 1}层 ${s.title}`,
                       keys: [s.title],
                       content: s.summary,
@@ -4461,7 +4464,7 @@ ${blocks}`;
             const st = finalState();
             const target = aliasTargetOf(settings);
             const conv = (x) => applyAliases(x, textAliases(st), target, otherCharacterNames(st, textAliases(st)));
-            const sums = st.summaries.map((x) => `- 第${x.layer + 1}层 ${conv(x.title)}：${conv(x.summary)}`).join('\n');
+            const sums = st.summaries.filter((x) => String(x.summary || '').trim()).map((x) => `- 第${x.layer + 1}层 ${conv(x.title)}：${conv(x.summary)}`).join('\n');
             const heroines = listHeroines().map(conv).join('、') || '（无）';
             const prompt = `你是资料整理助手。下面是一部小说已导入部分的分层摘要，主角在聊天里叫「${target}」。任务是给这部小说写角色卡信息，不是续写小说：不要接着故事往下写，不要写正文、对话。
 
