@@ -479,13 +479,61 @@
         ],
     };
 
+    /** 不常用的设置：收在每组最下面，只列名字，要用再点开 */
+    const ADV_KEYS = new Set(
+        `chapterRegex adRemovePrevLine repeatParaLimit repeatParaMinChars keepSeparatorLines cleanKeep
+         glossaryMax bodyTitleFormat bodyBlankLines
+         maxPatchChars outputFormat jsonReminder extraRules prevTailChars carryTags recapLayers
+         aliasBlacklist aliasReplaceBy aliasAmbiguous customTags floorTagsBefore floorTags
+         worldbookContextChars wbUpdateMode floorSummaryTemplate plotPosition plotDepth plotOrder plotAutoIncrement
+         tableMessageTemplate tableRoles.singleRow tableRoles.appendOnly tableRoles.eventTable tableRoles.summaryTable tablePrompt tableContextRows tableContextAll
+         extraBody apiTimeout retries layerDelayMin layerDelayMax`.split(/\s+/),
+    );
+    /** 选项少的下拉框做成一排按钮，一眼看到有哪几种 */
+    const SEG_LABELS = {
+        reviewMode: { off: '不停', divergence: '只在改写时', every: '每层都停' },
+        feedbackEditMode: { smart: '只改那几段', full: '整层重做' },
+        titleMode: { ai: 'AI 起标题', original: '用原文标题' },
+        chapterUnit: { auto: '跟原文', 章: '第X章', 话: '第X话' },
+        importHighlight: { off: '不标', mark: '黄色底', color: '橙色字' },
+    };
+    const shortLabel = (t) => String(t || '').split(/[（(，,：:]/)[0].trim();
+
+    /** 一组设置：常用的直接排开，不常用的收起来 */
+    function fieldsHtml(k) {
+        const common = FIELDS[k].filter((x) => !ADV_KEYS.has(x.key));
+        const adv = FIELDS[k].filter((x) => ADV_KEYS.has(x.key));
+        const one = (x) => fieldHtml(x) + (x.key === 'expansionMax' ? '<div class="nim-calc" data-calc="expand"></div>' : '');
+        return (
+            `<div class="nim-grid">${common.map(one).join('')}</div>` +
+            (adv.length ? `<details class="nim-adv"><summary><span><b>不常用的 ${adv.length} 项</b><span class="nim-adv-names">${esc(adv.map((x) => shortLabel(x.label)).join('、'))}</span></span><span class="nim-chev"></span></summary><div class="nim-grid">${adv.map(one).join('')}</div></details>` : '')
+        );
+    }
+
+    function syncSegs() {
+        document.querySelectorAll('#nim-modal [data-seg-for]').forEach((box) => {
+            const sel = $(box.dataset.segFor);
+            if (!sel) return;
+            box.querySelectorAll('button').forEach((b) => {
+                const on = b.dataset.v === sel.value;
+                b.classList.toggle('on', on);
+                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+            });
+            const exp = box.parentElement.querySelector('.nim-seg-exp');
+            const opt = sel.options[sel.selectedIndex];
+            const on = box.querySelector('button.on');
+            // 按钮上的字已经说清楚了就不再重复一遍
+            if (exp) exp.textContent = opt && (!on || opt.textContent.trim() !== on.textContent.trim()) ? opt.textContent : '';
+        });
+    }
+
     function fieldHtml(f) {
         const id = `nim-f-${f.key.replace(/\./g, '-')}`;
         if (f.type === 'check') {
             const hint = f.hint ? `<span class="nim-hint">${esc(f.hint)}</span>` : '';
             return `<label class="nim-check"><input type="checkbox" id="${id}" data-key="${f.key}" data-type="check"><span class="nim-switch"></span><span>${esc(f.label)}${hint}</span></label>`;
         }
-        const hint = f.hint ? ` <span class="nim-hint">· ${esc(f.hint)}</span>` : '';
+        const hint = f.hint ? ` <span class="nim-hint">${esc(f.hint)}</span>` : '';
         let input;
         const wide = f.type === 'textarea' || f.type === 'lines' || f.type === 'json';
         if (wide) {
@@ -498,6 +546,9 @@
         }
         const reset = f.reset ? ` <button type="button" class="nim-btn ghost sm" data-reset="${f.key}">恢复默认</button>` : '';
         const btn = f.button ? ` <button type="button" class="nim-btn ghost sm" id="${f.button.id}">${esc(f.button.label)}</button>` : '';
+        const seg = f.type === 'select' && SEG_LABELS[f.key];
+        if (seg)
+            return `<div class="nim-field wide nim-field-seg"><label>${esc(f.label)}${hint}</label><div class="nim-segc" data-seg-for="${id}" role="group" aria-label="${esc(f.label)}">${Object.keys(seg).map((v) => `<button type="button" data-v="${esc(v)}">${esc(seg[v])}</button>`).join('')}</div><div class="nim-hint nim-seg-exp"></div><div class="nim-seg-src">${input}</div></div>`;
         return `<div class="nim-field${wide || f.wide ? ' wide' : ''}"><label for="${id}">${esc(f.label)}${hint}${reset}${btn}</label>${input}</div>`;
     }
 
@@ -510,6 +561,7 @@
             else if (t === 'json') el.value = JSON.stringify(v ?? null, null, 2);
             else el.value = v ?? '';
         });
+        syncSegs();
     }
 
     function collectFields() {
@@ -1133,6 +1185,7 @@
             State.importing = false;
             btn.disabled = false;
             btn.textContent = '一键导入酒馆';
+            renderExportSum();
             setStatus('');
         }
     }
@@ -2801,16 +2854,25 @@
         const box = $('nim-map');
         if (!box) return;
         const e = mapEngine();
+        const strip = $('nim-map-strip');
         if (!e) {
-            box.innerHTML = '<div class="nim-empty">先在「小说」页选一本小说，分好层以后这里会显示全书的剧情地图。</div>';
+            if (strip) strip.innerHTML = '';
+            box.innerHTML = '<div class="nim-empty">先在「总览」页选一本小说，分好层以后这里会显示全书的剧情地图。</div>';
             return;
         }
+        if (strip) strip.innerHTML = stripHtml(e, State.plan);
         const stats = mapStats();
         const plan = State.plan;
         const conflicts = PM.conflictHints(stats.rows, ledgerFacts(), mapNames());
         const n = e.layers.length;
         const vols = Math.ceil(n / plan.volumeSize);
         const scanned = e.layers.filter((l) => PM.layerPlan(plan, l.index).scan).length;
+        // 还没扫过：把「预扫描」那张卡片摊开；扫过了就收着，把地方让给地图
+        const tools = $('nim-sec-map-tools');
+        if (tools && !tools.dataset.init) {
+            tools.dataset.init = '1';
+            tools.open = scanned === 0;
+        }
         const planned = Object.keys(plan.layers).filter((k) => {
             const lp = PM.layerPlan(plan, k);
             return PM.hasRewritePlan(lp) || lp.resume || lp.skip;
@@ -2907,6 +2969,23 @@
             <select id="nim-map-char" class="nim-input nim-map-char"><option value="">所有人物</option>${names.map((x) => `<option ${mapUi.char === x.name ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></div>
           ${body || '<div class="nim-empty">这个筛选下没有层</div>'}`;
         renderMapStatsBox();
+    }
+
+    /** 全书一眼看完：一层一格，颜色是状态，点一格跳到那层 */
+    function stripHtml(e, plan) {
+        const n = e.layers.length;
+        const results = (State.engine && State.engine.results) || [];
+        const count = { plan: 0, tox: 0, done: 0, todo: 0 };
+        let cells = '';
+        for (let i = 0; i < n; i++) {
+            const lp = PM.layerPlan(plan, i);
+            const r = results[i];
+            const k = PM.hasRewritePlan(lp) || lp.resume || lp.skip ? 'plan' : lp.scan && lp.scan.toxic && lp.scan.toxic.length ? 'tox' : r && r.status === 'done' ? 'done' : 'todo';
+            count[k]++;
+            cells += `<button class="nim-cell ${k}${mapUi.openLayer === i ? ' cur' : ''}" data-map-cell="${i}" title="第 ${i + 1} 层" aria-label="第 ${i + 1} 层"></button>`;
+        }
+        const lg = (k, t) => `<span class="nim-strip-lg"><i class="nim-cell ${k}"></i>${t} ${count[k]}</span>`;
+        return `<div class="nim-strip-box"><div class="nim-strip-head"><b>全书一眼看完</b><span class="nim-muted">一格一层，点一格跳过去</span></div><div class="nim-strip${n > 400 ? ' dense' : ''}">${cells}</div><div class="nim-strip-legend">${lg('done', '已处理')}${lg('todo', '没处理')}${lg('tox', '雷点')}${lg('plan', '有安排')}</div></div>`;
     }
 
     function layerDetailHtml(i, row, lp, conflicts) {
@@ -3329,7 +3408,7 @@
         const scanned = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scan).length : 0;
         const failedN = n ? e.layers.filter((l) => PM.layerPlan(State.plan, l.index).scanError).length : 0;
         const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'overall' ? 'AI 正在通读全书出整体方案…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
-        t.textContent = busy && !sc ? busy : sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? ` · 失败 ${sc.failed}` : ''}` : n ? `已扫描 ${scanned} / ${n} 层` : '先在「小说」页选一本小说';
+        t.textContent = busy && !sc ? busy : sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? ` · 失败 ${sc.failed}` : ''}` : n ? `已扫描 ${scanned} / ${n} 层` : '先在「总览」页选一本小说';
         $('nim-foot-mapbar').style.width = `${sc ? Math.round((sc.done / Math.max(1, sc.total)) * 100) : n ? Math.round((scanned / n) * 100) : 0}%`;
         $('nim-foot-scan').hidden = !!sc || !!mapUi.busy;
         $('nim-foot-scan').disabled = !n || (scanned === n && !failedN);
@@ -3559,6 +3638,8 @@
     function bindMap() {
         const panel = document.querySelector('#nim-modal [data-panel="map"]');
         panel.addEventListener('click', (ev) => {
+            const cell = ev.target.closest('[data-map-cell]');
+            if (cell) return revealMapLayer(Number(cell.dataset.mapCell));
             const vol = ev.target.closest('[data-map-vol]');
             if (vol) {
                 const v = Number(vol.dataset.mapVol);
@@ -3771,18 +3852,11 @@
         const s = (key, label, type = 'text', hint = '', extra = '') =>
             `<div class="nim-field"><label>${label}</label>${type === 'textarea' ? `<textarea class="nim-input nim-textarea" rows="3" data-map-set="${key}" ${extra}></textarea>` : `<input class="nim-input" type="${type}" data-map-set="${key}" ${extra}>`}${hint ? `<div class="nim-hint">${hint}</div>` : ''}</div>`;
         return `
-      ${card(
-          'map-stats',
-          '人物和关键词（免费统计）',
-          '不花 token：出场热力图、关键词雷达、人名共现、新角色、节奏、章节长度',
-          `<div class="nim-field"><label>人物名单（每行一个人，同一人的叫法用 / 隔开）</label><textarea id="nim-map-names" class="nim-input nim-textarea" rows="4" placeholder="裘月寒 / 月寒 / 裘仙子&#10;路长远"></textarea></div>
-           <div class="nim-row"><button id="nim-map-guess" class="nim-btn sm">从原文和世界书猜人名</button><button id="nim-map-fromscan" class="nim-btn sm">从扫描结果加人物</button></div>
-           <div class="nim-field"><label>关键词雷达（顿号或换行隔开，命中多的层标红）</label><textarea id="nim-map-keywords" class="nim-input nim-textarea" rows="2"></textarea></div>
-           <div class="nim-field"><label>每卷几层</label><input id="nim-map-volsize" class="nim-input" type="number" min="2"></div>
-           <div id="nim-map-stats"></div>`,
-      )}
-      <div class="nim-card static nim-map-tools"><div class="nim-card-body">
-           <div class="nim-tools-head"><div><div class="nim-card-title">预扫描与 AI</div><div class="nim-card-desc">便宜模型逐层出剧情、人物、关系、雷点；AI 提议改写点</div></div><button class="nim-btn ghost sm" data-goto="nim-sec-mapcfg">模型和雷点设置</button></div>
+      <div id="nim-map-strip"></div>
+      <details class="nim-card nim-map-tools" id="nim-sec-map-tools">
+          <summary><div class="nim-card-head"><div class="nim-card-title">预扫描与 AI 提议</div><div class="nim-card-desc">逐层扫出剧情、人物、雷点；让 AI 提议改写点、出整体方案</div></div><span class="nim-chev"></span></summary>
+          <div class="nim-card-body">
+           <div class="nim-row" style="margin-top:0"><button class="nim-btn ghost sm" data-goto="nim-sec-mapcfg">模型和雷点设置</button></div>
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
            <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过或失败的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
            <div class="nim-row" hidden><button id="nim-map-rescan-ja" class="nim-btn sm"></button></div>
@@ -3798,7 +3872,17 @@
              <textarea id="nim-map-overall-req" class="nim-input nim-textarea" rows="3" placeholder="比如：去掉奴隶设定，地牢里的女孩都是自愿跟随的伙伴，契约改成雇佣关系，可以随时解约"></textarea>
              <div class="nim-row"><button id="nim-map-overall" class="nim-btn">AI 通读全书出整体方案</button></div></div>
            <div class="nim-row nim-row-quiet"><button id="nim-map-rescan" class="nim-btn ghost sm">全部重扫</button><button id="nim-map-export" class="nim-btn ghost sm">导出规划</button><label class="nim-btn ghost sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>
-      </div></div>
+      </div></details>
+      ${card(
+          'map-stats',
+          '人物和关键词（免费统计）',
+          '不花 token：出场热力图、关键词雷达、人名共现、新角色、节奏、章节长度',
+          `<div class="nim-field"><label>人物名单（每行一个人，同一人的叫法用 / 隔开）</label><textarea id="nim-map-names" class="nim-input nim-textarea" rows="4" placeholder="裘月寒 / 月寒 / 裘仙子&#10;路长远"></textarea></div>
+           <div class="nim-row"><button id="nim-map-guess" class="nim-btn sm">从原文和世界书猜人名</button><button id="nim-map-fromscan" class="nim-btn sm">从扫描结果加人物</button></div>
+           <div class="nim-field"><label>关键词雷达（顿号或换行隔开，命中多的层标红）</label><textarea id="nim-map-keywords" class="nim-input nim-textarea" rows="2"></textarea></div>
+           <div class="nim-field"><label>每卷几层</label><input id="nim-map-volsize" class="nim-input" type="number" min="2"></div>
+           <div id="nim-map-stats"></div>`,
+      )}
       <div id="nim-map" class="nim-map"></div>`;
     }
 
@@ -4007,7 +4091,7 @@
     // ---- 全书搜索：原文 / 目录 / 功能和设置 ----
 
     const findUi = { mode: 'text', q: '', hits: null, ohits: null, index: null };
-    const TAB_NAMES = { file: '小说', map: '剧情地图', settings: '设置', run: '处理', export: '导入酒馆' };
+    const TAB_NAMES = { file: '总览', map: '剧情地图', settings: '设置', run: '处理', export: '导入酒馆' };
 
     /** 处理完的层的改后正文，按 searchLayers 要的样子排好 */
     function outputLayers(e) {
@@ -4080,6 +4164,8 @@
         const cards = [...panel.querySelectorAll('.nim-set-list > details.nim-card')];
         if (opened && opened.open) cards.forEach((d) => d !== opened && d.open && (d.open = false));
         const sub = cards.some((d) => d.open);
+        const cur = cards.find((d) => d.open);
+        if ($('nim-head-title') && State.tab === 'settings') $('nim-head-title').textContent = cur ? cur.querySelector('.nim-card-title').textContent : '设置';
         if (sub !== panel.classList.contains('sub')) {
             panel.classList.toggle('sub', sub);
             const body = document.querySelector('#nim-modal .nim-body');
@@ -4087,34 +4173,161 @@
         }
     }
 
+    const setSearch = { moved: [] };
+
+    /** 搜索时借出去的设置项放回原来的位置 */
+    function restoreSetSearch() {
+        for (const m of setSearch.moved.reverse()) if (m.mark.parentNode) m.mark.replaceWith(m.el);
+        setSearch.moved = [];
+    }
+
+    /** 搜设置：搜到的设置项本身搬到结果里，直接改，不用点进去 */
     function renderSetSearch() {
         const panel = document.querySelector('#nim-modal [data-panel="settings"]');
-        const q = $('nim-set-q').value.trim().toLowerCase();
         const box = $('nim-set-results');
+        if (!panel || !box) return;
+        const q = $('nim-set-q').value.trim().toLowerCase();
+        restoreSetSearch();
         panel.classList.toggle('searching', !!q);
         box.hidden = !q;
+        box.innerHTML = '';
         if (!q) return;
+        const clean = (t) => String(t || '').replace(/\s+/g, ' ').trim();
         findUi.index = buildFeatureIndex();
+        const fields = [...panel.querySelectorAll('.nim-set-list .nim-field, .nim-set-list .nim-check')].filter((el) => {
+            if (el.parentElement.closest('.nim-field, .nim-check')) return false;
+            if (!el.querySelector('[data-key], [data-map-set]')) return false;
+            const card = el.closest('details.nim-card');
+            const where = card ? clean(card.querySelector('.nim-card-title').textContent) : '';
+            return (clean(el.textContent) + ' ' + where).toLowerCase().includes(q);
+        });
+        // 名字里就有这个词的排前面，其次是常用的
+        const rank = (el) => {
+            const lb = el.querySelector(':scope>label') || el;
+            const name = clean(lb.firstChild && lb.firstChild.nodeType === 3 ? lb.firstChild.textContent : lb.textContent.slice(0, 30)).toLowerCase();
+            const nm = el.matches('.nim-check') ? clean(el.textContent).toLowerCase().slice(0, 30) : name;
+            return (nm.includes(q) ? 0 : 2) + (el.closest('.nim-adv') ? 1 : 0);
+        };
+        fields.sort((x, y) => rank(x) - rank(y));
+        const sum = document.createElement('div');
+        sum.className = 'nim-find-sum';
+        sum.textContent = fields.length ? `找到 ${fields.length} 项设置，直接在这里改，不用点进去。` : '没有叫这个的设置。换个说法试试，比如「模型」「广告」「标题」「表格」。';
+        box.appendChild(sum);
+        for (const el of fields.slice(0, 40)) {
+            const card = el.closest('details.nim-card');
+            const wrap = document.createElement('section');
+            wrap.className = 'nim-sr';
+            const where = document.createElement('div');
+            where.className = 'nim-sr-where';
+            where.textContent = [card ? clean(card.querySelector('.nim-card-title').textContent) : '', el.closest('.nim-adv') ? '不常用' : ''].filter(Boolean).join(' · ');
+            const mark = document.createComment('nim-sr');
+            el.before(mark);
+            wrap.append(where, el);
+            box.appendChild(wrap);
+            setSearch.moved.push({ el, mark });
+        }
+        // 不是设置项的入口（按钮、别的页的功能）：列在下面，点了带过去
         const seen = new Set();
-        const list = findUi.index.filter((it) => {
-            if (!it.el || !(it.text.toLowerCase().includes(q) || it.desc.toLowerCase().includes(q) || it.where.toLowerCase().includes(q))) return false;
+        const others = findUi.index.filter((it) => {
+            if (it.kind === 'field' && it.tab === 'settings') return false;
+            if (!(it.text.toLowerCase().includes(q) || it.desc.toLowerCase().includes(q))) return false;
             const k = it.text + '|' + it.where;
             if (seen.has(k)) return false;
             seen.add(k);
             return true;
         });
-        // 设置页的排前面
-        list.sort((a, b) => (a.tab === 'settings' ? 0 : 1) - (b.tab === 'settings' ? 0 : 1));
-        box.innerHTML = list.length
-            ? list
-                  .slice(0, 60)
-                  .map((it) => `<button class="nim-hit" data-feat="${findUi.index.indexOf(it)}"><div class="nim-hit-where"><b>${esc(it.text)}</b></div><div class="nim-hit-text nim-muted">${esc(it.where)}${it.desc ? ` · ${esc(it.desc)}` : ''}</div></button>`)
-                  .join('')
-            : '<div class="nim-empty">没有找到。换个说法试试，比如「模型」「广告」「标题」「表格」。</div>';
+        if (others.length) {
+            const sec = document.createElement('div');
+            sec.className = 'nim-sr-others';
+            sec.innerHTML =
+                '<div class="nim-set-gtitle">不是设置，但可能是你要找的</div><div class="nim-sr-list">' +
+                others
+                    .slice(0, 20)
+                    .map((it) => `<button class="nim-hit nim-sr-go" data-feat="${findUi.index.indexOf(it)}"><span class="nim-sr-go-main"><b>${esc(it.text)}</b><span class="nim-muted">${esc(it.where)}</span></span><span class="nim-sr-go-act">带我去</span></button>`)
+                    .join('') +
+                '</div>';
+            box.appendChild(sec);
+        }
+    }
+
+    /** 设置首页：每组后面写着现在的值，改过几项也标出来 */
+    function renderSetHub() {
+        const s = State.settings;
+        if (!s || !$('nim-modal')) return;
+        const d = defaultSettings();
+        const lines = (v) => (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim()).filter(Boolean).length;
+        const optText = (group, key) => {
+            const f = FIELDS[group].find((x) => x.key === key);
+            const seg = SEG_LABELS[key];
+            const v = getPath(s, key);
+            if (seg && seg[v]) return seg[v];
+            const o = f && f.options && f.options.find((x) => String(x[0]) === String(v));
+            return o ? shortLabel(o[1]) : '';
+        };
+        const lo = Number(s.expansionRatio) || 0;
+        const hi = Number(s.expansionMax) || 0;
+        const expand = !lo && !hi ? '扩写不限' : !hi ? `扩写至少 ${lo}%` : `扩写 ${lo}–${hi}%`;
+        const cats = (s.worldbookCategories || []).filter((c) => c && c.enabled !== false).length;
+        const tpl = State.tableTemplate;
+        const presetOn = ((s.preset && s.preset.entries) || []).filter((x) => x && x.enabled !== false).length;
+        const sums = {
+            api: s.apiEndpoint && s.apiModel ? `${s.apiModel} · 温度 ${s.temperature}` : '还没填接口地址和模型',
+            preset: presetOn ? `${(s.preset && s.preset.name) || '插件默认'} · ${presetOn} 条开着` : '',
+            rewrite: `${expand} · ${s.divergenceEnabled ? `改写规则 ${lines(s.divergenceRules)} 条` : '剧情改写没开'} · 审阅：${optText('rewrite', 'reviewMode')}`,
+            alias: `主角${s.protagonistName ? `「${s.protagonistName}」` : '让 AI 认'}换成${s.aliasMode === 'custom' ? `「${s.aliasTarget || ''}」` : s.aliasMode === 'persona' ? '当前用户名' : ' {{user}}'} · 标签 ${s.titleTag || '无'} / ${s.bodyTag || '无'}`,
+            translate: `${s.translateMode === 'off' ? '不翻译' : s.translateMode === 'on' ? '总是翻译' : s.translateMode === 'full' ? '整层输出' : '外文自动翻译'} · 「${s.titleFormat || ''}」 · ${s.imageMode === 'off' ? '不带插图' : '带插图'}`,
+            wb: s.worldbookEnabled ? `提取 ${cats} 类${s.plotSummaryEntries ? ' · 摘要做成剧情条目' : ''}${s.floorSummaryEnabled ? ' · 每层楼里也写摘要' : ''}` : '没开，不提取世界书',
+            stwb: s.stWorldEnabled ? '开着：酒馆里开着的世界书会当作写作要求' : '没开',
+            table: s.tablesEnabled ? `${tpl ? `${tpl.tables.length} 张表` : '还没导入模板'} · ${(s.tableRoles && s.tableRoles.summaryThreshold) || 0} 条事件做一次大总结` : '没开，不填表格',
+            file: `每层 ${s.layerChars} 字 · 广告规则 ${lines(s.adPatterns)} 条 · 水印规则 ${lines(s.inlineAdPatterns)} 条`,
+            mapcfg: `同时扫 ${s.mapConcurrency || 3} 层 · 雷点清单 ${lines(s.mapToxic) || '跟改写规则'}${lines(s.mapToxic) ? ' 条' : ''}`,
+        };
+        for (const [id, text] of Object.entries(sums)) {
+            const el = document.querySelector(`#nim-modal [data-sum="${id}"]`);
+            if (el && text) el.textContent = text;
+        }
+        const groups = { rewrite: ['rewrite'], alias: ['alias'], translate: ['translate'], wb: ['worldbook'], stwb: ['stwb'], table: ['table'], file: ['layer'] };
+        for (const [id, gs] of Object.entries(groups)) {
+            let n = 0;
+            for (const g of gs) for (const f of FIELDS[g]) if (JSON.stringify(getPath(s, f.key) ?? null) !== JSON.stringify(getPath(d, f.key) ?? null)) n++;
+            const el = document.querySelector(`#nim-modal [data-chg="${id}"]`);
+            if (el) {
+                el.hidden = !n;
+                el.textContent = `改过 ${n} 项`;
+            }
+        }
+        const calc = document.querySelector('#nim-modal [data-calc="expand"]');
+        if (calc) {
+            const L = Number(s.layerChars) || 0;
+            const a = Math.round((L * lo) / 100);
+            const b = Math.round((L * hi) / 100);
+            calc.textContent = !lo && !hi ? '现在不要求补字，也不限制补多少。' : `按现在每层 ${L} 字算，一层${!hi ? `至少补 ${a} 字，不设上限` : !lo ? `最多补 ${b} 字，不用补的层可以不补` : `大约补 ${a} 到 ${b} 字`}。`;
+        }
+    }
+
+    /** 右上角返回：在某一组里就回设置首页，在首页就回来的那一页 */
+    function settingsBack() {
+        const panel = document.querySelector('#nim-modal [data-panel="settings"]');
+        if ($('nim-set-q') && $('nim-set-q').value) {
+            $('nim-set-q').value = '';
+            return renderSetSearch();
+        }
+        const open = panel && panel.querySelector('.nim-set-list > details.nim-card[open]');
+        if (open) {
+            open.open = false;
+            return syncSettingsPage();
+        }
+        switchTab(State.prevTab && State.prevTab !== 'settings' ? State.prevTab : 'file');
     }
 
     function goToEl(el, tab) {
         $('nim-find').hidden = true;
+        if ($('nim-set-q') && $('nim-set-q').value) {
+            $('nim-set-q').value = '';
+            renderSetSearch();
+        }
+        // 设置项本身可能是藏起来的下拉框：滚到、闪的是它外面那一行
+        if (el.matches('[data-key], [data-map-set]')) el = el.closest('.nim-field, .nim-check') || el;
         switchTab(tab);
         let d = el.closest('details');
         while (d) {
@@ -4138,7 +4351,7 @@
         document.querySelectorAll('#nim-find [data-find-mode]').forEach((b) => b.classList.toggle('on', b.dataset.findMode === findUi.mode));
         $('nim-find-q').placeholder = findUi.mode === 'text' ? '搜原文：人名、台词、情节…（/正则/ 也行）' : findUi.mode === 'out' ? '搜改后正文，和原文对比：称呼、名字…' : findUi.mode === 'outline' ? '搜大纲：剧情、人物、雷点、改写指令…' : findUi.mode === 'toc' ? '筛选章节标题' : '找功能或设置，例如 雷点、模型、清洗';
         const e = State.engine;
-        const noBook = '<div class="nim-empty">先在「小说」页选一本小说</div>';
+        const noBook = '<div class="nim-empty">先在「总览」页选一本小说</div>';
         if (findUi.mode === 'text') {
             if (!e || !e.layers.length) return (box.innerHTML = noBook);
             if (!q) return (box.innerHTML = '<div class="nim-empty">输入关键词搜全书原文，点结果直接跳到那一处。<br>英文不分大小写；用 /.../ 包起来按正则搜。</div>');
@@ -4472,6 +4685,8 @@
     function setStatus(s) {
         const el = $('nim-status');
         if (el) el.textContent = s;
+        // 总览和导入酒馆页没有底部进度条，状态同时写到页面里
+        document.querySelectorAll('#nim-modal .nim-live').forEach((x) => (x.textContent = s));
     }
 
     let streamRaf = 0;
@@ -4493,9 +4708,23 @@
     }
 
     function switchTab(name) {
+        // 设置是从右上角进去的一页：记住从哪来，返回时回去
+        if (name === 'settings' && State.tab !== 'settings') State.prevTab = State.tab;
         State.tab = name;
         if (!$('nim-modal')) return; // 窗口关了：记下要去哪页，下次打开就在那页
+        if (name !== 'settings' && $('nim-set-q') && $('nim-set-q').value) {
+            $('nim-set-q').value = '';
+            renderSetSearch();
+        }
         $('nim-modal').classList.toggle('on-map', name === 'map');
+        $('nim-modal').classList.toggle('on-run', name === 'run');
+        $('nim-modal').classList.toggle('on-settings', name === 'settings');
+        if ($('nim-head-back')) $('nim-head-back').hidden = name !== 'settings';
+        if ($('nim-head-title')) $('nim-head-title').textContent = '小说导入改写';
+        if (name === 'settings') {
+            renderSetHub();
+            syncSettingsPage();
+        }
         if (name === 'map') renderMapFooter();
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
         document.querySelectorAll('#nim-modal .nim-panel').forEach((p) => p.classList.toggle('active', p.dataset.panel === name));
@@ -4522,6 +4751,7 @@
             listScroll.list = list ? list.scrollTop : 0;
         }
         if (box) box.classList.toggle('detail-open', !!on);
+        if ($('nim-modal')) $('nim-modal').classList.toggle('in-detail', !!on);
         if (body && on && narrow) body.scrollTop = 0;
         if (!on && wasOpen && narrow) {
             if (list) list.scrollTop = listScroll.list;
@@ -4543,58 +4773,99 @@
         return (r.warnings || (r.parsed && r.parsed.warnings) || []).filter((w) => /^<(世界书|表格|改写判定)> 格式坏了/.test(String(w)));
     }
 
+    const LAYER_FILTERS = [
+        ['all', '全部', () => true],
+        ['todo', '没处理', (r) => !r || r.status !== 'done'],
+        ['warn', '有提醒', (r) => layerWarn(r)],
+        ['rewrite', '改写', (r) => !!(r && (r.divergenceStart || r.inDivergence))],
+    ];
+
     function renderLayers() {
         const el = $('nim-layers');
         const e = State.engine;
         if (!el) return;
+        const chips = $('nim-layer-filters');
         if (!e || !e.layers.length) {
-            el.innerHTML = '<div class="nim-empty">选择小说后，这里会列出每一层</div>';
+            if (chips) chips.innerHTML = '';
+            el.innerHTML = '<div class="nim-empty">在「总览」选好小说后，这里会列出每一层</div>';
             return;
         }
-        // 上千层时只画选中层附近和正在跑的层附近，免得每层刷新都重排整个列表
         const n = e.layers.length;
+        if (!LAYER_FILTERS.some((f) => f[0] === State.layerFilter)) State.layerFilter = 'all';
+        const counts = {};
+        const match = [];
+        const test = LAYER_FILTERS.find((f) => f[0] === State.layerFilter)[2];
+        for (let i = 0; i < n; i++) {
+            const r = e.results[i];
+            for (const [k, , fn] of LAYER_FILTERS) if (fn(r)) counts[k] = (counts[k] || 0) + 1;
+            if (State.layerFilter !== 'all' && test(r)) match.push(i);
+        }
+        if (chips) chips.innerHTML = LAYER_FILTERS.map(([k, t]) => `<button class="nim-chip ${State.layerFilter === k ? 'on' : ''}" data-layer-filter="${k}">${t} <span class="nim-chip-n">${counts[k] || 0}</span></button>`).join('');
+        // 上千层时只画选中层附近和正在跑的层附近，免得每层刷新都重排整个列表
         const runningAt = e.results.findIndex((r) => !r || r.status !== 'done');
         const focus = State.selected ?? (runningAt < 0 ? n - 1 : runningAt);
-        const from = n > 300 ? Math.max(0, focus - 100) : 0;
-        const to = n > 300 ? Math.min(n, from + 200) : n;
+        let list;
+        let before = 0;
+        let after = 0;
+        if (State.layerFilter === 'all') {
+            const from = n > 300 ? Math.max(0, focus - 100) : 0;
+            const to = n > 300 ? Math.min(n, from + 200) : n;
+            list = [];
+            for (let i = from; i < to; i++) list.push(i);
+            before = from;
+            after = n - to;
+        } else {
+            list = match.slice(0, 300);
+            after = match.length - list.length;
+        }
         const rows = [];
+        // 停下来等审阅的层放在最上面，不用在列表里找
+        if (e.reviewing !== null && !e.running) {
+            const rr = e.results[e.reviewing];
+            rows.push(
+                `<div class="nim-review-card"><div class="nim-review-card-main"><b>第 ${e.reviewing + 1} 层等你审阅</b><span class="nim-muted">${esc(rr && rr.parsed ? rr.parsed.title || '' : '')}</span></div><button class="nim-btn primary sm" data-jump="${e.reviewing}">去审阅</button></div>`,
+            );
+        }
         // 世界书、表格、改写判定的 JSON 坏了被跳过的层：列表最上面汇总，几百层不用一层层翻
         const broken = [];
         e.results.forEach((r, k) => {
             const bad = jsonBroken(r);
             if (bad.length) broken.push({ k, bad });
         });
-        if (broken.length)
+        if (broken.length && State.layerFilter !== 'warn')
             rows.push(
                 `<div class="nim-alert warn nim-broken"><b>${broken.length} 层的 JSON 格式坏了，这些内容没更新：</b><div class="nim-row" style="flex-wrap:wrap;margin-top:6px">${broken
+                    .slice(0, 30)
                     .map((b) => `<button class="nim-btn sm" data-jump="${b.k}" title="${esc(b.bad.join('；'))}">第 ${b.k + 1} 层 · ${esc(b.bad.map((x) => x.replace(/^<(.+?)>.*$/, '$1')).join('、'))}</button>`)
-                    .join('')}</div><div class="nim-hint">点进去用「只重新输出 JSON」补上，补好后这里自动消失</div></div>`,
+                    .join('')}</div><div class="nim-hint">点进去在「世界书」页用「只让 AI 重新输出这部分」补上，补好后这里自动消失</div></div>`,
             );
-        if (from > 0) rows.push(`<div class="nim-more">前面还有 ${from} 层</div>`);
-        for (let i = from; i < to; i++) {
+        if (before > 0) rows.push(`<div class="nim-more">前面还有 ${before} 层</div>`);
+        for (const i of list) {
             const l = e.layers[i];
             const r = e.results[i];
             const st = layerState(r, i, e);
             const title = r && r.parsed ? r.parsed.title : (l.chapters[0] || l.paras[0].text).slice(0, 30);
             const flags = [];
             // 列表里标签用短字，给标题留地方；完整意思放 title 里
-            if (r && r.divergenceStart) flags.push('<span class="nim-tag red" title="剧情改写起点">起点</span>');
-            else if (r && r.inDivergence) flags.push('<span class="nim-tag orange" title="剧情改写中">改写</span>');
+            if (r && r.divergenceStart) flags.push('<span class="nim-tag red" title="剧情改写起点">改写起点</span>');
+            else if (r && r.inDivergence) flags.push('<span class="nim-tag orange" title="剧情改写中">改写中</span>');
             const bad = jsonBroken(r);
             if (bad.length) flags.push(`<span class="nim-tag red" title="${esc(bad.join('；'))}">JSON坏</span>`);
             if (r && r.patchStats && r.patchStats.failed.length) flags.push(`<span class="nim-tag" title="${r.patchStats.failed.length} 条补丁没对上">补丁×${r.patchStats.failed.length}</span>`);
             if (r && r.askedBigSummary) flags.push('<span class="nim-tag blue" title="这层写了大总结">总结</span>');
             if (l.translate) flags.push('<span class="nim-tag violet" title="翻译">译</span>');
             if (l.note) flags.push('<span class="nim-tag blue" title="这层有提前写好的提示词">专属</span>');
+            const chars = l.chars >= 10000 ? `${(l.chars / 10000).toFixed(1)} 万字` : `${l.chars} 字`;
             rows.push(
-                `<button class="nim-layer ${State.selected === i ? 'sel' : ''}" data-i="${i}" title="${STATE_TEXT[st] || ''}">
-                   <span class="nim-dot ${st}"></span><span class="nim-layer-no">${i + 1}</span>
-                   <span class="nim-layer-title">${esc(title)}</span>
-                   <span class="nim-layer-meta">${flags.join('')}<span class="nim-layer-chars" title="${l.chars} 字">${l.chars >= 10000 ? `${(l.chars / 10000).toFixed(1)}万` : l.chars}</span></span>
+                `<button class="nim-layer ${State.selected === i ? 'sel' : ''} is-${st}" data-i="${i}">
+                   <span class="nim-layer-no">${i + 1}</span>
+                   <span class="nim-layer-main"><span class="nim-layer-title">${esc(title)}</span><span class="nim-layer-sub"><span class="nim-layer-st">${STATE_TEXT[st] || ''}</span><span class="nim-layer-chars">${chars}</span>${flags.join('')}</span></span>
+                   <span class="nim-dot ${st}"></span>
                  </button>`,
             );
         }
-        if (to < n) rows.push(`<div class="nim-more">后面还有 ${n - to} 层</div>`);
+        if (!list.length) rows.push(`<div class="nim-empty">${State.layerFilter === 'warn' ? '没有需要你看的层' : State.layerFilter === 'todo' ? '全部处理完了' : '这个筛选下没有层'}</div>`);
+        if (after > 0) rows.push(`<div class="nim-more">后面还有 ${after} 层</div>`);
         el.innerHTML = rows.join('');
         el.querySelectorAll('[data-jump]').forEach((d) =>
             d.addEventListener('click', () => {
@@ -4764,7 +5035,7 @@
         nav.hidden = false;
         let cur = -1;
         const pos = $('nim-hl-pos');
-        pos.textContent = `共 ${marks.length} 处`;
+        pos.textContent = `AI 补的 ${marks.length} 处`;
         nav.onclick = (ev) => {
             const b = ev.target.closest('[data-hl-go]');
             if (!b) return;
@@ -4772,10 +5043,12 @@
             cur = (cur + Number(b.dataset.hlGo) + marks.length) % marks.length;
             const m = marks[cur];
             m.classList.add('cur');
-            const pr = pre.getBoundingClientRect();
-            pre.scrollTop += m.getBoundingClientRect().top - pr.top - pr.height / 3;
-            pre.scrollIntoView({ block: 'nearest' });
-            pos.textContent = `${cur + 1} / ${marks.length}`;
+            if (pre.scrollHeight > pre.clientHeight + 4) {
+                const pr = pre.getBoundingClientRect();
+                pre.scrollTop += m.getBoundingClientRect().top - pr.top - pr.height / 3;
+                pre.scrollIntoView({ block: 'nearest' });
+            } else m.scrollIntoView({ block: 'center' });
+            pos.textContent = `AI 补的 ${cur + 1} / ${marks.length} 处`;
         };
     }
 
@@ -4879,68 +5152,151 @@
         const view = `${i}:${reviewing ? 'review' : ''}`;
         const sameView = el.dataset.view === view;
         if (sameView && deferWhileTyping(el, renderDetail)) return;
-        const keep = sameView ? snapshotUi(el, resultToken(r)) : null;
+        // 记的是画这一屏时那份结果的标记：结果换了（改成功、重做了），没保存的字就不放回去
+        const keep = sameView ? snapshotUi(el, el._nimToken || '') : null;
+        el._nimToken = resultToken(r);
         el.dataset.view = view;
         const hasLater = e.results.slice(i + 1).some((x) => x);
-        let body = '';
+        const done = !!(r && r.status === 'done' && !r.skipped);
+        const fullMode = State.settings.feedbackEditMode === 'full';
+        // 四个页签：正文 / 改动 / 世界书 / 更多。全部画出来只是藏着，切换不重画，写到一半的字不会丢
+        let pBody = '';
+        let pChanges = '';
+        let pWb = '';
+        let pMore = '';
+        let nChanges = 0;
+        let nWb = 0;
         if (r && r.status === 'done' && r.skipped) {
-            body += '<div class="nim-alert">这层在剧情地图里标了「跳过」：没有调用 AI，也不出楼层。要处理的话去剧情地图取消跳过，再从这层重新处理。</div>';
-        } else if (r && r.status === 'done') {
+            pBody += '<div class="nim-alert">这层在剧情地图里标了「跳过」：没有调用 AI，也不出楼层。要处理的话去剧情地图取消跳过，再从这层重新处理。</div>';
+        } else if (done) {
             const floor = e.renderFloors().find((f) => f.layer === i);
             const d = r.parsed.divergence;
-            if (r.warnings && r.warnings.length) body += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
-            body += d.triggered || r.inDivergence ? `<div class="nim-alert warn">剧情改写：${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
-            body += `<div class="nim-sub">楼层内容${State.hlOff ? '' : '<span class="nim-muted">（<mark class="nim-hl">高亮</mark>是 AI 补充的，只在这里显示，导出不带）</span>'}<button id="nim-hl-toggle" class="nim-btn ghost sm" style="margin-left:8px">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div>${State.hlOff ? '' : '<div class="nim-row nim-hl-nav" id="nim-hl-nav" hidden><button class="nim-btn sm" data-hl-go="-1">↑ 上一处</button><span id="nim-hl-pos" class="nim-muted"></span><button class="nim-btn sm" data-hl-go="1">下一处 ↓</button></div>'}<pre class="nim-pre" id="nim-floor-pre">${floorHtml(e, i, floor)}</pre>`;
-            body += `<details class="nim-fold" id="nim-medit"><summary>手动编辑这层（标题、正文、摘要）</summary>
-              <div class="nim-field"><label>标题</label><input id="nim-medit-title" class="nim-input" value="${esc(r.parsed.title || '')}"></div>
-              <div class="nim-field"><label>正文<span class="nim-muted">（一行一段；&lt;bbi_image&gt;、插图标记那几行别删）</span></label><textarea id="nim-medit-body" class="nim-input nim-textarea" rows="14">${esc((r.finalParas || []).join('\n'))}</textarea></div>
-              <div class="nim-field"><label>摘要</label><textarea id="nim-medit-sum" class="nim-input nim-textarea" rows="4">${esc(r.parsed.summary || '')}</textarea></div>
-              <div class="nim-row"><button id="nim-medit-save" class="nim-btn sm primary">保存修改</button><span class="nim-muted">后面的层保留；改错了可以点上面的「撤销」</span></div>
-            </details>`;
-            if (r.patchStats.failed.length) {
-                const long = r.patchStats.failed.filter((f) => /超过 \d+ 字/.test(f.reason)).length;
-                body += `<div class="nim-sub">没对上的补丁${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div><div class="nim-pre">${r.patchStats.failed
+            if (r.warnings && r.warnings.length) pBody += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
+            pBody += d.triggered || r.inDivergence ? `<div class="nim-alert warn"><b>这层在改写剧情</b>　${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
+            pBody += `<div class="nim-read-bar"><span class="nim-muted">${State.hlOff ? '高亮已关' : '<mark class="nim-hl">高亮</mark>是 AI 补的，只在这里显示，导出不带'}</span><button id="nim-hl-toggle" class="nim-btn ghost sm">${State.hlOff ? '显示高亮' : '关掉高亮'}</button></div><pre class="nim-pre nim-read" id="nim-floor-pre">${floorHtml(e, i, floor)}</pre>${State.hlOff ? '' : '<div class="nim-hl-nav" id="nim-hl-nav" hidden><button class="nim-icon-btn" data-hl-go="-1" aria-label="上一处">↑</button><span id="nim-hl-pos"></span><button class="nim-icon-btn" data-hl-go="1" aria-label="下一处">↓</button></div>'}`;
+            // 改动
+            const failed = r.patchStats.failed || [];
+            const failedPids = new Set(failed.map((f) => f.patch && f.patch.pid));
+            const patches = r.patchStats.rewritten ? [] : (r.parsed.patches || []).filter((x) => !failedPids.has(x.pid));
+            nChanges = patches.length + failed.length;
+            if (r.patchStats.rewritten) pChanges += `<div class="nim-alert">这层是整层重新输出的（${r.patchStats.translated ? '翻译' : '剧情改写或整层模式'}），没有一条条的补丁。改了哪里看「正文」页的高亮${r.patchStats.addedChars ? `，比原文${r.patchStats.addedChars > 0 ? '多' : '少'} ${Math.abs(r.patchStats.addedChars)} 字` : ''}。</div>`;
+            if (failed.length) {
+                const long = failed.filter((f) => /超过 \d+ 字/.test(f.reason)).length;
+                pChanges += `<div class="nim-sub">没放进去的 ${failed.length} 条${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div><div class="nim-chg-list">${failed
                     .map((f, k) => {
-                        const btn = /超过 \d+ 字/.test(f.reason) ? ` <button class="nim-btn sm" data-force-patch="${k}">确认加进去</button>` : ' <span class="nim-muted">（锚点对不上，打不上去；要改可以用「按要求改这层」或重 roll）</span>';
-                        return `<div style="margin:4px 0">${esc(`P${f.patch.pid} | ${f.patch.anchor} | ${f.patch.text}  →  ${f.reason}`)}${btn}</div>`;
+                        const btn = /超过 \d+ 字/.test(f.reason) ? `<div class="nim-row"><button class="nim-btn sm" data-force-patch="${k}">确认加进去</button></div>` : '<div class="nim-muted">锚点对不上，放不进去；要改可以在下面写意见让 AI 改，或者重 roll</div>';
+                        return `<div class="nim-chg bad"><div class="nim-chg-where">接在「${esc(String(f.patch.anchor || '').slice(0, 40))}」后面 · <span class="nim-chg-why">${esc(f.reason)}</span></div><div class="nim-chg-text">${esc(f.patch.text)}</div>${btn}</div>`;
                     })
                     .join('')}</div>`;
             }
-            if (r.tableLog && r.tableLog.length) body += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
-            body += layerWorldbookHtml(e, i, r);
-            if (r.parsed.terms && r.parsed.terms.length) body += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
-            body += `<details class="nim-fold"><summary>程序最后用的回复${(r.calls || []).some((c) => c.purpose === 'repair' || c.purpose === 'json') ? '（修过格式后拼回去的）' : ''}</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
-        } else if (r && r.status === 'failed') {
-            body += `<div class="nim-alert danger">失败：${esc(r.error)}</div>`;
-        }
-        if (!reviewing && r && (r.status === 'done' || r.status === 'failed'))
-            body += `<div class="nim-sub">这层的修改要求</div>
-              <textarea id="nim-layer-fb" class="nim-input nim-textarea" rows="3" placeholder="例如：NTR 那段改得更彻底；对话多补几句神态；译名统一用「花恋」"></textarea>
-              <div class="nim-row"><button id="nim-layer-fb-go" class="nim-btn sm">${State.settings.feedbackEditMode === 'full' ? '按要求重做这层' : '按要求改这层'}</button><span class="nim-muted">${State.settings.feedbackEditMode === 'full' ? '会带上这层上次的输出' : 'AI 自己找段落只改那几段；改不了才整层重做（设置 → 审阅里可以换）'}</span></div>`;
-        if (!reviewing && r && r.status === 'done') {
-            const bad = r.warnings && r.warnings.length;
-            body += `<details class="nim-fold"${bad ? ' open' : ''}><summary>只重新输出 JSON（正文不动）${bad ? '<span class="nim-muted">：这层有 JSON 没用上</span>' : ''}</summary>
+            if (patches.length)
+                pChanges += `<div class="nim-sub">AI 补进去的 ${patches.length} 处${r.patchStats.addedChars ? `<span class="nim-muted">　共多了 ${r.patchStats.addedChars} 字</span>` : ''}</div><div class="nim-chg-list">${patches
+                    .map((x) => `<div class="nim-chg"><div class="nim-chg-where">「${esc(String(x.anchor || '').slice(0, 40))}」${x.op === 'replace' ? '换成' : x.op === 'para' ? '后面另起一段' : '后面接上'}</div><div class="nim-chg-text">${esc(x.text)}</div></div>`)
+                    .join('')}</div>`;
+            if (!pChanges) pChanges = '<div class="nim-empty">这层 AI 没有改动正文</div>';
+            // 世界书和表格
+            const wbHtml = layerWorldbookHtml(e, i, r);
+            nWb = (wbHtml.match(/<li/g) || []).length;
+            pWb += wbHtml;
+            if (r.tableLog && r.tableLog.length) pWb += `<div class="nim-sub">表格提示</div><pre class="nim-pre">${esc(r.tableLog.join('\n'))}</pre>`;
+            if (r.parsed.terms && r.parsed.terms.length) pWb += `<div class="nim-sub">本层新术语</div><pre class="nim-pre">${esc(r.parsed.terms.map((t) => `${t.source} → ${t.target}${t.note ? `（${t.note}）` : ''}`).join('\n'))}</pre>`;
+            if (!pWb) pWb = '<div class="nim-empty">这层没有写世界书和表格</div>';
+            if (!reviewing) {
+                const bad = r.warnings && r.warnings.length;
+                pWb += `<details class="nim-fold"${bad ? ' open' : ''}><summary>只让 AI 重新输出这部分（正文不动）${bad ? '<span class="nim-muted">：这层有 JSON 没用上</span>' : ''}</summary>
               <textarea id="nim-json-fb" class="nim-input nim-textarea" rows="3" placeholder="可留空。例如：表格 JSON 里的字符串引号要转义；世界书补上花恋的身高"></textarea>
               <div class="nim-row"><label class="nim-muted"><input type="checkbox" id="nim-json-preset"> 套用酒馆预设（AI 拒绝时再勾）</label></div>
               <div class="nim-row"><button id="nim-json-go" class="nim-btn sm">只重新输出 JSON</button><span class="nim-muted">只要改写判定、世界书、表格三段，之后的层保留</span></div>
             </details>`;
+            }
+            pMore += `<details class="nim-fold" id="nim-medit"><summary>手动编辑这层（标题、正文、摘要）</summary>
+              <div class="nim-field"><label>标题</label><input id="nim-medit-title" class="nim-input" value="${esc(r.parsed.title || '')}"></div>
+              <div class="nim-field"><label>正文<span class="nim-muted">（一行一段；&lt;bbi_image&gt;、插图标记那几行别删）</span></label><textarea id="nim-medit-body" class="nim-input nim-textarea" rows="14">${esc((r.finalParas || []).join('\n'))}</textarea></div>
+              <div class="nim-field"><label>摘要</label><textarea id="nim-medit-sum" class="nim-input nim-textarea" rows="4">${esc(r.parsed.summary || '')}</textarea></div>
+              <div class="nim-row"><button id="nim-medit-save" class="nim-btn sm primary">保存修改</button><span class="nim-muted">后面的层保留；改错了可以点底部的「撤销」</span></div>
+            </details>`;
+        } else if (r && r.status === 'failed') {
+            pBody += `<div class="nim-alert danger">失败：${esc(r.error)}</div>`;
+        } else if (r && r.status === 'running') {
+            pBody += '<div class="nim-alert">这层正在处理，写完会显示在这里。</div>';
+        }
+        if (!done) {
+            pBody += `<div class="nim-sub">原文</div><pre class="nim-pre nim-read">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre>`;
+            if (!pChanges) pChanges = '<div class="nim-empty">处理完这层才有改动</div>';
+            if (!pWb) pWb = '<div class="nim-empty">处理完这层才有世界书和表格</div>';
         }
         const note = e.layers[i].note || '';
-        body += `<details class="nim-fold"${note || !r ? ' open' : ''}><summary>这层的专属提示词${note ? '<span class="nim-muted">：已填</span>' : ''}</summary>
+        pMore += `<details class="nim-fold"${note || !r ? ' open' : ''}><summary>这层的专属提示词${note ? '<span class="nim-muted">：已填</span>' : ''}</summary>
               <textarea id="nim-layer-note" class="nim-input nim-textarea" rows="3" placeholder="提前写好，处理到这层时（包括重做）放在提示词最后一起发给 AI。例如：这层把告白那段改成女主先开口；这层开始叫主角「远」">${esc(note)}</textarea>
               <div class="nim-row"><button id="nim-layer-note-save" class="nim-btn sm">保存</button><span class="nim-muted">${r && r.status === 'done' ? '这层已经生成过了，要生效得重做这层' : '自动保存，跑到这层时生效'}</span></div>
             </details>`;
-        if (r) body += promptHtml(r);
-        if (r) body += callsHtml(r);
-        body += `<details class="nim-fold"><summary>原文</summary><div class="nim-row"><button id="nim-src-copy" class="nim-btn sm">复制原文</button><button id="nim-src-export" class="nim-btn sm">导出原文为文件</button></div><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
-        const reviewHtml = reviewing
-            ? `<div class="nim-review">
-                 <div class="nim-sub">审阅这一层：没问题就继续，不行就写修改意见重做</div>
-                 <textarea id="nim-feedback" class="nim-input nim-textarea" rows="3" placeholder="例如：第 3 段的补充太长了；这里的改写和前面冲突了"></textarea>
-                 <div class="nim-row"><button id="nim-accept" class="nim-btn primary">可以，继续</button><button id="nim-reject" class="nim-btn">${State.settings.feedbackEditMode === 'full' ? '按意见重做这层' : '按意见改这层'}</button></div>
-               </div>`
-            : '';
-        el.innerHTML = `<div class="nim-detail-head"><div><div class="nim-detail-title">第 ${i + 1} 层</div><div class="nim-muted">${STATE_TEXT[layerState(r, i, e)]} · ${e.layers[i].chars} 字</div>${r && r.tokens ? `<div class="nim-muted">${esc(tokenText(r.tokens))}</div>` : ''}</div><div class="nim-row" style="justify-content:flex-end">${r && r.undo && r.undo.length ? `<button id="nim-undo-layer" class="nim-btn sm" title="退回到「${esc(r.undo[0].label || '')}」之前的样子，还能再退 ${r.undo.length - 1} 步">撤销上一次${esc(r.undo[0].label ? `「${r.undo[0].label}」` : '修改')}</button>` : ''}${r && (r.status === 'done' || r.status === 'failed') ? '<button id="nim-reroll" class="nim-btn sm" title="同样的提示词再要一次，后面的层保留">只重 roll 这层</button>' : ''}<button id="nim-rerun" class="nim-btn ghost sm">从这层开始重跑</button></div></div>${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}${reviewHtml}${body}`;
+        if (r) pMore += promptHtml(r);
+        if (r) pMore += callsHtml(r);
+        if (done) pMore += `<details class="nim-fold"><summary>程序最后用的回复${(r.calls || []).some((c) => c.purpose === 'repair' || c.purpose === 'json') ? '（修过格式后拼回去的）' : ''}</summary><pre class="nim-pre">${esc(r.raw)}</pre></details>`;
+        pMore += `<details class="nim-fold"><summary>原文</summary><div class="nim-row"><button id="nim-src-copy" class="nim-btn sm">复制原文</button><button id="nim-src-export" class="nim-btn sm">导出原文为文件</button></div><pre class="nim-pre">${esc(e.layers[i].paras.map((p) => p.text).join('\n'))}</pre></details>`;
+        pMore += `<div class="nim-more-danger">${hasLater ? `<label class="nim-muted nim-keep-later"><input type="checkbox" id="nim-keep-later"${State.keepLater === false ? '' : ' checked'}> 重做这层时保留后面的层（后面的世界书、表格按新结果重算）</label>` : ''}<button id="nim-rerun" class="nim-btn danger-ghost">从这层开始全部重跑</button><span class="nim-muted">这层和后面的结果都会清空</span></div>`;
+
+        // 底部固定的操作：不管在哪个页签、滚到哪，都够得着
+        const canFix = r && (r.status === 'done' || r.status === 'failed');
+        const undoBtn0 = r && r.undo && r.undo.length ? `<button id="nim-undo-layer" class="nim-btn" title="退回到「${esc(r.undo[0].label || '')}」之前的样子，还能再退 ${r.undo.length - 1} 步">撤销${esc(r.undo[0].label ? `「${r.undo[0].label}」` : '')}</button>` : '';
+        const rerollBtn0 = canFix ? '<button id="nim-reroll" class="nim-btn" title="同样的提示词再要一次，后面的层保留">重 roll</button>' : '';
+        let dock = '';
+        if (reviewing)
+            dock = `<div class="nim-dock-fb"><textarea id="nim-feedback" class="nim-input" rows="1" placeholder="哪里不满意？写给 AI"></textarea><button id="nim-reject" class="nim-btn">${fullMode ? '按意见重做' : '按意见改'}</button></div>
+               <div class="nim-dock-acts">${undoBtn0}${rerollBtn0}<button id="nim-accept" class="nim-btn primary nim-dock-main">可以，继续下一层</button></div>`;
+        else if (canFix)
+            dock = `<div class="nim-dock-fb"><textarea id="nim-layer-fb" class="nim-input" rows="1" placeholder="想怎么改？写给 AI"></textarea><button id="nim-layer-fb-go" class="nim-btn primary">${fullMode ? '按要求重做' : '按要求改'}</button></div>
+               ${undoBtn0 || rerollBtn0 ? `<div class="nim-dock-acts">${undoBtn0}${rerollBtn0}<span class="nim-muted nim-dock-tip">${fullMode ? '会整层重新输出' : 'AI 只改要改的几段'}</span></div>` : ''}`;
+        const st = layerState(r, i, e);
+        const dtab = ['body', 'changes', 'wb', 'more'].includes(State.detailTab) ? State.detailTab : 'body';
+        const tabBtn = (k, t, c) => `<button class="nim-dtab ${dtab === k ? 'on' : ''}" data-dtab="${k}">${t}${c ? ` <span class="nim-chip-n">${c}</span>` : ''}</button>`;
+        const title = r && r.parsed && r.parsed.title ? r.parsed.title : (e.layers[i].chapters[0] || '').slice(0, 30);
+        el.innerHTML = `<div class="nim-dhead">
+            <button class="nim-icon-btn nim-dback" data-dback aria-label="返回分层列表">${ICONS.back}</button>
+            <div class="nim-dhead-main"><div class="nim-detail-title">第 ${i + 1} 层 <span class="nim-st-chip is-${st}">${STATE_TEXT[st]}</span></div><div class="nim-muted nim-ellipsis">${esc(title)}${title ? ' · ' : ''}${e.layers[i].chars} 字</div></div>
+            <button class="nim-icon-btn" data-layer-nav="-1" aria-label="上一层" ${i <= 0 ? 'disabled' : ''}>‹</button><button class="nim-icon-btn" data-layer-nav="1" aria-label="下一层" ${i >= e.layers.length - 1 ? 'disabled' : ''}>›</button>
+          </div>
+          ${r && r.tokens ? `<div class="nim-muted nim-dtokens">${esc(tokenText(r.tokens))}</div>` : ''}
+          ${e.running ? `<div class="nim-drun"><span class="nim-dot running"></span><span class="nim-live">${esc($('nim-status') ? $('nim-status').textContent : '')}</span><button class="nim-btn sm danger-ghost" data-dstop>停止</button></div>` : ''}
+          <div class="nim-dtabs" data-dtab-cur="${dtab}">${tabBtn('body', '正文')}${tabBtn('changes', '改动', nChanges)}${tabBtn('wb', '世界书', nWb)}${tabBtn('more', '更多')}</div>
+          <div class="nim-dpanes" data-dtab-cur="${dtab}">
+            <div class="nim-dpane" data-dpane="body">${pBody}</div>
+            <div class="nim-dpane" data-dpane="changes">${pChanges}</div>
+            <div class="nim-dpane" data-dpane="wb">${pWb}</div>
+            <div class="nim-dpane" data-dpane="more">${pMore}</div>
+          </div>
+          ${dock ? `<div class="nim-dock">${dock}</div>` : ''}`;
+        el.querySelector('[data-dback]').onclick = () => openDetail(false);
+        const dstop = el.querySelector('[data-dstop]');
+        if (dstop) dstop.onclick = stop;
+        const dockEl = el.querySelector('.nim-dock');
+        el.style.setProperty('--dock-h', `${dockEl ? dockEl.offsetHeight : 0}px`);
+        el.querySelectorAll('[data-layer-nav]').forEach((b) => {
+            b.onclick = () => {
+                const to = i + Number(b.dataset.layerNav);
+                if (to < 0 || to >= e.layers.length) return;
+                State.selected = to;
+                renderAll();
+                const sc = document.querySelector('#nim-modal .nim-body');
+                if (sc && window.matchMedia('(max-width: 760px)').matches) sc.scrollTop = 0;
+            };
+        });
+        el.querySelectorAll('[data-dtab]').forEach((b) => {
+            b.onclick = () => {
+                State.detailTab = b.dataset.dtab;
+                el.querySelectorAll('[data-dtab-cur]').forEach((x) => (x.dataset.dtabCur = State.detailTab));
+                el.querySelectorAll('[data-dtab]').forEach((x) => x.classList.toggle('on', x === b));
+            };
+        });
+        // 意见框跟着字数长高，最多五行
+        el.querySelectorAll('.nim-dock-fb textarea').forEach((ta) => {
+            const fit = () => {
+                ta.style.height = 'auto';
+                ta.style.height = `${Math.min(ta.scrollHeight + 2, 132)}px`;
+            };
+            ta.addEventListener('input', fit);
+            requestAnimationFrame(fit);
+        });
         restoreUi(el, keep, resultToken(r));
         bindHlNav();
         const noteEl = $('nim-layer-note');
@@ -5096,6 +5452,7 @@
         /** 重做、重 roll：成功、失败、出错、停止都给个说法，不会点了没反应 */
         async function runRedo(job, i, what) {
             renderButtons();
+            renderDetail();
             try {
                 const res = await job;
                 if (!res) toast(`已停止，第 ${i + 1} 层保留原来的结果`, 'info');
@@ -5161,6 +5518,13 @@
             $('nim-accept').onclick = async () => {
                 e.accept();
                 await start();
+                // 下一层又停下来等审阅：直接换到那一层，不用回列表找
+                if (State.engine === e && e.reviewing !== null && State.selected === i && !typingIn($('nim-modal'))) {
+                    State.selected = e.reviewing;
+                    renderAll();
+                    const sc = document.querySelector('#nim-modal .nim-body');
+                    if (sc) sc.scrollTop = 0;
+                }
             };
             $('nim-reject').onclick = async () => {
                 const fb = $('nim-feedback').value.trim();
@@ -5177,7 +5541,10 @@
                 renderButtons();
                 try {
                     const res = await job;
-                    if (res && res.status === 'done' && !res.restored && State.fbDrafts) delete State.fbDrafts[`review:${i}`];
+                    if (res && res.status === 'done' && !res.restored && State.fbDrafts) {
+                        delete State.fbDrafts[`review:${i}`];
+                        if (State.selected === i && $('nim-feedback')) $('nim-feedback').value = '';
+                    }
                     if (res && res.restored) {
                         log(`第 ${i + 1} 层按意见重做没成功（${res.error || '格式一直不对'}），原来的这层已放回，可以再提意见`);
                         toast('重做没成功，原来的这层已放回', 'warning');
@@ -5195,12 +5562,15 @@
     /** 按意见只改几处：等结果、写日志、刷新 */
     async function runEdit(job, i) {
         renderButtons();
+        renderDetail();
         try {
             const res = await job;
             const ok = res && !(res.mode === 'full' && res.result && (res.result.restored || res.result.status !== 'done'));
             if (ok && State.fbDrafts) {
                 delete State.fbDrafts[`layer:${i}`];
                 delete State.fbDrafts[`review:${i}`];
+                // 改成功了：意见框清空，不然重画时又被当成没保存的字放回去
+                if (State.selected === i) for (const id of ['nim-layer-fb', 'nim-feedback']) if ($(id)) $(id).value = '';
             }
             if (!res) log(`第 ${i + 1} 层：已停止，这层没动，写的意见还在`);
             else if (res.mode === 'full' && res.result && res.result.restored) {
@@ -5235,6 +5605,37 @@
         if ($('nim-view-wb')?.open) renderViewWorldbook();
         if ($('nim-view-tb')?.open) renderViewTables();
         $('nim-card-avatar').textContent = State.meta.avatar ? `已绑定角色卡 ${State.meta.avatar}，再次导入会更新这张卡并新建一个聊天` : '导入时会新建角色卡';
+    }
+
+    /** 导入酒馆页：这次会写进去什么，一眼看清 */
+    function renderExportSum() {
+        const box = $('nim-export-sum');
+        if (!box) return;
+        const e = State.engine;
+        const s = State.settings;
+        const done = e ? e.results.filter((r) => r && r.status === 'done' && !r.skipped).length : 0;
+        const total = e ? e.layers.length : 0;
+        let wbN = 0;
+        try {
+            const wb = e && done ? e.finalState().worldbook || {} : {};
+            wbN = Object.values(wb).reduce((a, x) => a + Object.keys(x || {}).length, 0);
+        } catch (err) {
+            /* 数不出来就不写条数 */
+        }
+        const plotN = s.plotSummaryEntries && s.worldbookEnabled !== false ? done : 0;
+        const tpl = State.tableTemplate;
+        const imgs = s.imageMode === 'off' ? 0 : (State.images || []).length;
+        const desc = (State.meta.description || '').trim();
+        const rows = [
+            ['聊天楼层', done ? `${done} 层${done < total ? `（共 ${total} 层，还有 ${total - done} 层没处理）` : ''}` : '还没有处理好的层', done > 0],
+            ['世界书', wbN || plotN ? `${wbN} 条${plotN ? `，另有每层剧情 ${plotN} 条` : ''}` : s.worldbookEnabled ? '还没有条目' : '没开，不写', wbN + plotN > 0],
+            ['记忆表格', s.tablesEnabled ? (tpl ? `${tpl.tables.length} 张表，导入后逐层重建` : '没导入模板，这次不填') : '没开，不写', !!(s.tablesEnabled && tpl)],
+            ['插图', imgs ? `${imgs} 张，留在原位置` : s.imageMode === 'off' ? '设置里选了不导入' : '这本书没有插图', imgs > 0],
+            ['角色卡简介', desc ? `已写 ${desc.length} 字` : '还没写，可以在下面让 AI 写', !!desc],
+        ];
+        box.innerHTML = rows.map(([k, v, ok]) => `<div class="nim-res ${ok ? 'ok' : ''}"><div class="nim-res-main"><div class="nim-res-title">${k}</div><div class="nim-res-state">${esc(v)}</div></div><span class="nim-sum-mark">${ok ? '✓' : '–'}</span></div>`).join('');
+        const btn = $('nim-import');
+        if (btn && !btn.disabled) btn.textContent = done ? `导入已处理的 ${done} 层` : '一键导入酒馆';
     }
 
     /** 导出页：全部世界书条目（合并后、导出时的样子） */
@@ -5978,7 +6379,7 @@
         const head = $('nim-info');
         if (head) head.textContent = State.fileName ? `${State.fileName} · ${fmtNum(State.text.length)} 字${e ? ` · ${e.layers.length} 层` : ''}` : '把小说一层层导入成角色卡、世界书和聊天';
         const drop = $('nim-drop-text');
-        if (drop) drop.textContent = State.fileName ? `已选 ${State.fileName}，点这里换一本` : '点这里选择小说，或把文件拖进来';
+        if (drop) drop.textContent = State.fileName ? '换一本小说' : '点这里选择小说，或把文件拖进来';
         const upd = $('nim-file-update');
         if (upd) upd.hidden = !(e && e.layers.length && e.results.some((r) => r && r.status === 'done'));
         const chips = $('nim-file-stats');
@@ -6000,6 +6401,9 @@
                 .join('');
         }
         renderFileExtras();
+        renderHome();
+        const apiOk = !!(State.settings.apiEndpoint && State.settings.apiModel);
+        setRes('nim-res-api', apiOk, apiOk ? State.settings.apiModel : '还没填接口地址和模型');
         const tpl = State.tableTemplate;
         const tplText = tpl ? `${tpl.tables.length} 张表${State.settings.tableMessageTemplate ? ' · 有消息模板' : ''}` : '还没导入';
         setRes('nim-res-tpl', tpl, tplText);
@@ -6046,6 +6450,119 @@
                 .join('');
     }
 
+    /** 有没有要用户看一眼的地方：失败、JSON 坏了、补丁没对上 */
+    function layerWarn(r) {
+        return !!(r && (r.status === 'failed' || (r.status === 'done' && r.patchStats && r.patchStats.failed && r.patchStats.failed.length) || jsonBroken(r).length));
+    }
+
+    /** 总览页：现在到哪了、下一步点哪、有什么要看一下 */
+    function renderHome() {
+        const hero = $('nim-hero');
+        const inbox = $('nim-inbox');
+        if (!hero || !inbox) return;
+        const e = State.engine;
+        const s = State.settings;
+        const total = e ? e.layers.length : 0;
+        const head = $('nim-res-head');
+        if (head) head.textContent = State.fileName ? '这本书用的东西' : '可以先准备的东西（可选）';
+        hero.hidden = !total;
+        if (!total) {
+            hero.innerHTML = '';
+            inbox.innerHTML = '';
+            return;
+        }
+        const done = e.results.filter((r) => r && r.status === 'done').length;
+        const pct = Math.round((done / total) * 100);
+        const running = !!e.running;
+        const apiOk = !!(s.apiEndpoint && s.apiModel);
+        const allDone = e.reviewing === null && done === total;
+        const next = e.results.findIndex((r) => !r || r.status !== 'done');
+        const eta = done < total ? e.estimateRemaining() : 0;
+        let status;
+        let acts;
+        const btn = (act, text, cls = '') => `<button class="nim-btn ${cls}" data-hero="${act}">${text}</button>`;
+        if (running) {
+            status = `正在处理第 ${Math.max(0, next) + 1} 层`;
+            acts = btn('run', '去看处理', 'primary') + btn('pause', '这层后暂停') + btn('stop', '停止', 'danger-ghost');
+        } else if (e.reviewing !== null) {
+            status = `停在第 ${e.reviewing + 1} 层，等你审阅`;
+            acts = btn('review', `去审阅第 ${e.reviewing + 1} 层`, 'primary') + btn('start', '不看了，继续');
+        } else if (allDone) {
+            status = '全部处理完了';
+            acts = btn('export', '去导入酒馆', 'primary') + btn('run', '回看每一层');
+        } else if (!apiOk) {
+            status = '还没填 API，填好就能开始';
+            acts = btn('api', '去填 API', 'primary') + btn('map', '先看剧情地图');
+        } else if (done) {
+            status = `停在第 ${next + 1} 层`;
+            acts = btn('start', '继续处理', 'primary') + btn('run', '看已处理的层');
+        } else {
+            status = '分好层了，可以开始';
+            acts = btn('start', '开始处理', 'primary') + btn('map', '先扫剧情地图（可选）');
+        }
+        const tk = e.stats.inputTokens || e.stats.outputTokens ? `${e.stats.estimated ? '估算 ' : ''}输入 ${fmtNum(e.stats.inputTokens)} · 输出 ${fmtNum(e.stats.outputTokens)} tokens` : '';
+        const live = $('nim-status') ? $('nim-status').textContent : '';
+        hero.innerHTML = `<div class="nim-hero-top">
+            <div class="nim-ring" style="--p:${pct}" role="img" aria-label="已处理 ${pct}%"><span>${pct}<small>%</small></span></div>
+            <div class="nim-hero-main"><div class="nim-hero-status">${esc(status)}</div><div class="nim-hero-sub">${done} / ${total} 层${eta ? ` · 约剩 ${fmtDuration(eta)}` : ''}</div>${tk ? `<div class="nim-hero-sub">${tk}</div>` : ''}<div class="nim-hero-sub nim-live">${esc(live)}</div></div>
+          </div><div class="nim-hero-acts">${acts}</div>`;
+
+        // 需要你看一下：以前靠一闪而过的提示，现在留在这里
+        const items = [];
+        const row = (attr, title, sub, cls = '') => `<button class="nim-inbox-item ${cls}" ${attr}><span class="nim-inbox-dot"></span><span class="nim-inbox-main"><b>${esc(title)}</b>${sub ? `<span class="nim-muted">${esc(sub)}</span>` : ''}</span><span class="nim-chev r"></span></button>`;
+        const pick = (list) => (list.length === 1 ? `data-jump-layer="${list[0]}"` : 'data-inbox="warn"');
+        const where = (list) => (list.length === 1 ? `第 ${list[0] + 1} 层` : `第 ${list.slice(0, 4).map((x) => x + 1).join('、')}${list.length > 4 ? ' 等' : ''} 层`);
+        if (e.reviewing !== null && !running) items.push(row('data-hero="review"', `第 ${e.reviewing + 1} 层等你审阅`, '看完点「可以，继续下一层」，或者写意见让 AI 改', 'warn'));
+        const failed = [];
+        const broken = [];
+        const patch = [];
+        e.results.forEach((r, k) => {
+            if (!r) return;
+            if (r.status === 'failed') failed.push(k);
+            else if (jsonBroken(r).length) broken.push(k);
+            else if (r.status === 'done' && r.patchStats && r.patchStats.failed && r.patchStats.failed.length) patch.push(k);
+        });
+        if (failed.length) items.push(row(pick(failed), `${failed.length} 层处理失败`, `${where(failed)}，点进去重 roll 或看原因`, 'bad'));
+        if (broken.length) items.push(row(pick(broken), `${broken.length} 层的世界书或表格没更新`, `${where(broken)}的 JSON 格式坏了，点进去只重新输出那部分`, 'warn'));
+        if (patch.length) items.push(row(pick(patch), `${patch.length} 层有补充的句子没放进去`, `${where(patch)}，点进去看是哪几句`));
+        if (!apiOk && done) items.push(row('data-goto="nim-sec-api"', '还没填 API 地址和模型', '填好才能继续处理', 'warn'));
+        if (s.tablesEnabled && !State.tableTemplate) items.push(row('data-goto="nim-res-tpl"', '还没导入记忆表格模板', '不导入的话这次不填表格'));
+        const empty = e.stats && e.stats.emptyChapters ? e.stats.emptyChapters.length : 0;
+        if (empty) items.push(row('data-find-open="toc"', `${empty} 章没有正文`, '原文可能被盗版站替换了，点这里看是哪几章', 'warn'));
+        inbox.innerHTML = items.length ? `<div class="nim-sub nim-sec-title">需要你看一下</div><div class="nim-inbox-list">${items.join('')}</div>` : '';
+    }
+
+    function onHomeClick(ev) {
+        const e = State.engine;
+        const jl = ev.target.closest('[data-jump-layer]');
+        if (jl && e) {
+            State.selected = Number(jl.dataset.jumpLayer);
+            switchTab('run');
+            openDetail(true);
+            return renderAll();
+        }
+        const ib = ev.target.closest('[data-inbox]');
+        if (ib) {
+            State.layerFilter = ib.dataset.inbox;
+            switchTab('run');
+            openDetail(false);
+            return renderAll();
+        }
+        const h = ev.target.closest('[data-hero]');
+        if (!h) return;
+        const act = h.dataset.hero;
+        if (act === 'review' && e && e.reviewing !== null) {
+            State.selected = e.reviewing;
+            switchTab('run');
+            openDetail(true);
+            renderAll();
+        } else if (act === 'start') $('nim-start').click();
+        else if (act === 'pause') $('nim-pause').click();
+        else if (act === 'stop') $('nim-stop').click();
+        else if (act === 'api') goToEl($('nim-sec-api'), 'settings');
+        else switchTab(act);
+    }
+
     function renderButtons() {
         const e = State.engine;
         const running = !!(e && e.running);
@@ -6078,26 +6595,17 @@
         renderLayers();
         renderDetail();
         renderButtons();
+        renderExportSum();
+        if (State.tab === 'settings') renderSetHub();
     }
 
     // ============================================
     // 弹窗
     // ============================================
 
-    /** 卡片下面列出里面每一项的名字，不用点进去一个个找 */
-    function fieldNames(...groups) {
-        const names = [];
-        for (const g of groups) for (const x of FIELDS[g] || []) names.push(String(x.label || '').split(/[（(，,：:]/)[0].trim());
-        return names.filter(Boolean).join('、');
-    }
-    function withAll(desc, ...groups) {
-        const n = fieldNames(...groups);
-        return n ? `${desc}<div class="nim-card-all">里面有：${esc(n)}</div>` : desc;
-    }
-
     function card(id, title, desc, inner, open = false) {
         return `<details class="nim-card" ${open ? 'open' : ''} id="nim-sec-${id}">
-          <summary><div><div class="nim-card-title">${title}</div>${desc ? `<div class="nim-card-desc">${desc}</div>` : ''}</div><span class="nim-chev"></span></summary>
+          <summary><div class="nim-card-head"><div class="nim-card-title">${title}</div>${desc ? `<div class="nim-card-desc" data-sum="${id}">${desc}</div>` : ''}</div><span class="nim-chg-badge" data-chg="${id}" hidden></span><span class="nim-chev"></span></summary>
           <div class="nim-card-body">${inner}</div></details>`;
     }
 
@@ -6106,6 +6614,9 @@
     }
 
     const ICONS = {
+        home: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11.5 12 5l8 6.5"/><path d="M6.5 10v8.5h11V10"/></svg>',
+        gear: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg>',
+        back: '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m14.5 5-7 7 7 7"/></svg>',
         file: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5z"/></svg>',
         map: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg>',
         settings: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>',
@@ -6114,21 +6625,22 @@
     };
 
     function buildHtml() {
-        const f = (k) => `<div class="nim-grid">${FIELDS[k].map(fieldHtml).join('')}</div>`;
+        const f = fieldsHtml;
+        const resetAll = (g) => `<div class="nim-row nim-reset-all"><button type="button" class="nim-btn ghost sm" data-reset-group="${g}">这一页全部恢复默认</button></div>`;
         const tabs = [
-            ['file', '1', ICONS.file, '小说'],
-            ['map', '2', ICONS.map, '剧情地图'],
-            ['settings', '3', ICONS.settings, '设置'],
-            ['run', '4', ICONS.run, '处理'],
-            ['export', '5', ICONS.export, '导入酒馆'],
+            ['file', '1', ICONS.home, '总览'],
+            ['run', '2', ICONS.run, '处理'],
+            ['map', '3', ICONS.map, '剧情地图'],
+            ['export', '4', ICONS.export, '导入酒馆'],
         ];
         return `
 <div id="nim-modal" class="nim-overlay"><div class="nim-modal" role="dialog" aria-label="小说导入改写">
   <header class="nim-header">
+    <button id="nim-head-back" class="nim-icon-btn nim-head-back" aria-label="返回" hidden>${ICONS.back}</button>
     <div class="nim-brand">
-      <div class="nim-brand-text"><div class="nim-title">小说导入改写 <span class="nim-ver">v${C.VERSION}</span></div><div id="nim-info" class="nim-subtitle"></div></div>
+      <div class="nim-brand-text"><div class="nim-title"><span id="nim-head-title">小说导入改写</span> <span class="nim-ver">v${C.VERSION}</span></div><div id="nim-info" class="nim-subtitle"></div></div>
     </div>
-    <div class="nim-head-actions"><button class="nim-icon-btn" data-find-open="text" title="搜索原文、目录、功能"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button><button id="nim-close" class="nim-icon-btn" title="关闭">✕</button></div>
+    <div class="nim-head-actions"><button class="nim-icon-btn" data-find-open="text" title="搜索原文、目录、功能" aria-label="搜索"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></button><button id="nim-gear" class="nim-icon-btn" data-tab-go="settings" title="设置" aria-label="设置">${ICONS.gear}</button><button id="nim-close" class="nim-icon-btn" title="关闭" aria-label="关闭">✕</button></div>
   </header>
   <nav class="nim-tabs">${tabs
       .map(([k, n, ic, t]) => `<button class="nim-tab ${k === State.tab ? 'active' : ''}" data-tab="${k}"><span class="nim-tab-no">${n}</span><span class="nim-tab-ico">${ic}</span><span class="nim-tab-lbl">${t}</span>${k === 'run' ? '<span id="nim-run-badge" class="nim-badge" hidden>审阅</span>' : ''}</button>`)
@@ -6136,19 +6648,18 @@
   <main class="nim-body">
 
     <section class="nim-panel" data-panel="file">
+      <div id="nim-hero" class="nim-hero" hidden></div>
       <label class="nim-drop" id="nim-drop">
         <input type="file" id="nim-file" accept=".txt,.epub" hidden>
         <div class="nim-drop-icon">${ICONS.file}</div>
         <div class="nim-drop-main" id="nim-drop-text"></div>
         <div class="nim-muted">TXT 或 EPUB，按 1000 万字设计；EPUB 的插图会留在原位置</div>
       </label>
-      <button class="nim-searchbar" data-find-open="text"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><span>搜原文和改后、看目录和空章、找功能</span></button>
-      <div id="nim-file-issues"></div>
-      <div id="nim-file-update" class="nim-row" hidden><span class="nim-muted">小说更新了？</span><label class="nim-btn sm">导入完整新版本<input type="file" id="nim-file-new" accept=".txt,.epub" hidden></label><label class="nim-btn sm">只导入新章节<input type="file" id="nim-file-chap" accept=".txt,.epub" hidden></label><span class="nim-muted">已处理的层不动，新增的章节接在后面</span></div>
+      <div id="nim-inbox" class="nim-inbox"></div>
       <div id="nim-file-stats" class="nim-stats"></div>
-      <div id="nim-guide" class="nim-guide"></div>
-      <div class="nim-sub nim-sec-title">素材（可选）</div>
+      <div class="nim-sub nim-sec-title" id="nim-res-head">这本书用的东西</div>
       <div class="nim-res-list">
+        ${res('nim-res-api', '', '模型和接口', `<button class="nim-btn sm" data-goto="nim-sec-api">去设置</button>`)}
         ${res('nim-res-tpl', '', '记忆表格模板', `<label class="nim-btn sm">导入文件<input type="file" id="nim-tpl" accept=".json" hidden></label><button id="nim-tpl-live" class="nim-btn sm">从记忆插件读取</button>`)}
         ${res('nim-res-wb', '', '初始世界书', `<label class="nim-btn sm">导入<input type="file" id="nim-seed-wb" accept=".json" hidden></label><button id="nim-clear-wb" class="nim-btn ghost sm">清除</button>`)}
         ${res(
@@ -6160,6 +6671,7 @@
         ${res('nim-res-ledger', '', '和原文不同的事实', `<button id="nim-ledger-edit" class="nim-btn sm">查看和编辑</button>`)}
         ${res('nim-res-layer', '', '分层与清洗', `<button id="nim-cleanlog" class="nim-btn sm">查看清掉的内容</button><button class="nim-btn sm" data-goto="nim-sec-file">设置</button>`)}
       </div>
+      <div id="nim-file-update" class="nim-row nim-file-update" hidden><span class="nim-muted">小说更新了？已处理的层不动，新增的章节接在后面</span><label class="nim-btn sm">导入完整新版本<input type="file" id="nim-file-new" accept=".txt,.epub" hidden></label><label class="nim-btn sm">只导入新章节<input type="file" id="nim-file-chap" accept=".txt,.epub" hidden></label></div>
     </section>
 
     <section class="nim-panel" data-panel="map">
@@ -6167,14 +6679,27 @@
     </section>
 
     <section class="nim-panel" data-panel="settings">
-      <div class="nim-set-search"><div class="nim-search-in"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="nim-set-q" type="search" placeholder="搜索设置，例如 模型、雷点、标题" enterkeyhint="search"></div></div>
+      <div class="nim-set-search"><div class="nim-search-in"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg><input id="nim-set-q" type="search" placeholder="搜设置，搜到直接改" aria-label="搜设置" enterkeyhint="search"></div></div>
       <div id="nim-set-results" class="nim-set-results" hidden></div>
-      <div class="nim-set-gtitle">基础</div>
+      <div class="nim-set-tasks">
+        <div class="nim-set-gtitle">我想……</div>
+        <div class="nim-task-grid">${[
+            ['让 AI 少加点字或多加点', '改写与剧情改写', 'nim-f-expansionRatio'],
+            ['每层都停下来让我看', '改写与剧情改写', 'nim-f-reviewMode'],
+            ['换一种改写规则', '改写与剧情改写', 'nim-f-divergenceRules'],
+            ['广告和水印没清干净', '分层与清洗', 'nim-f-adPatterns'],
+            ['标题格式不是我要的', '翻译、标题与插图', 'nim-f-titleFormat'],
+            ['主角名字没换对', '主角与标签', 'nim-f-protagonistName'],
+        ]
+            .map(([want, where, id]) => `<button class="nim-task" data-goto="${id}"><span class="nim-task-want">${want}</span><span class="nim-muted">在「${where}」</span></button>`)
+            .join('')}</div>
+      </div>
+      <div class="nim-set-gtitle nim-set-alltitle"><span>全部设置</span><span class="nim-muted">每行写着现在的值</span></div>
       <div class="nim-set-list">
       ${card(
           'api',
           'API',
-          withAll('OpenAI 兼容接口', 'api'),
+          'OpenAI 兼容接口',
           `${f('api')}
            <div class="nim-row">
              <button id="nim-models" class="nim-btn sm">拉取模型列表</button>
@@ -6183,35 +6708,23 @@
            </div>`,
       )}
       ${card('preset', '酒馆预设', '导入后每个条目可以开关、拖动排序、编辑', presetHtml())}
-      </div>
-      <div class="nim-set-gtitle">怎么改写</div>
-      <div class="nim-set-list">
-      ${card('rewrite', '改写与剧情改写', withAll('扩写比例、改写要求、送女/NTR 等改写规则、审阅', 'rewrite'), f('rewrite') + '<div class="nim-row"><button id="nim-ledger-edit2" class="nim-btn sm">查看和编辑「和原文不同的事实」</button></div>')}
-      ${card('alias', '主角与标签', withAll('主角替换成 {{user}}、导入时 {{user}} 换成你的名字、标题和正文标签', 'alias'), f('alias'))}
-      ${card('translate', '翻译、标题与插图', withAll('外文整本翻译、术语表、#第X章：标题、EPUB 插图、标出补充的字', 'translate'), f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>')}
-      </div>
-      <div class="nim-set-gtitle">生成什么</div>
-      <div class="nim-set-list">
-      ${card('wb', '世界书', withAll('提取分类（和 TXT转世界书 一样）、额外要求', 'worldbook'), categoriesHtml() + '<div class="nim-sub">其他</div>' + f('worldbook'))}
-      ${card('stwb', '酒馆世界书（输出要求）', withAll('把酒馆里开着的世界书当作写作要求发给 AI', 'stwb'), f('stwb') + stWorldsHtml())}
+      ${card('rewrite', '改写与剧情改写', '扩写比例、改写要求、剧情改写规则、审阅', f('rewrite') + '<div class="nim-row"><button id="nim-ledger-edit2" class="nim-btn sm">查看和编辑「和原文不同的事实」</button></div>' + resetAll('rewrite'))}
+      ${card('alias', '主角与标签', '主角替换、词语替换、标题和正文标签', f('alias') + resetAll('alias'))}
+      ${card('translate', '翻译、标题与插图', '外文翻译、术语表、标题格式、EPUB 插图', f('translate') + '<div class="nim-row"><button id="nim-gloss-edit2" class="nim-btn sm">查看和编辑术语表</button></div>' + resetAll('translate'))}
+      ${card('wb', '世界书', '提取分类、每层摘要', f('worldbook') + '<div class="nim-sub">提取哪些分类</div>' + categoriesHtml() + resetAll('worldbook'))}
+      ${card('stwb', '酒馆世界书（输出要求）', '把酒馆里开着的世界书当作写作要求发给 AI', f('stwb') + stWorldsHtml())}
       ${card(
           'table',
           '记忆表格',
-          withAll('导入表格模板、表格角色、消息模板、大总结', 'table'),
-          `<div class="nim-row nim-tpl-row"><span id="nim-tpl-state2" class="nim-muted nim-grow"></span><label class="nim-btn sm">导入表格模板<input type="file" id="nim-tpl2" accept=".json" hidden></label><button id="nim-tpl-live2" class="nim-btn sm">从记忆插件读取</button></div>${f('table')}`,
+          '表格模板、消息模板、大总结',
+          `<div class="nim-row nim-tpl-row"><span id="nim-tpl-state2" class="nim-muted nim-grow"></span><label class="nim-btn sm">导入表格模板<input type="file" id="nim-tpl2" accept=".json" hidden></label><button id="nim-tpl-live2" class="nim-btn sm">从记忆插件读取</button></div>${f('table')}${resetAll('table')}`,
       )}
-      </div>
-      <div class="nim-set-gtitle">分层和剧情地图</div>
-      <div class="nim-set-list">
-      ${card('file', '分层与清洗', withAll('每层字数、章节识别、广告和水印规则', 'layer'), `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog2" class="nim-btn">查看清掉的内容</button></div>`)}
+      ${card('file', '分层与清洗', '每层字数、章节识别、广告和水印规则', `${f('layer')}<div class="nim-row"><button id="nim-prepare" class="nim-btn">按当前设置重新分层</button><button id="nim-cleanlog2" class="nim-btn">查看清掉的内容</button></div>${resetAll('layer')}`)}
       ${mapCfgCard()}
-      </div>
-      <div class="nim-set-gtitle">其他</div>
-      <div class="nim-set-list">
       ${card(
           'cfg',
-          '配置与任务',
-          '导入导出配置和任务进度',
+          '导入导出配置',
+          '配置和任务进度的备份、恢复默认提示词',
           `<div class="nim-row">
              <button id="nim-cfg-export" class="nim-btn sm">导出配置</button>
              <label class="nim-btn sm">导入配置<input type="file" id="nim-cfg-import" accept=".json" hidden></label>
@@ -6227,12 +6740,14 @@
 
     <section class="nim-panel" data-panel="run">
       <div class="nim-runbox">
-        <div class="nim-split">
-          <div class="nim-col"><div class="nim-col-head"><span>分层</span><button id="nim-preview" class="nim-btn ghost xs">预览提示词</button></div><div id="nim-layers" class="nim-layers"></div></div>
-          <div class="nim-col nim-col-wide"><button id="nim-detail-back" class="nim-back">‹ 返回分层列表</button><div id="nim-detail" class="nim-detail"></div></div>
+        <div class="nim-run-tools">
+        <details class="nim-fold" id="nim-stream-box"><summary>实时输出</summary><pre id="nim-stream" class="nim-pre"></pre></details>
+        <details class="nim-fold" id="nim-log-box"><summary>日志</summary><pre id="nim-log" class="nim-pre nim-log"></pre></details>
         </div>
-        <details class="nim-fold" id="nim-stream-box" open><summary>实时输出</summary><pre id="nim-stream" class="nim-pre"></pre></details>
-        <details class="nim-fold" open><summary>日志</summary><pre id="nim-log" class="nim-pre nim-log"></pre></details>
+        <div class="nim-split">
+          <div class="nim-col"><div class="nim-col-head"><div id="nim-layer-filters" class="nim-layer-filters"></div></div><div id="nim-layers" class="nim-layers"></div><div class="nim-col-foot"><button id="nim-preview" class="nim-btn ghost sm">预览下一层要发的提示词</button></div></div>
+          <div class="nim-col nim-col-wide"><div id="nim-detail" class="nim-detail"></div></div>
+        </div>
       </div>
     </section>
 
@@ -6242,8 +6757,12 @@
           <div class="nim-field"><label>角色卡名</label><input id="nim-card-name" class="nim-input"></div>
           <div class="nim-field"><label>世界书名</label><input id="nim-world-name" class="nim-input"></div>
         </div>
-        <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn ghost xs">AI 生成</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="5"></textarea></div>
         <div id="nim-card-avatar" class="nim-muted"></div>
+      </div></div>
+      <div class="nim-sub nim-sec-title">这次会写进酒馆的东西</div>
+      <div id="nim-export-sum" class="nim-res-list nim-export-sum"></div>
+      <div class="nim-card static"><div class="nim-card-body">
+        <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn ghost xs">让 AI 写</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="5"></textarea></div>
         <details class="nim-fold" id="nim-carry"><summary>从旧聊天搬插图（柏宝绘画的图）<span id="nim-carry-badge" class="nim-muted"></span></summary>
           <div class="nim-muted">改了剧情重新导入时，把旧聊天里柏宝绘画的图搬到新聊天：没改过的段落原样放回去，改过的段落按这一层里的大概位置放。图片文件不动，旧聊天也不动。</div>
           <div class="nim-field"><label>旧角色卡</label><select id="nim-carry-char" class="nim-input"></select></div>
@@ -6253,8 +6772,9 @@
           <div id="nim-carry-info" class="nim-muted"></div>
         </details>
         <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
+        <div class="nim-live nim-center nim-import-live"></div>
         <div id="nim-import-result" class="nim-alert" hidden></div>
-        <div class="nim-muted nim-center">角色卡 + 世界书 + 聊天楼层 + 插图，然后让记忆插件逐层重建表格并核对</div>
+        <div class="nim-muted nim-center">导入后记忆插件会逐层重建表格并核对</div>
       </div></div>
       <div class="nim-card static"><div class="nim-card-body">
         <details class="nim-fold" id="nim-view-wb"><summary>查看全部世界书条目<span id="nim-view-wb-badge" class="nim-muted"></span></summary>
@@ -6330,7 +6850,7 @@
 .nim-searchbar{display:flex;align-items:center;gap:10px;width:100%;padding:12px 14px;border-radius:14px;border:1px solid var(--line2);background:var(--surface);color:var(--muted);font:inherit;font-size:14px;cursor:pointer;text-align:left;}
 .nim-searchbar:hover{border-color:var(--accent);color:var(--text);}
 .nim-search-in{display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:0 12px;border-radius:12px;background:var(--bg);border:1px solid var(--line2);color:var(--muted);}
-.nim-search-in:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(139,124,246,.22);}
+.nim-search-in:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(98,214,181,.22);}
 .nim-search-in input{flex:1;min-width:0;border:0;background:transparent;color:var(--text);font:inherit;font-size:15px;padding:10px 0;outline:none;}
 .nim-sec-title{margin:6px 2px 0 !important;font-size:12px;letter-spacing:.5px;}
 /* 小说页：空章提醒、步骤 */
@@ -6397,9 +6917,9 @@ button.nim-step:hover{border-color:var(--line2);background:var(--surface2);}
 #nim-src-goto{display:none;}
 #nim-src-nav.excerpt>*{display:none;}
 #nim-src-nav.excerpt>#nim-src-goto{display:inline-flex;flex:1;}
-.nim-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(139,124,246,.10),transparent);}
+.nim-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,rgba(98,214,181,.10),transparent);}
 .nim-brand{display:flex;align-items:center;gap:12px;min-width:0;}
-.nim-logo{width:38px;height:38px;flex:none;border-radius:11px;display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 6px 18px rgba(139,124,246,.35);}
+.nim-logo{width:38px;height:38px;flex:none;border-radius:11px;display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,var(--accent),var(--accent2));box-shadow:0 6px 18px rgba(98,214,181,.35);}
 .nim-brand-text{min-width:0;}
 .nim-title{font-size:16px;font-weight:650;letter-spacing:.2px;}
 .nim-ver{font-size:11px;font-weight:500;color:var(--muted);margin-left:4px;}
@@ -6425,7 +6945,7 @@ button.nim-step:hover{border-color:var(--line2);background:var(--surface2);}
 .nim-empty{padding:28px 12px;text-align:center;color:var(--muted);font-size:13px;}
 /* 选文件 */
 .nim-drop{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 16px;border:1.5px dashed var(--line2);border-radius:16px;background:var(--surface);cursor:pointer;text-align:center;transition:border-color .15s,background .15s;}
-.nim-drop:hover,.nim-drop.over{border-color:var(--accent);background:rgba(139,124,246,.08);}
+.nim-drop:hover,.nim-drop.over{border-color:var(--accent);background:rgba(98,214,181,.08);}
 .nim-drop-icon{font-size:30px;}
 .nim-drop-main{font-size:15px;font-weight:600;}
 .nim-stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:10px;}
@@ -6463,7 +6983,7 @@ button.nim-stat .nim-stat-k{color:var(--accent2);}
 .nim-field>label{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;font-weight:550;color:var(--muted);margin-bottom:5px;}
 .nim-hint{font-weight:400;opacity:.8;}
 .nim-input{width:100%;background:var(--bg);border:1px solid var(--line2);border-radius:10px;color:var(--text);padding:9px 11px;font-size:13px;outline:none;transition:border-color .15s,box-shadow .15s;font-family:inherit;}
-.nim-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(139,124,246,.22);}
+.nim-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(98,214,181,.22);}
 select.nim-input{appearance:auto;}
 .nim-textarea{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;resize:vertical;line-height:1.55;}
 .nim-bad{border-color:var(--bad) !important;}
@@ -6475,7 +6995,7 @@ select.nim-input{appearance:auto;}
 .nim-switch::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#cfd0dc;transition:transform .15s;}
 .nim-check input:checked+.nim-switch{background:var(--accent);border-color:transparent;}
 .nim-check input:checked+.nim-switch::after{transform:translateX(16px);background:#fff;}
-.nim-check input:focus-visible+.nim-switch{box-shadow:0 0 0 3px rgba(139,124,246,.3);}
+.nim-check input:focus-visible+.nim-switch{box-shadow:0 0 0 3px rgba(98,214,181,.3);}
 .nim-check .nim-hint{display:block;font-size:11px;color:var(--muted);}
 /* 按钮 */
 .nim-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;}
@@ -6485,7 +7005,7 @@ select.nim-input{appearance:auto;}
 .nim-btn.sm{padding:6px 12px;font-size:12px;border-radius:9px;}
 .nim-btn.xs{padding:2px 8px;font-size:11px;border-radius:7px;}
 .nim-btn.ghost{background:transparent;}
-.nim-btn.primary{background:linear-gradient(135deg,var(--accent),#6f62e8);border-color:transparent;color:#fff;box-shadow:0 6px 16px rgba(139,124,246,.3);}
+.nim-btn.primary{background:linear-gradient(135deg,var(--accent),#6f62e8);border-color:transparent;color:#fff;box-shadow:0 6px 16px rgba(98,214,181,.3);}
 .nim-btn.primary:hover{filter:brightness(1.08);}
 .nim-btn.danger-ghost{background:transparent;color:var(--bad);border-color:rgba(240,100,100,.35);}
 .nim-btn.block{width:100%;padding:13px;font-size:15px;margin-top:4px;}
@@ -6499,7 +7019,7 @@ select.nim-input{appearance:auto;}
 .nim-layers{max-height:520px;overflow-y:auto;padding:6px;}
 .nim-layer{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border:0;border-radius:10px;background:transparent;color:var(--text);font-size:13px;text-align:left;cursor:pointer;font-family:inherit;}
 .nim-layer:hover{background:var(--surface2);}
-.nim-layer.sel{background:rgba(139,124,246,.16);box-shadow:inset 0 0 0 1px rgba(139,124,246,.45);}
+.nim-layer.sel{background:rgba(98,214,181,.16);box-shadow:inset 0 0 0 1px rgba(98,214,181,.45);}
 .nim-layer-no{flex:none;min-width:28px;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12px;}
 .nim-layer-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .nim-layer-meta{flex:none;display:flex;gap:3px;align-items:center;}
@@ -6510,7 +7030,7 @@ select.nim-input{appearance:auto;}
 @keyframes nimPulse{50%{opacity:.35;}}
 .nim-more{padding:6px 10px;font-size:11px;color:var(--muted);text-align:center;}
 .nim-tag{font-size:10px;padding:1px 6px;border-radius:6px;background:var(--surface2);color:var(--muted);white-space:nowrap;}
-.nim-tag.red{background:rgba(240,100,100,.18);color:#ff9a9a;}.nim-tag.orange{background:rgba(242,180,65,.18);color:#ffcf75;}.nim-tag.blue{background:rgba(106,168,255,.18);color:#9cc5ff;}.nim-tag.violet{background:rgba(139,124,246,.18);color:#bdb3ff;}
+.nim-tag.red{background:rgba(240,100,100,.18);color:#ff9a9a;}.nim-tag.orange{background:rgba(242,180,65,.18);color:#ffcf75;}.nim-tag.blue{background:rgba(106,168,255,.18);color:#9cc5ff;}.nim-tag.violet{background:rgba(98,214,181,.18);color:#bdb3ff;}
 .nim-detail{padding:14px;max-height:620px;overflow-y:auto;}
 .nim-detail-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .nim-detail-title{font-size:15px;font-weight:650;}
@@ -6547,7 +7067,7 @@ select.nim-input{appearance:auto;}
 .nim-pr-title{flex:1;min-width:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .nim-pr-list{list-style:none;margin:10px 0;padding:0;display:flex;flex-direction:column;gap:6px;}
 .nim-pr{display:flex;align-items:center;gap:8px;padding:4px 8px 4px 4px;border:1px solid var(--line);border-radius:12px;background:var(--surface2);min-height:48px;}
-.nim-pr.is-slot{border-color:rgba(139,124,246,.6);background:rgba(139,124,246,.12);}
+.nim-pr.is-slot{border-color:rgba(98,214,181,.6);background:rgba(98,214,181,.12);}
 .nim-pr.is-off .nim-pr-open{opacity:.5;}
 .nim-pr.is-dragging{border-color:var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.35);}
 .nim-pr.is-picked{border-color:var(--bad);}
@@ -6564,7 +7084,7 @@ select.nim-input{appearance:auto;}
 .nim-pr-open:disabled{cursor:default;}
 .nim-pr-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600;}
 .nim-pr-tag{flex:none;font-size:11px;padding:1px 7px;border-radius:999px;color:var(--muted);border:1px solid var(--line2);}
-.nim-pr-tag.is-depth{color:#bdb3ff;border-color:rgba(139,124,246,.6);}
+.nim-pr-tag.is-depth{color:#bdb3ff;border-color:rgba(98,214,181,.6);}
 .nim-chev.up{transform:rotate(225deg);}
 .nim-icon-btn.sm{width:34px;height:34px;font-size:13px;}
 .nim-icon-btn:disabled{opacity:.3;cursor:not-allowed;}
@@ -6650,7 +7170,7 @@ select.nim-input{appearance:auto;}
   .nim-icon-btn{width:40px;height:40px;}
   .nim-tabs{order:4;display:grid;grid-template-columns:repeat(5,1fr);gap:0;padding:4px;padding-bottom:max(4px,env(safe-area-inset-bottom));border-top:1px solid var(--line);border-bottom:0;background:var(--surface);overflow:visible;}
   .nim-tab{position:relative;flex-direction:column;gap:2px;padding:6px 2px;border-radius:12px;font-size:11px;min-height:52px;justify-content:center;}
-  .nim-tab.active{background:rgba(139,124,246,.14);border-color:transparent;color:var(--text);}
+  .nim-tab.active{background:rgba(98,214,181,.14);border-color:transparent;color:var(--text);}
   .nim-tab-no{display:none;}
   .nim-tab-ico{display:block;font-size:19px;line-height:1;}
   .nim-badge{position:absolute;top:2px;right:8px;}
@@ -6824,6 +7344,244 @@ button.nim-step:hover{background:var(--surface2);}
   .nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>summary{top:-12px;}
   .nim-footer{background:var(--bg);}
 }
+/* ===== 1.6 新界面：深色底、薄荷绿主色、手机上按钮够大 ===== */
+.nim-modal{--bg:#0f1115;--surface:#171a20;--surface2:#1f232b;--line:#262b34;--line2:#343a46;--text:#eef0f4;--muted:#a3aab8;--faint:#8a92a1;--accent:#62d6b5;--accent2:#62d6b5;--ink:#08231c;--ok:#62d6b5;--warn:#f2b65a;--bad:#f58c82;--info:#86b4ff;}
+.nim-btn{border-radius:12px;}
+.nim-btn:hover{background:#272c36;}
+.nim-btn.primary{background:var(--accent);color:var(--ink);font-weight:700;}
+.nim-btn.primary:hover{background:#7be0c3;}
+.nim-btn.danger-ghost{color:var(--bad);}
+.nim-chip{border:1px solid var(--line2);background:transparent;color:var(--muted);font-family:inherit;white-space:nowrap;}
+.nim-chip.on{background:var(--accent);border-color:var(--accent);color:var(--ink);font-weight:700;}
+.nim-chip-n{opacity:.8;font-variant-numeric:tabular-nums;}
+.nim-badge{color:#2a1c02;}
+.nim-switch{background:#4a5160;}
+.nim-check input:checked+.nim-switch,.nim-pr-toggle input:checked+.nim-switch{background:#2f9d80;}
+.nim-pr-tag.is-depth{color:var(--accent);}
+.nim-status,.nim-live{color:var(--accent);}
+.nim-live:empty{display:none;}
+.nim-card,.nim-res-list,.nim-set-list,.nim-col{border:1px solid var(--line);border-radius:18px;}
+.nim-set-list>details.nim-card{border:0;}
+.nim-input{border-radius:12px;}
+.nim-head-back{margin-right:-4px;}
+.nim-header{gap:8px;}
+.nim-brand{flex:1;}
+/* 设置里的一项：名字一行，说明另起一行 */
+.nim-field>label{font-size:14px;color:var(--text);}
+.nim-field>label .nim-hint{flex-basis:100%;font-size:12px;color:var(--muted);opacity:1;line-height:1.5;}
+.nim-field>.nim-hint{font-size:12px;}
+.nim-check{flex-direction:row-reverse;justify-content:space-between;gap:12px;min-height:44px;font-size:14px;}
+.nim-check>span:not(.nim-switch){flex:1;min-width:0;}
+.nim-check .nim-hint{font-size:12px;opacity:1;line-height:1.5;}
+.nim-hl{background:#1d3a33;color:#b9f0df;}
+.nim-hl.cur{background:#2f9d80;color:#fff;outline:2px solid var(--accent);}
+#nim-modal:not(.on-run) .nim-footer-main{display:none;}
+.is-running .nim-tab[data-tab="run"] .nim-tab-lbl::after{content:'';display:inline-block;width:6px;height:6px;margin-left:5px;border-radius:50%;background:var(--accent);vertical-align:middle;animation:nimPulse 1s infinite;}
+/* 总览 */
+.nim-panel[data-panel="file"] .nim-drop.has-file{order:20;justify-content:center;border:1px solid var(--line2);background:transparent;min-height:48px;padding:10px 14px;}
+.nim-panel[data-panel="file"] .nim-drop.has-file .nim-drop-icon{display:none;}
+.nim-file-update{order:19;margin-top:0;padding:12px 14px;border:1px solid var(--line);border-radius:16px;background:var(--surface);}
+.nim-file-update .nim-muted{flex-basis:100%;}
+.nim-hero{display:flex;flex-direction:column;gap:14px;padding:16px;border:1px solid var(--line);border-radius:20px;background:var(--surface);}
+.nim-hero-top{display:flex;align-items:center;gap:14px;}
+.nim-ring{--p:0;position:relative;flex:none;width:76px;height:76px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--accent) calc(var(--p) * 1%),var(--surface2) 0);}
+.nim-ring::before{content:'';position:absolute;inset:7px;border-radius:50%;background:var(--surface);}
+.nim-ring span{position:relative;font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;}
+.nim-ring small{font-size:11px;font-weight:500;color:var(--muted);margin-left:1px;}
+.nim-hero-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.nim-hero-status{font-size:17px;font-weight:700;line-height:1.35;}
+.nim-hero-sub{font-size:13px;color:var(--muted);}
+.nim-hero-sub.nim-live{color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nim-hero-acts{display:flex;gap:8px;flex-wrap:wrap;}
+.nim-hero-acts .nim-btn{flex:1 1 auto;min-height:46px;}
+.nim-hero-acts .nim-btn.primary{flex:1 1 100%;min-height:50px;font-size:16px;}
+.nim-inbox{display:flex;flex-direction:column;gap:8px;}
+.nim-inbox:empty{display:none;}
+.nim-inbox-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:18px;background:var(--surface);overflow:hidden;}
+.nim-inbox-item{display:flex;align-items:center;gap:12px;width:100%;min-height:58px;padding:11px 16px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer;}
+.nim-inbox-item:first-child{border-top:0;}
+.nim-inbox-item:hover{background:var(--surface2);}
+.nim-inbox-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--info);}
+.nim-inbox-item.warn .nim-inbox-dot{background:var(--warn);}
+.nim-inbox-item.bad .nim-inbox-dot{background:var(--bad);}
+.nim-inbox-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.nim-inbox-main b{font-size:15px;font-weight:500;}
+.nim-inbox-main .nim-muted{line-height:1.5;}
+.nim-res{padding:12px 16px;}
+.nim-res-title{font-size:15px;font-weight:500;}
+.nim-res.ok .nim-res-state{color:var(--muted);}
+.nim-sum-mark{flex:none;width:22px;text-align:center;color:var(--faint);font-weight:700;}
+.nim-res.ok .nim-sum-mark{color:var(--accent);}
+.nim-export-sum .nim-res{flex-wrap:nowrap;}
+/* 处理：分层列表 */
+.nim-runbox{display:flex;flex-direction:column;gap:10px;}
+.nim-run-tools{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.nim-run-tools>.nim-fold{margin-top:0;min-width:0;border:1px solid var(--line) !important;}
+.nim-run-tools>.nim-fold[open]{grid-column:1/-1;}
+.nim-run-tools>.nim-fold>summary{min-height:28px;display:flex;align-items:center;}
+.nim-runbox.detail-open>.nim-run-tools{display:none;}
+.nim-col-foot{display:flex;justify-content:center;padding:6px 10px 10px;border-top:1px solid var(--line);}
+.nim-panel[data-panel="settings"].sub .nim-set-list>details.nim-card[open]>summary{display:none !important;}
+.nim-col-head{gap:8px;padding:10px 12px;}
+.nim-layer-filters{flex:1;min-width:0;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;}
+.nim-layer-filters::-webkit-scrollbar{display:none;}
+.nim-layer-filters .nim-chip{flex:none;}
+.nim-layer{gap:12px;padding:10px 12px;min-height:56px;border-radius:12px;}
+.nim-layer-no{min-width:30px;text-align:right;font-size:13px;}
+.nim-layer-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;}
+.nim-layer-title{flex:none;font-size:15px;}
+.nim-layer-sub{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;color:var(--muted);}
+.nim-layer-chars{min-width:0;font-size:12px;text-align:left;}
+.nim-layer.is-todo .nim-layer-title{color:var(--muted);}
+.nim-layer.is-review .nim-layer-st{color:var(--warn);}
+.nim-layer.is-failed .nim-layer-st{color:var(--bad);}
+.nim-layer.is-running .nim-layer-st{color:var(--info);}
+.nim-dot{width:10px;height:10px;background:#3a414d;}
+.nim-dot.running{background:var(--info);}
+.nim-review-card{display:flex;align-items:center;gap:12px;margin:4px 4px 8px;padding:12px 14px;border-radius:14px;background:#241f14;border:1px solid #5a4a22;}
+.nim-review-card-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.nim-review-card-main b{font-size:15px;color:var(--warn);}
+.nim-review-card-main .nim-muted{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+/* 单层审阅 */
+.nim-detail{padding:0;display:flex;flex-direction:column;}
+.nim-dhead{display:flex;align-items:center;gap:4px;padding:10px 10px 4px 14px;}
+.nim-dback{display:none;}
+.nim-dhead-main{flex:1;min-width:0;}
+.nim-detail-title{display:flex;align-items:center;gap:8px;font-size:17px;font-weight:700;}
+.nim-st-chip{font-size:11px;font-weight:700;padding:2px 8px;border-radius:999px;background:var(--surface2);color:var(--muted);white-space:nowrap;}
+.nim-st-chip.is-done{background:#14201c;color:var(--accent);}
+.nim-st-chip.is-review{background:#241f14;color:var(--warn);}
+.nim-st-chip.is-failed{color:var(--bad);}
+.nim-st-chip.is-running{color:var(--info);}
+.nim-dtokens{padding:0 14px 4px;}
+.nim-drun{display:flex;align-items:center;gap:8px;margin:4px 12px 0;padding:6px 6px 6px 12px;border-radius:12px;background:var(--bg);border:1px solid var(--line);font-size:13px;}
+.nim-drun .nim-live{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nim-drun .nim-live:empty{display:block;}
+.nim-drun .nim-live:empty::before{content:'正在处理…';}
+.nim-dtabs{display:flex;gap:4px;margin:8px 12px 0;padding:4px;border-radius:14px;background:var(--bg);border:1px solid var(--line);}
+.nim-dtab{flex:1;min-width:0;min-height:40px;padding:0 4px;border:0;border-radius:10px;background:transparent;color:var(--muted);font:inherit;font-size:14px;font-weight:500;white-space:nowrap;cursor:pointer;}
+.nim-dtab.on{background:var(--surface2);color:var(--text);}
+.nim-dpanes{flex:1;padding:12px 14px 20px;min-width:0;}
+.nim-dpane{display:none;}
+.nim-dpanes[data-dtab-cur="body"]>[data-dpane="body"],.nim-dpanes[data-dtab-cur="changes"]>[data-dpane="changes"],.nim-dpanes[data-dtab-cur="wb"]>[data-dpane="wb"],.nim-dpanes[data-dtab-cur="more"]>[data-dpane="more"]{display:block;}
+.nim-dpane>.nim-sub:first-child,.nim-dpane>.nim-fold:first-child{margin-top:0;}
+.nim-read-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:2px 0 6px;}
+.nim-pre.nim-read{max-height:none;overflow:visible;padding:2px 0;border:0;background:transparent;font-family:inherit;font-size:15px;line-height:1.85;}
+.nim-hl-nav{position:sticky;bottom:calc(var(--dock-h, 0px) + 12px);z-index:3;display:flex;align-items:center;gap:6px;width:max-content;max-width:100%;margin:10px auto 0;padding:4px;border-radius:999px;background:var(--surface2);border:1px solid var(--line2);box-shadow:0 6px 20px rgba(0,0,0,.45);font-size:13px;}
+.nim-hl-nav .nim-icon-btn{width:40px;height:40px;border-radius:50%;color:var(--text);font-size:16px;}
+.nim-chg-list{display:flex;flex-direction:column;gap:8px;}
+.nim-chg{padding:10px 12px;border-radius:12px;background:var(--bg);border:1px solid var(--line);}
+.nim-chg.bad{border-color:#5a4a22;background:#241f14;}
+.nim-chg-where{font-size:12px;color:var(--muted);margin-bottom:4px;word-break:break-word;}
+.nim-chg-why{color:var(--warn);}
+.nim-chg-text{font-size:14px;line-height:1.7;color:#b9f0df;white-space:pre-wrap;word-break:break-word;}
+.nim-chg .nim-row{margin-top:8px;}
+.nim-dpane .nim-fold{border:1px solid var(--line);border-radius:14px;padding:4px 12px;background:var(--bg);}
+.nim-dpane .nim-fold .nim-fold{background:transparent;}
+.nim-dpane .nim-fold>summary{min-height:40px;display:flex;align-items:center;gap:6px;font-size:14px;color:var(--text);font-weight:500;}
+.nim-dpane .nim-fold[open]{padding-bottom:12px;}
+.nim-more-danger{display:flex;flex-direction:column;align-items:flex-start;gap:8px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);}
+.nim-dock{position:sticky;bottom:0;z-index:4;display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--surface);border-top:1px solid var(--line2);box-shadow:0 -10px 24px rgba(0,0,0,.3);}
+.nim-dock-fb{display:flex;gap:8px;align-items:flex-end;}
+.nim-dock-fb textarea{flex:1;min-width:0;min-height:44px;max-height:132px;resize:none;line-height:1.5;}
+.nim-dock-fb .nim-btn{flex:none;min-height:44px;}
+.nim-dock-acts{display:flex;gap:8px;align-items:center;}
+.nim-dock-acts .nim-btn{min-height:44px;max-width:46%;overflow:hidden;text-overflow:ellipsis;}
+.nim-dock-main{flex:1;max-width:none !important;}
+.nim-dock-tip{flex:1;text-align:right;}
+/* 设置首页 */
+.nim-set-tasks{display:flex;flex-direction:column;}
+.nim-task-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;}
+.nim-task{display:flex;flex-direction:column;gap:3px;min-height:64px;padding:12px 14px;border-radius:16px;border:1px solid var(--line);background:var(--surface);color:var(--text);font:inherit;text-align:left;cursor:pointer;}
+.nim-task:hover{border-color:var(--line2);background:var(--surface2);}
+.nim-task-want{font-size:14px;font-weight:500;line-height:1.4;}
+.nim-set-gtitle{font-size:14px;font-weight:700;color:var(--text);}
+.nim-set-alltitle{display:flex;align-items:baseline;justify-content:space-between;gap:8px;}
+.nim-set-alltitle .nim-muted{font-weight:400;}
+.nim-search-in{min-height:48px;border-radius:16px;border:1px solid var(--line2);padding:0 14px;gap:10px;}
+.nim-search-in:focus-within{border-color:var(--accent);box-shadow:none;}
+.nim-search-in input{font-size:16px;}
+.nim-card-head{flex:1;min-width:0;}
+.nim-set-list .nim-card-desc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.nim-chg-badge{flex:none;font-size:11px;font-weight:700;color:var(--ink);background:var(--accent);border-radius:6px;padding:1px 6px;white-space:nowrap;}
+.nim-panel[data-panel="settings"].sub .nim-chg-badge{display:none;}
+.nim-panel[data-panel="settings"].searching>.nim-set-tasks,.nim-panel[data-panel="settings"].sub>.nim-set-tasks{display:none;}
+.nim-panel[data-panel="settings"].sub .nim-set-list{border:0;}
+.nim-set-results{gap:10px;}
+.nim-sr{display:flex;flex-direction:column;gap:6px;padding:12px 16px;border:1px solid var(--line);border-radius:18px;background:var(--surface);}
+.nim-sr-where{font-size:12px;color:var(--faint);}
+.nim-sr-list{display:flex;flex-direction:column;border:1px solid var(--line);border-radius:18px;background:var(--surface);overflow:hidden;}
+.nim-sr-go{flex-direction:row;align-items:center;gap:12px;min-height:56px;padding:10px 16px;border-radius:0;border-top:1px solid var(--line);background:transparent;}
+.nim-sr-go:first-child{border-top:0;}
+.nim-sr-go-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.nim-sr-go-main b{font-size:15px;font-weight:500;}
+.nim-sr-go-act{flex:none;color:var(--accent);font-size:13px;}
+.nim-adv{margin-top:14px;border:1px solid var(--line);border-radius:14px;background:var(--bg);}
+.nim-adv>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:48px;padding:10px 14px;cursor:pointer;}
+.nim-adv>summary::-webkit-details-marker{display:none;}
+.nim-adv>summary b{display:block;font-size:14px;font-weight:500;}
+.nim-adv-names{display:block;font-size:12px;color:var(--muted);line-height:1.5;}
+.nim-adv[open]>summary .nim-chev{transform:rotate(225deg);}
+.nim-adv>.nim-grid{padding:6px 14px 14px;}
+.nim-calc{grid-column:1/-1;padding:8px 12px;border-radius:10px;background:#14201c;color:var(--accent);font-size:13px;line-height:1.5;}
+.nim-segc{display:flex;gap:4px;padding:4px;border-radius:14px;background:var(--bg);border:1px solid var(--line);}
+.nim-segc button{flex:1;min-width:0;min-height:40px;padding:0 4px;border:0;border-radius:10px;background:transparent;color:var(--muted);font:inherit;font-size:14px;white-space:nowrap;cursor:pointer;}
+.nim-segc button.on{background:var(--accent);color:var(--ink);font-weight:700;}
+.nim-seg-src{display:none;}
+.nim-seg-exp{margin-top:6px;}
+.nim-seg-exp:empty{display:none;}
+.nim-dhead .nim-icon-btn[data-layer-nav]{font-size:22px;color:var(--text);}
+@media (min-width:761px){
+  .nim-detail{max-height:calc(min(900px,100dvh - 48px) - 300px);min-height:320px;}
+  .nim-layers{max-height:calc(min(900px,100dvh - 48px) - 396px);min-height:224px;}
+}
+.nim-reset-all{justify-content:center;margin-top:18px;}
+/* 剧情地图：全书色块 */
+.nim-strip-box{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:18px;background:var(--surface);}
+.nim-strip-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:14px;}
+.nim-strip{display:grid;grid-template-columns:repeat(auto-fill,minmax(16px,1fr));gap:4px;}
+.nim-strip.dense{grid-template-columns:repeat(auto-fill,minmax(9px,1fr));gap:2px;}
+.nim-cell{aspect-ratio:1;min-width:0;padding:0;border:0;border-radius:4px;background:#2a303a;cursor:pointer;}
+.nim-strip.dense .nim-cell{border-radius:2px;}
+.nim-cell.done{background:#2f9d80;}
+.nim-cell.tox{background:var(--bad);}
+.nim-cell.plan{background:var(--warn);}
+.nim-cell.cur{outline:2px solid #fff;outline-offset:1px;}
+.nim-strip-legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--muted);}
+.nim-strip-lg{display:inline-flex;align-items:center;gap:5px;}
+.nim-strip-lg i.nim-cell{display:inline-block;width:10px;height:10px;cursor:default;}
+.nim-map-filters{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;}
+.nim-map-filters::-webkit-scrollbar{display:none;}
+.nim-map-filters>*{flex:none !important;}
+@media (max-width:760px){
+  .nim-header{padding:8px 6px 8px 14px;padding-top:max(8px,env(safe-area-inset-top));}
+  .nim-icon-btn{width:44px;height:44px;border-radius:14px;}
+  .nim-tabs{grid-template-columns:repeat(4,1fr);}
+  .nim-tab{min-height:56px;font-size:12px;}
+  .nim-tab.active{color:var(--accent);}
+  .nim-btn{min-height:44px;}
+  .nim-btn.sm{min-height:40px;}
+  .nim-btn.xs{min-height:32px;padding:2px 10px;}
+  .nim-chip{min-height:36px;padding:6px 12px;font-size:13px;}
+  .nim-switch{width:46px;height:26px;}
+  .nim-switch::after{top:3px;left:3px;width:20px;height:20px;}
+  .nim-check input:checked+.nim-switch::after,.nim-pr-toggle input:checked+.nim-switch::after{transform:translateX(20px);}
+  #nim-modal.on-settings .nim-tabs{display:none;}
+  #nim-modal.on-settings .nim-header{padding-left:6px;}
+  /* 单层审阅占满一屏：只留它自己的标题和底部操作 */
+  #nim-modal.on-run.in-detail .nim-tabs,#nim-modal.on-run.in-detail .nim-footer-main,#nim-modal.on-run.in-detail .nim-header{display:none;}
+  #nim-modal.on-run.in-detail .nim-body{padding:0;}
+  #nim-modal.on-run.in-detail .nim-runbox{gap:0;}
+  .nim-runbox.detail-open .nim-col-wide{overflow:visible;border:0;border-radius:0;background:var(--bg);}
+  .nim-runbox.detail-open .nim-detail{overflow:visible;min-height:100dvh;}
+  .nim-dhead{padding:8px 6px 4px;padding-top:max(8px,env(safe-area-inset-top));position:sticky;top:0;z-index:5;background:var(--bg);}
+  .nim-dback{display:inline-grid;}
+  .nim-dock{padding-bottom:max(10px,env(safe-area-inset-bottom));}
+  .nim-dock-fb textarea{font-size:16px;}
+  .nim-col{border-radius:18px;}
+  .nim-layers{padding:4px;}
+  .nim-footer-main{padding:10px 12px;}
+}
 `;
 
     function bind() {
@@ -6838,6 +7596,8 @@ button.nim-step:hover{background:var(--surface2);}
                 if (file) fn(file);
             });
         on('nim-close', 'click', close);
+        on('nim-head-back', 'click', settingsBack);
+        document.querySelector('#nim-modal [data-panel="file"]').addEventListener('click', onHomeClick);
         bindPreset();
         bindCategories();
         bindStWorlds();
@@ -6852,7 +7612,12 @@ button.nim-step:hover{background:var(--surface2);}
             } else closePresetEdit(false);
         });
         on('nim-pe-pos', 'change', () => ($('nim-pe-depthrow').hidden = $('nim-pe-pos').value !== 'depth'));
-        on('nim-detail-back', 'click', () => openDetail(false));
+        on('nim-layer-filters', 'click', (ev) => {
+            const b = ev.target.closest('[data-layer-filter]');
+            if (!b) return;
+            State.layerFilter = b.dataset.layerFilter;
+            renderLayers();
+        });
         document.querySelectorAll('#nim-modal .nim-tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
         onFile('nim-file', onNovelFile);
         onFile('nim-file-new', (f) => onNovelUpdate(f));
@@ -6884,6 +7649,7 @@ button.nim-step:hover{background:var(--surface2);}
             if (!t.dataset.mapSet) return;
             State.settings[t.dataset.mapSet] = t.type === 'number' ? Number(t.value) : t.dataset.mapSet === 'mapTemplates' ? t.value.split('\n').map((x) => x.trim()).filter(Boolean) : t.value;
             saveSettings();
+            renderSetHub();
         });
         $('nim-file-stats').addEventListener('click', (ev) => {
             if (ev.target.closest('[data-cleanlog]')) openCleanLog();
@@ -6933,10 +7699,37 @@ button.nim-step:hover{background:var(--surface2);}
             const it = findUi.index[Number(ft.dataset.feat)];
             $('nim-set-q').value = '';
             renderSetSearch();
-            goToEl(it.el, it.tab);
+            if (it.action) it.action();
+            else goToEl(it.el, it.tab);
         });
+        document.querySelectorAll('#nim-modal [data-reset-group]').forEach((b) =>
+            b.addEventListener('click', () => {
+                const g = b.dataset.resetGroup;
+                if (!confirm('这一页的设置全部恢复成默认？你改过的会丢掉。')) return;
+                const d = defaultSettings();
+                for (const f of FIELDS[g]) setPath(State.settings, f.key, JSON.parse(JSON.stringify(getPath(d, f.key) ?? null)));
+                if (g === 'worldbook') State.settings.worldbookCategories = d.worldbookCategories;
+                saveSettings();
+                fillFields();
+                renderModelPickers();
+                renderCategories();
+                collectFields();
+                renderSetHub();
+                renderAll();
+                toast('这一页已恢复默认', 'success');
+            }),
+        );
         // 各处的「去某个设置」「打开搜索」「去某一页」
         $('nim-modal').addEventListener('click', (ev) => {
+            const sg = ev.target.closest('[data-seg-for] button');
+            if (sg) {
+                const sel = $(sg.parentElement.dataset.segFor);
+                if (sel && sel.value !== sg.dataset.v) {
+                    sel.value = sg.dataset.v;
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                return syncSegs();
+            }
             const go = ev.target.closest('[data-goto]');
             if (go) {
                 const el = $(go.dataset.goto);
@@ -7097,6 +7890,8 @@ button.nim-step:hover{background:var(--surface2);}
         document.querySelectorAll('#nim-modal [data-export]').forEach((b) => b.addEventListener('click', () => exportFile(b.dataset.export)));
         document.querySelectorAll('#nim-modal [data-key]').forEach((el) => el.addEventListener('change', () => {
             collectFields();
+            syncSegs();
+            renderSetHub();
             renderAll();
         }));
         // 世界书名没单独改过时跟着角色卡名走
