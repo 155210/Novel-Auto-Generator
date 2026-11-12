@@ -1147,6 +1147,7 @@
                 description: State.meta.description,
                 scenario: State.meta.scenario,
                 avatar: State.meta.avatar,
+                avatarImage: State.meta.avatarImage && State.meta.avatarDirty !== false ? await (await fetch(State.meta.avatarImage)).blob() : null,
                 chatArray: applyCarry(await attachImages(out.chat, out.cardName, true)),
                 expectedTables: State.settings.tablesEnabled && State.tableTemplate ? out.tables : null,
                 onStep: (s) => {
@@ -1162,8 +1163,15 @@
                 shouldStop: () => State.stopped,
             });
             State.meta.avatar = res.avatar;
+            if (res.avatarSet) State.meta.avatarDirty = false;
+            State.meta.lastImport = { at: Date.now(), layers: out.floors.length, tables: res.tableError ? 'error' : res.tables ? (res.tables.ok ? 'ok' : 'diff') : 'none' };
             saveProgress();
             log(`已导入：角色卡 ${res.avatar}，聊天 ${res.fileName}`);
+            if (res.avatarSet) log('角色卡头像已换成选的那张');
+            if (res.avatarError) {
+                log(`⚠️ 角色卡头像没换成：${res.avatarError}。可以在酒馆里点角色卡头像手动换`);
+                toast('头像没换成，其他都导入了', 'warning');
+            }
             if (res.tableError) {
                 log(`⚠️ 记忆表格没建成：${res.tableError}`);
                 toast('导入完成，但记忆表格没建成', 'warning');
@@ -1186,6 +1194,8 @@
             btn.disabled = false;
             btn.textContent = '一键导入酒馆';
             renderExportSum();
+            renderAvatar();
+            renderLastImport();
             setStatus('');
         }
     }
@@ -1393,7 +1403,7 @@
         const el = $('nim-carry-info');
         if (el) el.textContent = text;
         const b = $('nim-carry-badge');
-        if (b) b.textContent = Carry.source ? ` · 已选 ${Carry.label}` : '';
+        if (b) b.textContent = Carry.source ? `开着：已选 ${Carry.label}` : '没开。改了剧情重新导入时用';
     }
 
     function fillCarryChars() {
@@ -1604,7 +1614,7 @@
         State.text = text;
         State.fileName = file.name;
         State.engine = null;
-        State.meta = { cardName: baseName(), worldName: baseName(), avatar: '', description: '', scenario: '' };
+        State.meta = { cardName: baseName(), worldName: baseName(), avatar: '', description: '', scenario: '', avatarImage: '', avatarDirty: true, lastImport: null };
         renderExport();
         log(`已读取 ${file.name}，${text.length} 字${State.images.length ? `，插图 ${State.images.length} 张` : ''}`);
         await prepareLayers();
@@ -4592,15 +4602,28 @@
         const { rules, hits } = State.engine.previewReplaceInResults(text);
         if (!hits.length) return toast('已生成的层里没有要替换的词', 'info');
         wrUi.text = text;
+        wrUi.rules = rules;
+        wrUi.hits = hits;
+        // 每次打开默认全选；只想换表格就把别的点掉
+        wrUi.scope = new Set(C.REPLACE_SCOPES);
+        renderReplacePreview();
+        $('nim-wr').hidden = false;
+    }
+
+    /** 词语替换预览：上面一排选「只替换哪里」，下面只列选中的那几处 */
+    function renderReplacePreview() {
+        const all = wrUi.hits;
+        const hits = all.filter((h) => wrUi.scope.has(h.where));
         wrUi.total = hits.length;
-        wrUi.summary = rules
+        wrUi.summary = wrUi.rules
+            .map((r, ri) => ({ text: r.text, count: hits.filter((h) => h.rule === ri).length }))
             .filter((r) => r.count)
             .map((r) => `${r.text}（${r.count} 处）`)
             .join('；');
         const MAX = 500;
         const row = (h) =>
             `<li><div class="nim-cl-chap">第 ${h.layer + 1} 层 · ${esc(h.where)}</div><div>${esc(h.pre)}<del class="nim-cl-mark">${esc(h.from)}</del><ins class="nim-wr-to">${esc(h.to) || '（删掉）'}</ins>${esc(h.post)}</div></li>`;
-        const groups = rules
+        const groups = wrUi.rules
             .map((r, ri) => {
                 const list = hits.filter((h) => h.rule === ri);
                 const where = {};
@@ -4610,9 +4633,21 @@
                 return `<details class="nim-cl-group" ${list.length ? '' : 'disabled'}><summary>${esc(r.text)}<span class="nim-muted">${info}</span></summary><ul class="nim-cl-list">${list.slice(0, MAX).map(row).join('')}</ul>${list.length > MAX ? `<div class="nim-muted">太多了，只列出前 ${MAX} 处</div>` : ''}</details>`;
             })
             .join('');
+        const chips = C.REPLACE_SCOPES.map((k) => {
+            const n = all.filter((h) => h.where === k).length;
+            return `<button class="nim-chip ${n && wrUi.scope.has(k) ? 'on' : ''}" data-wr-scope="${k}" aria-pressed="${!!n && wrUi.scope.has(k)}" ${n ? '' : 'disabled'}>${k} <span class="nim-chip-n">${n}</span></button>`;
+        }).join('');
+        const keep = snapshotUi($('nim-wr-body'), '');
         $('nim-wr-body').innerHTML =
-            `<div class="nim-muted">共 ${hits.length} 处。红色删除线是原来的字，绿色是换成的字。核对没问题再点「确认替换」，改完不能撤销，只能重跑那一层。</div>` + groups;
-        $('nim-wr').hidden = false;
+            `<div class="nim-wr-scope"><div class="nim-sub" style="margin-top:0">只替换哪里（点一下取消或选上）</div><div class="nim-wr-chips">${chips}</div></div>` +
+            `<div class="nim-muted">选中的地方共 ${hits.length} 处。红色删除线是原来的字，绿色是换成的字。核对没问题再点「确认替换」，改完不能撤销，只能重跑那一层。</div>` +
+            groups;
+        restoreUi($('nim-wr-body'), keep, '');
+        const ok = document.querySelector('#nim-wr [data-wr="apply"]');
+        if (ok) {
+            ok.disabled = !hits.length;
+            ok.textContent = hits.length ? `确认替换 ${hits.length} 处` : '没有选中要换的';
+        }
     }
 
     function replacePreviewHtml() {
@@ -4718,6 +4753,7 @@
         }
         $('nim-modal').classList.toggle('on-map', name === 'map');
         $('nim-modal').classList.toggle('on-run', name === 'run');
+        $('nim-modal').classList.toggle('on-export', name === 'export');
         $('nim-modal').classList.toggle('on-settings', name === 'settings');
         if ($('nim-head-back')) $('nim-head-back').hidden = name !== 'settings';
         if ($('nim-head-title')) $('nim-head-title').textContent = '小说导入改写';
@@ -5604,7 +5640,76 @@
         $('nim-card-desc').value = State.meta.description || '';
         if ($('nim-view-wb')?.open) renderViewWorldbook();
         if ($('nim-view-tb')?.open) renderViewTables();
-        $('nim-card-avatar').textContent = State.meta.avatar ? `已绑定角色卡 ${State.meta.avatar}，再次导入会更新这张卡并新建一个聊天` : '导入时会新建角色卡';
+        renderAvatar();
+        renderLastImport();
+    }
+
+    /** 角色卡头像：选了图就显示选的；没选但已经绑了卡，显示那张卡现在的头像 */
+    function renderAvatar() {
+        const img = $('nim-avatar-img');
+        if (!img) return;
+        const m = State.meta;
+        const bound = m.avatar && ST.avatarThumb(m.avatar);
+        const picked = m.avatarImage || '';
+        const src = picked || bound || '';
+        if (src) {
+            if (img.dataset.src !== (picked ? 'picked:' + picked.length : 'card:' + m.avatar)) {
+                img.src = src;
+                img.dataset.src = picked ? 'picked:' + picked.length : 'card:' + m.avatar;
+            }
+        } else {
+            img.removeAttribute('src');
+            delete img.dataset.src;
+        }
+        img.hidden = !src;
+        $('nim-avatar-ph').hidden = !!src;
+        $('nim-card-avatar').textContent = bound ? '已绑定上次导入的那张卡，这次会更新它并新建一个聊天。' : '导入时会新建一张角色卡。点左边选头像，不选就用酒馆默认的。';
+        $('nim-avatar-acts').hidden = !picked;
+        $('nim-avatar-state').textContent = picked ? (m.avatarDirty === false ? '这张头像已经用在角色卡上了' : bound ? '导入时把角色卡头像换成这张' : '导入时用这张做角色卡头像') : '';
+    }
+
+    /** 选的图缩到够用的大小存下来（存档里带着，下次打开还在） */
+    function onAvatarFile(file) {
+        if (!/^image\//.test(file.type)) return toast('请选一张图片', 'warning');
+        const url = URL.createObjectURL(file);
+        const im = new Image();
+        im.onload = () => {
+            const k = Math.min(1, 1024 / Math.max(im.width, im.height));
+            const cv = document.createElement('canvas');
+            cv.width = Math.max(1, Math.round(im.width * k));
+            cv.height = Math.max(1, Math.round(im.height * k));
+            cv.getContext('2d').drawImage(im, 0, 0, cv.width, cv.height);
+            URL.revokeObjectURL(url);
+            State.meta.avatarImage = cv.toDataURL('image/png');
+            State.meta.avatarDirty = true;
+            saveProgress();
+            renderAvatar();
+            toast('头像选好了，导入酒馆时用上', 'success');
+        };
+        im.onerror = () => {
+            URL.revokeObjectURL(url);
+            toast('这张图读不出来，换一张试试', 'error');
+        };
+        im.src = url;
+    }
+
+    function fmtWhen(ts) {
+        const d = new Date(ts);
+        const day = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+        const diff = Math.round((day(new Date()) - day(d)) / 86400000);
+        const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        return `${diff === 0 ? '今天' : diff === 1 ? '昨天' : `${d.getMonth() + 1} 月 ${d.getDate()} 日`} ${hm}`;
+    }
+
+    function renderLastImport() {
+        const box = $('nim-last-import');
+        if (!box) return;
+        const li = State.meta.lastImport;
+        box.hidden = !li;
+        if (!li) return;
+        const T = { ok: '表格核对通过', diff: '表格和预期不一致，详情见日志', error: '表格没建成，可以点下面「只在当前聊天重建表格」', none: '' };
+        box.className = `nim-last-import ${li.tables === 'diff' || li.tables === 'error' ? 'warn' : ''}`;
+        box.innerHTML = `<span class="nim-last-mark">${li.tables === 'diff' || li.tables === 'error' ? '!' : '✓'}</span><span>上次导入：${esc(fmtWhen(li.at))}，${li.layers} 层${T[li.tables] ? `，${T[li.tables]}` : ''}。</span>`;
     }
 
     /** 导入酒馆页：这次会写进去什么，一眼看清 */
@@ -5613,7 +5718,14 @@
         if (!box) return;
         const e = State.engine;
         const s = State.settings;
-        const done = e ? e.results.filter((r) => r && r.status === 'done' && !r.skipped).length : 0;
+        let done = 0;
+        let chars = 0;
+        if (e)
+            e.results.forEach((r) => {
+                if (!r || r.status !== 'done' || r.skipped) return;
+                done++;
+                for (const p of r.finalParas || []) chars += String(p || '').length;
+            });
         const total = e ? e.layers.length : 0;
         let wbN = 0;
         try {
@@ -5626,14 +5738,19 @@
         const tpl = State.tableTemplate;
         const imgs = s.imageMode === 'off' ? 0 : (State.images || []).length;
         const desc = (State.meta.description || '').trim();
-        const rows = [
-            ['聊天楼层', done ? `${done} 层${done < total ? `（共 ${total} 层，还有 ${total - done} 层没处理）` : ''}` : '还没有处理好的层', done > 0],
-            ['世界书', wbN || plotN ? `${wbN} 条${plotN ? `，另有每层剧情 ${plotN} 条` : ''}` : s.worldbookEnabled ? '还没有条目' : '没开，不写', wbN + plotN > 0],
-            ['记忆表格', s.tablesEnabled ? (tpl ? `${tpl.tables.length} 张表，导入后逐层重建` : '没导入模板，这次不填') : '没开，不写', !!(s.tablesEnabled && tpl)],
-            ['插图', imgs ? `${imgs} 张，留在原位置` : s.imageMode === 'off' ? '设置里选了不导入' : '这本书没有插图', imgs > 0],
-            ['角色卡简介', desc ? `已写 ${desc.length} 字` : '还没写，可以在下面让 AI 写', !!desc],
-        ];
-        box.innerHTML = rows.map(([k, v, ok]) => `<div class="nim-res ${ok ? 'ok' : ''}"><div class="nim-res-main"><div class="nim-res-title">${k}</div><div class="nim-res-state">${esc(v)}</div></div><span class="nim-sum-mark">${ok ? '✓' : '–'}</span></div>`).join('');
+        const row = (k, v, o = {}) => {
+            const tag = o.attr ? 'button' : 'div';
+            return `<${tag} class="nim-res nim-sum-row" ${o.attr || ''}><span class="nim-sum-k"><b>${k}</b>${o.sub ? `<span class="nim-sum-sub ${o.warn ? 'warn' : ''}">${esc(o.sub)}</span>` : ''}</span><span class="nim-sum-v ${o.act ? 'act' : ''}">${esc(v)}</span>${o.attr && !o.act ? '<span class="nim-chev r"></span>' : ''}</${tag}>`;
+        };
+        box.innerHTML = [
+            row('聊天楼层', done ? `${done} 层 · ${fmtNum(chars)}字` : '还没有处理好的层', done && done < total ? { sub: `共 ${total} 层，还有 ${total - done} 层没处理` } : {}),
+            row('世界书', wbN + plotN ? `${wbN + plotN} 条` : s.worldbookEnabled ? '还没有条目' : '没开', wbN + plotN ? { attr: 'data-goto="nim-view-wb"', sub: plotN ? `其中每层剧情 ${plotN} 条` : '' } : {}),
+            row('记忆表格', s.tablesEnabled ? (tpl ? `${tpl.tables.length} 张 · 导入后逐层重建` : '没导入模板，这次不填') : '没开', s.tablesEnabled && tpl && done ? { attr: 'data-goto="nim-view-tb"' } : {}),
+            row('插图', imgs ? `${imgs} 张` : s.imageMode === 'off' ? '设置里选了不导入' : '没有'),
+            desc
+                ? row('角色卡简介', `已写 ${desc.length} 字`, { attr: 'data-goto="nim-card-desc"' })
+                : row('角色卡简介', '现在写', { attr: 'data-sum-act="desc"', act: true, sub: s.apiEndpoint ? '还是空的，导入时会先让 AI 写' : '还是空的', warn: true }),
+        ].join('');
         const btn = $('nim-import');
         if (btn && !btn.disabled) btn.textContent = done ? `导入已处理的 ${done} 层` : '一键导入酒馆';
     }
@@ -6752,30 +6869,39 @@
     </section>
 
     <section class="nim-panel" data-panel="export" id="nim-sec-export">
+      <div class="nim-exp-head"><h2>导入酒馆</h2><button class="nim-linkbtn" data-goto="nim-exp-dl">只下载文件</button></div>
       <div class="nim-card static"><div class="nim-card-body">
-        <div class="nim-grid">
-          <div class="nim-field"><label>角色卡名</label><input id="nim-card-name" class="nim-input"></div>
-          <div class="nim-field"><label>世界书名</label><input id="nim-world-name" class="nim-input"></div>
+        <div class="nim-exp-cardrow">
+          <label class="nim-avatar" id="nim-avatar-box" title="点这里选角色卡头像">
+            <input type="file" id="nim-avatar-file" accept="image/*" hidden>
+            <img id="nim-avatar-img" alt="角色卡头像" hidden>
+            <span id="nim-avatar-ph">角色卡<br>头像</span>
+          </label>
+          <div class="nim-exp-names">
+            <div class="nim-field"><label for="nim-card-name">角色卡名</label><input id="nim-card-name" class="nim-input"></div>
+            <div class="nim-field"><label for="nim-world-name">世界书名</label><input id="nim-world-name" class="nim-input"></div>
+          </div>
         </div>
         <div id="nim-card-avatar" class="nim-muted"></div>
+        <div class="nim-row nim-avatar-acts" id="nim-avatar-acts" hidden><span id="nim-avatar-state" class="nim-muted nim-grow"></span><button id="nim-avatar-clear" class="nim-btn ghost sm">不用这张头像</button></div>
       </div></div>
       <div class="nim-sub nim-sec-title">这次会写进酒馆的东西</div>
       <div id="nim-export-sum" class="nim-res-list nim-export-sum"></div>
-      <div class="nim-card static"><div class="nim-card-body">
+      <div class="nim-card static" id="nim-exp-desc"><div class="nim-card-body">
         <div class="nim-field"><label>角色卡简介 <button id="nim-gen-desc" class="nim-btn ghost xs">让 AI 写</button></label><textarea id="nim-card-desc" class="nim-input nim-textarea" rows="5"></textarea></div>
-        <details class="nim-fold" id="nim-carry"><summary>从旧聊天搬插图（柏宝绘画的图）<span id="nim-carry-badge" class="nim-muted"></span></summary>
+      </div></div>
+      <details class="nim-card nim-carry-card" id="nim-carry"><summary><div class="nim-card-head"><div class="nim-card-title">把旧聊天里柏宝绘的图搬过来</div><div class="nim-card-desc" id="nim-carry-badge">没开。改了剧情重新导入时用</div></div><span class="nim-chev"></span></summary>
+        <div class="nim-card-body">
           <div class="nim-muted">改了剧情重新导入时，把旧聊天里柏宝绘画的图搬到新聊天：没改过的段落原样放回去，改过的段落按这一层里的大概位置放。图片文件不动，旧聊天也不动。</div>
           <div class="nim-field"><label>旧角色卡</label><select id="nim-carry-char" class="nim-input"></select></div>
           <div class="nim-field"><label>旧聊天</label><select id="nim-carry-chat" class="nim-input"></select></div>
           <label class="nim-check"><input type="checkbox" id="nim-carry-changed" checked><span class="nim-switch"></span><span>改过的段落也按大概位置搬<span class="nim-hint">不勾就只搬能对上原段落的图，改过的地方之后自己重画</span></span></label>
           <div class="nim-row"><button id="nim-carry-load" class="nim-btn sm">读取并预览</button><label class="nim-btn sm">从文件选 .jsonl<input type="file" id="nim-carry-file" accept=".jsonl,.json" hidden></label><button id="nim-carry-clear" class="nim-btn ghost sm">不搬了</button></div>
           <div id="nim-carry-info" class="nim-muted"></div>
-        </details>
-        <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
-        <div class="nim-live nim-center nim-import-live"></div>
-        <div id="nim-import-result" class="nim-alert" hidden></div>
-        <div class="nim-muted nim-center">导入后记忆插件会逐层重建表格并核对</div>
-      </div></div>
+        </div>
+      </details>
+      <div id="nim-last-import" class="nim-last-import" hidden></div>
+      <div id="nim-import-result" class="nim-alert" hidden></div>
       <div class="nim-card static"><div class="nim-card-body">
         <details class="nim-fold" id="nim-view-wb"><summary>查看全部世界书条目<span id="nim-view-wb-badge" class="nim-muted"></span></summary>
           <div class="nim-row"><input id="nim-view-wb-q" class="nim-input" placeholder="搜条目名、关键词或内容"></div>
@@ -6786,13 +6912,8 @@
         </details>
         <div class="nim-muted">按已经处理完的层合并后的样子，和导入酒馆时写进去的一样。</div>
       </div></div>
-      <div class="nim-card static"><div class="nim-card-body">
-        <div class="nim-sub">其他操作</div>
-        <div class="nim-row">
-          <button id="nim-rebuild" class="nim-btn sm">只在当前聊天重建表格</button>
-          <button id="nim-persona" class="nim-btn sm">主角人设写入当前用户人设</button>
-        </div>
-        <div class="nim-sub">下载</div>
+      <div class="nim-card static" id="nim-exp-dl"><div class="nim-card-body">
+        <div class="nim-sub">只下载文件</div>
         <div class="nim-dl">
           <button class="nim-btn sm" data-export="chat">聊天 JSONL</button>
           <button class="nim-btn sm" data-export="world">世界书</button>
@@ -6801,6 +6922,11 @@
           <button class="nim-btn sm" data-export="tables">表格</button>
           <button class="nim-btn sm" data-export="glossary">术语表</button>
           <button class="nim-btn sm" data-export="txt">改写后的 TXT</button>
+        </div>
+        <div class="nim-sub">其他操作</div>
+        <div class="nim-row">
+          <button id="nim-rebuild" class="nim-btn sm">只在当前聊天重建表格</button>
+          <button id="nim-persona" class="nim-btn sm">主角人设写入当前用户人设</button>
         </div>
       </div></div>
     </section>
@@ -6811,6 +6937,11 @@
       <div class="nim-bar"><div id="nim-foot-mapbar" class="nim-bar-fill"></div></div>
     </div>
     <div class="nim-foot-actions"><button id="nim-foot-scan" class="nim-btn primary">扫描</button><button id="nim-foot-rescan" class="nim-btn">全部扫描</button><button id="nim-foot-scanstop" class="nim-btn danger-ghost" hidden>停止扫描</button></div>
+  </footer>
+  <footer class="nim-footer nim-footer-export">
+    <button id="nim-import" class="nim-btn primary block">一键导入酒馆</button>
+    <div class="nim-live nim-center nim-import-live"></div>
+    <div class="nim-muted nim-center">表格那一步出错不影响角色卡和聊天，可以单独重建</div>
   </footer>
   <footer class="nim-footer nim-footer-main">
     <div class="nim-foot-info">
@@ -7536,6 +7667,41 @@ button.nim-step:hover{background:var(--surface2);}
   .nim-layers{max-height:calc(min(900px,100dvh - 48px) - 396px);min-height:224px;}
 }
 .nim-reset-all{justify-content:center;margin-top:18px;}
+.nim-wr-scope{position:sticky;top:-14px;z-index:2;margin:-14px -16px 0;padding:12px 16px 10px;background:var(--bg);border-bottom:1px solid var(--line);}
+.nim-wr-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.nim-chip:disabled{opacity:.4;cursor:default;}
+/* 导入酒馆 */
+.nim-exp-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 4px;}
+.nim-exp-head h2{margin:0;font-size:19px;font-weight:700;}
+.nim-exp-head .nim-linkbtn{color:var(--muted);text-decoration:none;font-size:13px;min-height:44px;padding:0 4px;}
+.nim-exp-cardrow{display:flex;gap:14px;align-items:flex-start;}
+.nim-avatar{flex:none;position:relative;width:84px;height:112px;border-radius:14px;border:1.5px dashed var(--line2);background:var(--surface2);display:grid;place-items:center;overflow:hidden;cursor:pointer;color:var(--muted);font-size:12px;line-height:1.5;text-align:center;}
+.nim-avatar:hover{border-color:var(--accent);}
+.nim-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+.nim-avatar:has(img:not([hidden])){border-style:solid;}
+.nim-exp-names{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px;}
+.nim-avatar-acts{margin-top:0;}
+.nim-export-sum .nim-sum-row{width:100%;min-height:58px;gap:10px;border:0;border-top:1px solid var(--line);background:transparent;color:var(--text);font:inherit;text-align:left;}
+.nim-export-sum .nim-sum-row:first-child{border-top:0;}
+.nim-export-sum button.nim-sum-row{cursor:pointer;}
+.nim-export-sum button.nim-sum-row:hover{background:var(--surface2);}
+.nim-sum-k{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px;}
+.nim-sum-k b{font-size:15px;font-weight:500;}
+.nim-sum-sub{font-size:12px;color:var(--muted);}
+.nim-sum-sub.warn{color:var(--warn);}
+.nim-sum-v{flex:none;max-width:62%;text-align:right;font-size:14px;color:var(--muted);font-variant-numeric:tabular-nums;}
+.nim-sum-v.act{color:var(--accent);}
+.nim-carry-card>summary{min-height:58px;}
+.nim-carry-card .nim-card-body{display:flex;flex-direction:column;gap:10px;}
+.nim-carry-card .nim-row{margin-top:0;}
+.nim-last-import{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:14px;background:#14201c;border:1px solid #1d3a33;font-size:13px;line-height:1.6;}
+.nim-last-import.warn{background:#241f14;border-color:#5a4a22;}
+.nim-last-mark{flex:none;color:var(--accent);font-weight:700;}
+.nim-last-import.warn .nim-last-mark{color:var(--warn);}
+#nim-modal .nim-footer-export{display:none;flex-direction:column;align-items:stretch;gap:6px;}
+#nim-modal.on-export .nim-footer-export{display:flex;}
+.nim-footer-export .nim-btn.block{margin-top:0;min-height:52px;font-size:16px;}
+.nim-footer-export .nim-center{margin-top:0;}
 /* 剧情地图：全书色块 */
 .nim-strip-box{display:flex;flex-direction:column;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:18px;background:var(--surface);}
 .nim-strip-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:14px;}
@@ -7797,15 +7963,25 @@ button.nim-step:hover{background:var(--surface2);}
             openReplacePreview(text);
         });
         $('nim-wr').addEventListener('click', (ev) => {
+            const sc = ev.target.closest('[data-wr-scope]');
+            if (sc) {
+                const k = sc.dataset.wrScope;
+                if (wrUi.scope.has(k)) wrUi.scope.delete(k);
+                else wrUi.scope.add(k);
+                return renderReplacePreview();
+            }
             if (ev.target.closest('[data-wr="apply"]')) {
                 const e = State.engine;
                 $('nim-wr').hidden = true;
                 if (!e || e.running) return toast('正在处理中，先暂停再替换', 'warning');
-                const n = e.applyReplaceToResults(wrUi.text);
+                if (!wrUi.total) return;
+                const part = C.REPLACE_SCOPES.filter((k) => wrUi.scope.has(k) && wrUi.hits.some((h) => h.where === k));
+                const whole = !wrUi.hits.some((h) => !wrUi.scope.has(h.where));
+                const n = e.applyReplaceToResults(wrUi.text, whole ? undefined : part);
                 saveProgress();
                 renderAll();
                 toast(`已替换 ${wrUi.total} 处，涉及 ${n} 层`, 'success');
-                log(`词语替换已写入 ${n} 层：${wrUi.summary}`);
+                log(`词语替换已写入 ${n} 层${whole ? '' : `（只换了${part.join('、')}）`}：${wrUi.summary}`);
             } else if (ev.target === $('nim-wr') || ev.target.closest('[data-wr="close"]')) $('nim-wr').hidden = true;
         });
         on('nim-preview', 'click', async () => {
@@ -7864,6 +8040,16 @@ button.nim-step:hover{background:var(--surface2);}
             genCardInfo();
         });
         on('nim-import', 'click', importToTavern);
+        onFile('nim-avatar-file', onAvatarFile);
+        on('nim-avatar-clear', 'click', () => {
+            State.meta.avatarImage = '';
+            State.meta.avatarDirty = true;
+            saveProgress();
+            renderAvatar();
+        });
+        on('nim-export-sum', 'click', (ev) => {
+            if (ev.target.closest('[data-sum-act="desc"]')) $('nim-gen-desc').click();
+        });
         // 每次展开都重新读角色卡列表：导入后新建的卡、界面重画后清空的下拉框都能补上
         $('nim-carry')?.addEventListener('toggle', () => {
             if ($('nim-carry').open) fillCarryChars();

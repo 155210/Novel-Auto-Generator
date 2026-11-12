@@ -1268,6 +1268,32 @@ describe('运行引擎', () => {
         expect(calls.length).toBe(before);
     });
 
+    it('词语替换可以只换选中的地方（比如只换世界书）', async () => {
+        const { engine } = makeEngine(normal);
+        await engine.run();
+        engine.results[0].parsed.summary = '裘月寒来了';
+        const pv = engine.previewReplaceInResults('裘月寒 → 裘寒月');
+        const wheres = new Set(pv.hits.map((h) => h.where));
+        expect(wheres.has('正文')).toBe(true);
+        expect(wheres.has('摘要')).toBe(true);
+        const other = '摘要';
+        const raw = engine.results[0].raw;
+        expect(engine.applyReplaceToResults('裘月寒 → 裘寒月', [other])).toBeGreaterThan(0);
+        // 正文和原始回复没动，选中的那一处换掉了
+        expect(engine.results[0].finalParas.join('')).toContain('裘月寒');
+        expect(engine.results[0].raw).toBe(raw);
+        expect(engine.results[0].appliedReplace).toBeUndefined();
+        const left = engine.previewReplaceInResults('裘月寒 → 裘寒月').hits;
+        expect(left.some((h) => h.where === other)).toBe(false);
+        expect(left.some((h) => h.where === '正文')).toBe(true);
+        expect(engine.results[0].parsed.summary).toBe('裘寒月来了');
+        // 再把正文也换掉
+        expect(engine.applyReplaceToResults('裘月寒 → 裘寒月', ['正文'])).toBeGreaterThan(0);
+        expect(engine.results[0].finalParas.join('')).not.toContain('裘月寒');
+        const marked = engine.markedBody(0);
+        expect(C.stripMarks(marked)).toBe(engine.renderFloors()[0].body);
+    });
+
     it('分隔线不会把上一行变成 Markdown 标题，**第二话** 也认成章节标题', () => {
         const lines = C.formatBodyHeadings(['笑了很久。', '---', '**第二话 试着幼驯染**', '正文', '=====', '后文', '***'], {}, '话');
         expect(C.fixSeparators(lines, 'bt')).toEqual(['笑了很久。', '<bt>\n#第2话：试着幼驯染\n</bt>', '正文', '', '=====', '后文']);
