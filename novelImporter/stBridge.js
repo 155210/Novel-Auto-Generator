@@ -70,6 +70,7 @@
         fd.append('depth_prompt_prompt', '');
         fd.append('depth_prompt_depth', '4');
         fd.append('depth_prompt_role', 'system');
+        if (opts.avatarImage) fd.append('avatar', opts.avatarImage, 'avatar.png');
         const resp = await fetch('/api/characters/create', {
             method: 'POST',
             headers: c.getRequestHeaders({ omitContentType: true }),
@@ -80,6 +81,22 @@
         const avatar = (await resp.text()).trim();
         await c.getCharacters();
         return avatar;
+    }
+
+    /** 给已有的角色卡换头像（卡里的内容不动）。酒馆太旧没有这个接口时报错，由调用方提示手动换 */
+    async function setCharacterAvatar(avatar, blob) {
+        const c = ctx();
+        const fd = new FormData();
+        fd.append('avatar', blob, 'avatar.png');
+        fd.append('avatar_url', avatar);
+        const resp = await fetch('/api/characters/edit-avatar', { method: 'POST', headers: c.getRequestHeaders({ omitContentType: true }), body: fd, cache: 'no-cache' });
+        if (!resp.ok) throw new Error(resp.status === 404 ? '这个版本的酒馆不支持直接换头像' : `HTTP ${resp.status}`);
+        await c.getCharacters();
+    }
+
+    /** 角色卡头像的缩略图地址；卡不在了返回空 */
+    function avatarThumb(avatar) {
+        return avatar && findCharacterIndex(avatar) >= 0 ? `/thumbnail?type=avatar&file=${encodeURIComponent(avatar)}&t=${Date.now()}` : '';
     }
 
     /** 更新已有角色卡的简介和绑定的世界书（重新导入世界书时用） */
@@ -592,6 +609,8 @@
         step('保存世界书');
         await saveWorldbook(p.worldName, p.worldbook);
         let avatar = p.avatar;
+        let avatarSet = false;
+        let avatarError = '';
         if (avatar && findCharacterIndex(avatar) >= 0) {
             step('更新角色卡');
             await updateCharacter(avatar, {
@@ -599,9 +618,20 @@
                 scenario: p.scenario || '',
                 data: { description: p.description || '', scenario: p.scenario || '', extensions: { world: p.worldName } },
             });
+            // 头像换不成不算导入失败：单独报，卡和聊天照常写
+            if (p.avatarImage) {
+                step('换角色卡头像');
+                try {
+                    await setCharacterAvatar(avatar, p.avatarImage);
+                    avatarSet = true;
+                } catch (e) {
+                    avatarError = String((e && e.message) || e);
+                }
+            }
         } else {
             step('创建角色卡');
-            avatar = await createCharacter({ name: p.cardName, description: p.description, scenario: p.scenario, worldName: p.worldName });
+            avatar = await createCharacter({ name: p.cardName, description: p.description, scenario: p.scenario, worldName: p.worldName, avatarImage: p.avatarImage });
+            avatarSet = !!p.avatarImage;
         }
         // 角色卡一建好就告诉界面记下来：后面哪一步失败了，重试时更新这张卡，不会再建一张重复的
         if (p.onCard) p.onCard(avatar);
@@ -627,7 +657,7 @@
                 tableError = String((e && e.message) || e);
             }
         }
-        return { avatar, fileName, tables, tableError };
+        return { avatar, fileName, tables, tableError, avatarSet, avatarError };
     }
 
     root.NovelImporterST = {
@@ -640,6 +670,8 @@
         loadWorldbookEntries,
         createCharacter,
         updateCharacter,
+        setCharacterAvatar,
+        avatarThumb,
         saveChat,
         openChat,
         readPluginTables,

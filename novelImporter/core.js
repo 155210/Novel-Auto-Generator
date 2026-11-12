@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.0';
+    const VERSION = '1.6.1';
 
     // ============================================
     // 默认配置
@@ -2117,6 +2117,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return rules;
     }
 
+    /** 「立即应用」能分开选的几处 */
+    const REPLACE_SCOPES = ['标题', '正文', '摘要', '世界书', '表格'];
+
     function applyWordReplace(text, rules) {
         let t = String(text ?? '');
         for (const r of rules || []) t = t.replace(r.re, r.to);
@@ -4210,9 +4213,12 @@ ${blocks}`;
          * 词语替换直接改到已生成的层里（正文、标题、摘要、世界书、表格、原始回复），之后的展示、导出、重做都用改过的。
          * 请求记录不动。返回改到的层数。
          */
-        function applyReplaceToResults(text) {
+        function applyReplaceToResults(text, scope) {
             const rules = parseWordReplace(text);
             if (!rules.length) return 0;
+            // scope：只替换哪几处（标题、正文、摘要、世界书、表格）；不传或全选就是全部，连原始回复一起换
+            const all = !Array.isArray(scope) || REPLACE_SCOPES.every((k) => scope.includes(k));
+            const has = (k) => all || scope.includes(k);
             const deep = (v) => {
                 if (typeof v === 'string') return applyWordReplace(v, rules);
                 if (Array.isArray(v)) return v.map(deep);
@@ -4223,9 +4229,25 @@ ${blocks}`;
             for (let i = 0; i < E.results.length; i++) {
                 const r = E.results[i];
                 if (!r || r.status !== 'done') continue;
-                const nr = { ...r, raw: deep(r.raw), finalParas: deep(r.finalParas), parsed: deep(r.parsed), tableActions: deep(r.tableActions) };
-                if (JSON.stringify([nr.raw, nr.finalParas, nr.parsed]) === JSON.stringify([r.raw, r.finalParas, r.parsed])) continue;
-                nr.appliedReplace = [r.appliedReplace, String(text).trim()].filter(Boolean).join('\n');
+                let nr;
+                if (all) nr = { ...r, raw: deep(r.raw), finalParas: deep(r.finalParas), parsed: deep(r.parsed), tableActions: deep(r.tableActions) };
+                else {
+                    const p = r.parsed || {};
+                    const np = { ...p };
+                    const put = (k) => {
+                        if (k in p) np[k] = deep(p[k]);
+                    };
+                    if (has('标题')) put('title');
+                    if (has('摘要')) put('summary'), put('bigSummary');
+                    if (has('世界书')) put('worldbook');
+                    if (has('表格')) put('tableOps');
+                    nr = { ...r, parsed: np };
+                    if (has('正文')) nr.finalParas = deep(r.finalParas);
+                    if (has('表格') && 'tableActions' in r) nr.tableActions = deep(r.tableActions);
+                }
+                if (JSON.stringify([nr.raw, nr.finalParas, nr.parsed, nr.tableActions]) === JSON.stringify([r.raw, r.finalParas, r.parsed, r.tableActions])) continue;
+                // 正文换过才记：高亮标记版要照样换一遍才对得上
+                if (has('正文')) nr.appliedReplace = [r.appliedReplace, String(text).trim()].filter(Boolean).join('\n');
                 // 换成新对象，重放缓存从这层往后重新算（世界书、表格跟着变）
                 E.results[i] = nr;
                 changed++;
@@ -5319,6 +5341,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
         splitBodyBlocks,
         fixSeparators,
         parseWordReplace,
+        REPLACE_SCOPES,
         applyWordReplace,
         marksToHtml,
         detectForeign,
