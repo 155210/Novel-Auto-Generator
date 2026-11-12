@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.2';
+    const VERSION = '1.6.3';
 
     // ============================================
     // 默认配置
@@ -2436,12 +2436,32 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         return 'upsert';
     }
 
+    /**
+     * 表名、列名里有 <user>、{{user}} 之类占位符时，AI 常把它换成主角名（「角色与<user>社交表格」写成「角色与吴良社交表格」）。
+     * 占位符当成任意几个字来比。
+     */
+    const NAME_PLACEHOLDER = /<\s*(?:user|char)\s*>|\{\{\s*(?:user|char)\s*\}\}/gi;
+    function placeholderNameMatch(templateName, name) {
+        // 末尾的「表格」「表」写不写都算
+        const t = String(templateName || '').replace(/表格?$/, '');
+        const n = String(name || '').trim().replace(/表格?$/, '');
+        if (!n || !NAME_PLACEHOLDER.test(t)) return false;
+        NAME_PLACEHOLDER.lastIndex = 0;
+        const src = t
+            .split(NAME_PLACEHOLDER)
+            .map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+            .join('.{1,20}?');
+        NAME_PLACEHOLDER.lastIndex = 0;
+        return new RegExp(`^${src}$`, 'i').test(n);
+    }
+
     function dataToCols(table, data) {
         const cols = {};
         if (!data || typeof data !== 'object') return cols;
         for (const [k, v] of Object.entries(data)) {
             let ci = table.columns.indexOf(k);
             if (ci < 0 && /^\d+$/.test(k)) ci = Number(k);
+            if (ci < 0) ci = table.columns.findIndex((c) => c && placeholderNameMatch(c, k));
             if (ci < 0) ci = table.columns.findIndex((c) => c && (c.includes(k) || k.includes(c)));
             if (ci >= 0 && ci < table.columns.length) cols[ci] = cleanCell(v);
         }
@@ -2466,7 +2486,7 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
 
         const findTable = (name) => {
             if (byName.has(name)) return byName.get(name);
-            return t.template.tables.find((tb) => tb.name.includes(name) || name.includes(tb.name)) || null;
+            return t.template.tables.find((tb) => tb.name.includes(name) || name.includes(tb.name)) || t.template.tables.find((tb) => placeholderNameMatch(tb.name, name)) || null;
         };
 
         for (const [tname, list] of Object.entries(ops || {})) {

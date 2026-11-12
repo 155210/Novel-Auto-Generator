@@ -291,6 +291,17 @@ describe('记忆表格', () => {
         ]);
     });
 
+    it('表名里的 <user> 被 AI 换成主角名也能认出是哪张表', () => {
+        const st = { tables: C.createTableState(TEMPLATE) };
+        const plan = C.planTableActions(st, { 角色与吴良社交表格: [{ 操作: '插入', 数据: { 角色名: '花恋', 对吴良关系: '青梅' } }] });
+        expect(plan.log.filter((l) => /未知表格/.test(l))).toEqual([]);
+        expect(plan.actions.length).toBe(1);
+        expect(plan.actions[0].tableIndex).toBe(2);
+        expect(plan.actions[0].data[1]).toBe('青梅');
+        expect(C.planTableActions(st, { 角色与吴良社交: [] }).log.some((l) => /未知表格/.test(l))).toBe(false);
+        expect(C.planTableActions(st, { 完全不相干的表: [] }).log).toEqual(['未知表格：完全不相干的表']);
+    });
+
     it('名字格带外号（主名|外号）时按主名或唯一外号找行，更新带上名字', () => {
         let st = { tables: C.createTableState(TEMPLATE) };
         st.tables.rows[1] = [
