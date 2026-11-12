@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.3';
+    const VERSION = '1.6.4';
 
     // ============================================
     // 默认配置
@@ -3152,7 +3152,11 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             for (let i = k; i < upTo; i++) {
                 const r = E.results[i];
                 if (!r || r.status !== 'done') break;
-                st = commit(st, i, r).state;
+                const c = commit(st, i, r);
+                st = c.state;
+                // 表格操作按当前规则重算（比如插件更新后能认出的表名多了），存下的结果跟着改，导出和「表格提示」才一致
+                r.tableActions = c.out.tableActions;
+                r.tableLog = c.out.tableLog;
                 replayCache.refs[i] = r;
                 replayCache.states[i + 1] = st;
             }
