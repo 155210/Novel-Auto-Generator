@@ -18,6 +18,8 @@
         // 剧情地图：预扫描用的模型（留空用主 API）、并发、单价、雷点、指令模板
         mapScanModel: '',
         mapScanExtra: '', // 扫描时的额外要求
+        // 扫描套不套酒馆预设：off 不套；fail 失败的层套（扫描时失败自动套预设再试一次，重扫失败层直接套）；on 每层都套
+        mapScanPreset: 'off',
         // 「拉取模型列表」拉到的模型存下来，主模型和剧情地图的模型都从这里选
         apiModels: [],
         mapScanEndpoint: '',
@@ -3032,6 +3034,7 @@
             <div class="nim-row">
               <button class="nim-btn sm" data-map-act="source" data-i="${i}">看原文</button>
               <button class="nim-btn sm" data-map-act="scan-one" data-i="${i}">${s ? '重新扫描这层' : '扫描这层'}</button>
+              ${lp.scanError ? `<button class="nim-btn sm" data-map-act="scan-one-preset" data-i="${i}">套预设重扫这层</button>` : ''}
               <button class="nim-btn sm" data-map-act="goto-run" data-i="${i}">去处理页</button>
             </div>
             <details class="nim-fold nim-subfold nim-map-edit" ${editOpen ? 'open' : ''}><summary>改写安排${planBits.length ? `（${planBits.join('、')}）` : '（书签、改写指令、新大纲、插入剧情、备注）'}</summary>
@@ -3165,7 +3168,7 @@
         return Math.max(def, Number(State.settings.maxTokens) || 0);
     }
 
-    async function callSideAPI(prompt, { signal, maxTokens = 2000, onChunk } = {}) {
+    async function callSideAPI(prompt, { signal, maxTokens = 2000, onChunk, messages } = {}) {
         const m = scanModelInfo();
         const h = { 'Content-Type': 'application/json' };
         if (m.key) h.Authorization = `Bearer ${m.key}`;
@@ -3173,7 +3176,7 @@
         let last;
         for (let k = 0; k < 3; k++) {
             if (signal && signal.aborted) throw new Error('ABORTED');
-            const body = { model: m.model || 'gpt-4o-mini', messages: [{ role: 'user', content: prompt }], temperature: 0.3, stream: true, max_tokens: maxTokens };
+            const body = { model: m.model || 'gpt-4o-mini', messages: messages || [{ role: 'user', content: prompt }], temperature: 0.3, stream: true, max_tokens: maxTokens };
             if (sideUsageOk) body.stream_options = { include_usage: true };
             const ctl = new AbortController();
             const onAbort = () => ctl.abort();
@@ -3282,14 +3285,32 @@
         $('nim-map-est').textContent = `要扫 ${est.layers} 层：输入约 ${fmtNum(est.input)} token，输出约 ${fmtNum(est.output)} token${money}`;
     }
 
-    async function runScan(onlyMissing, single = null) {
+    /** 剧情地图扫描用的消息：套预设时按处理正文用的那套预设拼，否则只发提示词 */
+    function scanMessages(prompt, usePreset) {
+        if (!usePreset) return null;
+        return C.assemblePresetMessages(State.settings.preset || C.presetDefaults(), prompt, substituteMacros);
+    }
+
+    /** 预设里开着、有内容的条目数（不算「本层提示词」占位） */
+    function presetLiveCount() {
+        const p = State.settings.preset;
+        return ((p && p.entries) || []).filter((x) => x && x.id !== C.PRESET_SLOT_ID && x.enabled !== false && String(x.content || '').trim()).length;
+    }
+
+    /** opts.preset：true 这次每层都套预设（「用预设重扫」按钮）；不传按设置 mapScanPreset */
+    async function runScan(onlyMissing, single = null, opts = {}) {
         const e = mapEngine();
         if (!e) return toast('先选一本小说', 'warning');
         if (mapUi.scan) return toast('正在扫描', 'info');
+        if (!presetLiveCount()) {
+            // 预设是空的，套了和没套一样
+            if (opts.preset) return toast('预设里还没有开着的条目，套了也一样。先去设置「预设」导入或打开你的预设', 'warning');
+            if ((State.settings.mapScanPreset || 'off') !== 'off') log('剧情地图：设置了扫描套预设，但预设里没有开着的条目，这次等于没套');
+        }
         const targets = Array.isArray(single) ? single.map((i) => e.layers[i]).filter(Boolean) : single !== null ? [e.layers[single]] : scanTargets(onlyMissing);
         if (!targets.length) return toast('这个范围里的层都扫过了', 'info');
         const ctl = new AbortController();
-        mapUi.scan = { ctl, done: 0, total: targets.length, failed: 0, tokens: 0 };
+        mapUi.scan = { ctl, done: 0, total: targets.length, failed: 0, tokens: 0, preset: 0 };
         mapLive('', '', true);
         renderScanState();
         const names = mapNames();
@@ -3310,23 +3331,39 @@
                 const prev = PM.layerPlan(State.plan, l.index - 1).scan;
                 const prompt = PM.buildScanPrompt(l, { names, toxicRules: toxic, prevOneLine: prev ? prev.oneLine : '', protagonist, judgeNotes: C.TOXIC_JUDGE_NOTES, extra: State.settings.mapScanExtra || '' });
                 const key = `第 ${l.index + 1} 层`;
+                const mode = State.settings.mapScanPreset || 'off';
+                // 上次失败的层在「失败的层套预设」下直接套
+                let usePreset = opts.preset === true || mode === 'on' || (mode === 'fail' && !!PM.layerPlan(State.plan, l.index).scanError);
                 const attempt = async (maxTokens) => {
-                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens, onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
+                    const res = await callSideAPI(prompt, { signal: ctl.signal, maxTokens, messages: scanMessages(prompt, usePreset), onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
                     if (res.usage) mapUi.scan.tokens += (res.usage.prompt_tokens || 0) + (res.usage.completion_tokens || 0);
                     mapLive(key, res.text, false, true);
                     return PM.parseScanResponse(res.text, C.parseLooseJson, { protagonist, protagonistAliases: heroAliases });
                 };
                 try {
+                    const once = async () => {
+                        try {
+                            return await attempt(1200);
+                        } catch (err) {
+                            // JSON 坏了多半是回复被截断（会思考的模型，思考也占上限），放宽上限再试一次
+                            if (!/JSON/.test(String(err.message))) throw err;
+                            log(`剧情地图：第 ${l.index + 1} 层回复格式不对，放宽长度上限重试一次`);
+                            mapLive(key, '', false);
+                            return await attempt(sideMaxTokens(4000));
+                        }
+                    };
                     let parsed;
                     try {
-                        parsed = await attempt(1200);
+                        parsed = await once();
                     } catch (err) {
-                        // JSON 坏了多半是回复被截断（会思考的模型，思考也占上限），放宽上限再试一次
-                        if (!/JSON/.test(String(err.message))) throw err;
-                        log(`剧情地图：第 ${l.index + 1} 层回复格式不对，放宽长度上限重试一次`);
+                        // 没套预设失败了（多半是被拒），设置成「失败的层套预设」就套上预设再扫一次
+                        if (String(err.message) === 'ABORTED' || usePreset || mode !== 'fail') throw err;
+                        log(`剧情地图：第 ${l.index + 1} 层扫描失败（${err.message}），套上预设再扫一次`);
                         mapLive(key, '', false);
-                        parsed = await attempt(sideMaxTokens(4000));
+                        usePreset = true;
+                        parsed = await once();
                     }
+                    if (usePreset) mapUi.scan.preset++;
                     setPlanField(l.index, { scan: { ...parsed, hash: PM.hashText(PM.layerText(l)) }, scanError: '' });
                 } catch (err) {
                     if (String(err.message) === 'ABORTED') return;
@@ -3351,7 +3388,7 @@
         renderScanState();
         renderMapSoft();
         const foreign = notChineseLayers().length;
-        toast(`${added ? `人物名单加了 ${added} 个人。` : ''}${foreign ? `有 ${foreign} 层总结没翻成中文，可以点「重扫没翻成中文的层」。` : ''}扫描完成 ${sc.done - sc.failed} 层${sc.failed ? `，失败 ${sc.failed} 层（日志里有原因）` : ''}${sc.tokens ? `，用了约 ${fmtNum(sc.tokens)} token` : ''}`, sc.failed ? 'warning' : 'success');
+        toast(`${added ? `人物名单加了 ${added} 个人。` : ''}${foreign ? `有 ${foreign} 层总结没翻成中文，可以点「重扫没翻成中文的层」。` : ''}扫描完成 ${sc.done - sc.failed} 层${sc.preset ? `（${sc.preset} 层套了预设）` : ''}${sc.failed ? `，失败 ${sc.failed} 层（日志里有原因${sc.preset < sc.done ? '，被拒的话可以点「用预设重扫失败的层」' : ''}）` : ''}${sc.tokens ? `，用了约 ${fmtNum(sc.tokens)} token` : ''}`, sc.failed ? 'warning' : 'success');
     }
 
     /** 扫描总结还是日文、韩文的层 */
@@ -3359,6 +3396,13 @@
         const e = State.engine;
         if (!e) return [];
         return e.layers.map((l) => l.index).filter((i) => PM.scanNotChinese(PM.layerPlan(State.plan, i).scan));
+    }
+
+    /** 上次扫描失败的层 */
+    function failedScanLayers() {
+        const e = State.engine;
+        if (!e) return [];
+        return e.layers.map((l) => l.index).filter((i) => PM.layerPlan(State.plan, i).scanError);
     }
 
     function renderScanState() {
@@ -3370,6 +3414,12 @@
             const n = sc || mapUi.busy ? 0 : notChineseLayers().length;
             ja.parentElement.hidden = !n;
             ja.textContent = `重扫没翻成中文的 ${n} 层`;
+        }
+        const rp = $('nim-map-rescan-preset');
+        if (rp) {
+            const n = sc || mapUi.busy ? 0 : failedScanLayers().length;
+            rp.parentElement.hidden = !n;
+            rp.textContent = `用预设重扫失败的 ${n} 层`;
         }
         const busy = mapUi.busy === 'suggest' ? 'AI 正在提议改写点…' : mapUi.busy === 'overall' ? 'AI 正在通读全书出整体方案…' : mapUi.busy === 'outline' ? 'AI 正在出新大纲…' : '';
         el.textContent = sc ? `扫描中 ${sc.done} / ${sc.total}${sc.failed ? `，失败 ${sc.failed}` : ''}` : busy;
@@ -3422,7 +3472,7 @@
         $('nim-foot-mapbar').style.width = `${sc ? Math.round((sc.done / Math.max(1, sc.total)) * 100) : n ? Math.round((scanned / n) * 100) : 0}%`;
         $('nim-foot-scan').hidden = !!sc || !!mapUi.busy;
         $('nim-foot-scan').disabled = !n || (scanned === n && !failedN);
-        $('nim-foot-scan').textContent = failedN && scanned === n ? `重扫失败的 ${failedN} 层` : scanned && scanned < n ? `扫描剩下 ${n - scanned + failedN} 层` : scanned === n && n ? '已全部扫描' : '扫描';
+        $('nim-foot-scan').textContent = failedN && scanned === n ? `重扫失败的 ${failedN} 层` : scanned && scanned < n ? `扫描剩下 ${e.layers.filter((l) => { const lp = PM.layerPlan(State.plan, l.index); return !lp.scan || lp.scanError; }).length} 层` : scanned === n && n ? '已全部扫描' : '扫描';
         $('nim-foot-scanstop').hidden = !sc && !mapUi.busy;
         $('nim-foot-scanstop').textContent = sc ? '停止扫描' : '停止';
         $('nim-foot-rescan').hidden = !!sc || !!mapUi.busy || !scanned;
@@ -3677,6 +3727,7 @@
                 renderMap();
             } else if (act === 'source') openSource(i, { query: mapUi.char || '' });
             else if (act === 'scan-one') runScan(false, i);
+            else if (act === 'scan-one-preset') runScan(false, i, { preset: true });
             else if (act === 'nav') revealMapLayer(i, { dir: b.dataset.dir, top: b.getBoundingClientRect().top });
             else if (act === 'digest-copy' || act === 'digest-file') {
                 const d = PM.plotDigest(State.engine.layers, State.plan, { title: State.meta.cardName || baseName() });
@@ -3769,6 +3820,10 @@
         on('nim-map-rescan-ja', 'click', () => {
             const list = notChineseLayers();
             if (list.length) runScan(false, list);
+        });
+        on('nim-map-rescan-preset', 'click', () => {
+            const list = failedScanLayers();
+            if (list.length) runScan(false, list, { preset: true });
         });
         on('nim-map-scanstop', 'click', stopMapWork);
         on('nim-foot-scan', 'click', () => runScan(true));
@@ -3870,6 +3925,9 @@
            <div class="nim-row"><span class="nim-muted">范围：第</span><input id="nim-map-from" class="nim-input nim-map-num" type="number" min="1" placeholder="1"><span class="nim-muted">到</span><input id="nim-map-to" class="nim-input nim-map-num" type="number" min="1" placeholder="最后"><span class="nim-muted">层</span></div>
            <div class="nim-row"><button id="nim-map-scan" class="nim-btn primary">扫描没扫过或失败的层</button><button id="nim-map-est-btn" class="nim-btn">估算花费</button><button id="nim-map-scanstop" class="nim-btn danger-ghost" hidden>停止</button></div>
            <div class="nim-row" hidden><button id="nim-map-rescan-ja" class="nim-btn sm"></button></div>
+           <div class="nim-row" hidden><button id="nim-map-rescan-preset" class="nim-btn sm"></button></div>
+           <div class="nim-field"><label>扫描时套用酒馆预设</label><select class="nim-input" data-map-set="mapScanPreset"><option value="off">不套（默认）</option><option value="fail">失败的层套预设再扫</option><option value="on">每层都套</option></select>
+             <div class="nim-hint">用的是设置「预设」里正文处理那一套。AI 拒绝扫描、回复为空时选「失败的层套预设再扫」：先不套，失败了自动套上预设再试一次。预设多是角色扮演用的，每层都套可能让 AI 去写正文，不建议。</div></div>
            <details class="nim-fold nim-subfold"><summary>扫描时额外要求（可选）</summary>
              <textarea class="nim-input nim-textarea" rows="3" data-map-set="mapScanExtra" placeholder="比如：原文是日文，摘要和人名一律翻成中文；人物名单里不要写路人"></textarea>
              <div class="nim-hint">写了之后每次扫描、重扫都会带上。</div>
