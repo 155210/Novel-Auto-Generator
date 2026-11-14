@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.5';
+    const VERSION = '1.6.6';
 
     // ============================================
     // 默认配置
@@ -1665,6 +1665,92 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return r;
     }
 
+    // 宽松比对时不算数的字符：空白、零宽字符、标点符号（AI 引用原句时常把这些写得和原文不一样）
+    const LOOSE_SKIP = /[\s\u200b-\u200f\u2028-\u202f\u2060\ufeff\u00ad\p{P}\p{S}]/u;
+    function squeeze(text) {
+        let out = '';
+        const map = [];
+        let i = 0;
+        for (const ch of String(text || '')) {
+            if (!LOOSE_SKIP.test(ch)) {
+                out += ch.toLowerCase();
+                for (let k = 0; k < ch.toLowerCase().length; k++) map.push(i);
+            }
+            i += ch.length;
+        }
+        return { out, map };
+    }
+
+    /**
+     * 原样对不上时的宽松找法，texts 是本层各段文字。依次试：
+     * 1. 不看标点、空格、零宽字符；2. 锚点里的主角名换成另一种写法（AI 常把原名写成 {{user}} 或用户名）；
+     * 3. 只对锚点的结尾十几个字（只用于「接在后面」：AI 引了一大段、中间差了几个字，但句尾对得上）。
+     * 每一步都要求全层只有一处能对上（段号那一段里有就优先用那一段）。
+     * @returns {{k:number,pos:number,len:number,how:string}|null}
+     */
+    function looseFind(texts, idx, anchor, opts = {}) {
+        const sq = looseFind.cache && looseFind.cache.texts === texts ? looseFind.cache.sq : texts.map(squeeze);
+        looseFind.cache = { texts, sq };
+        const occurrences = (needle) => {
+            const hits = [];
+            for (let k = 0; k < sq.length && hits.length < 3; k++) {
+                let from = 0;
+                for (;;) {
+                    const at = sq[k].out.indexOf(needle, from);
+                    if (at < 0) break;
+                    hits.push({ k, at });
+                    if (hits.length >= 3) break;
+                    from = at + 1;
+                }
+            }
+            return hits;
+        };
+        const pick = (needle) => {
+            const hits = occurrences(needle);
+            if (!hits.length) return null;
+            const mine = hits.filter((h) => h.k === idx);
+            const h = mine.length === 1 ? mine[0] : hits.length === 1 ? hits[0] : null;
+            if (!h) return { multi: true };
+            const m = sq[h.k].map;
+            const text = texts[h.k];
+            const pos = m[h.at];
+            let end = m[h.at + needle.length - 1];
+            end += String.fromCodePoint(text.codePointAt(end)).length;
+            return { k: h.k, pos, end };
+        };
+        // 锚点以标点结尾时，插入点放到原文这句的标点后面
+        const closeOut = (r, raw) => {
+            const text = texts[r.k];
+            let end = r.end;
+            if (/[\p{P}\p{S}]$/u.test(raw.trim())) while (end < text.length && /[\p{P}]/u.test(text[end]) && !/[「『“‘（(【《]/.test(text[end])) end++;
+            return { k: r.k, pos: r.pos, len: end - r.pos };
+        };
+        const forms = [anchor];
+        const names = (opts.nameForms || []).filter((n) => n && String(n).length >= 2);
+        for (const a of names) {
+            if (!anchor.includes(a)) continue;
+            for (const b of names) if (b !== a) forms.push(anchor.split(a).join(b));
+        }
+        for (let n = 0; n < forms.length; n++) {
+            const needle = squeeze(forms[n]).out;
+            if (needle.length < 4) continue;
+            const r = pick(needle);
+            if (r && r.multi) return null;
+            if (r) return { ...closeOut(r, forms[n]), how: n ? '主角名换了写法' : '不看标点' };
+        }
+        if (opts.op === 'replace') return null;
+        for (const form of forms) {
+            const needle = squeeze(form).out;
+            for (const n of [16, 10, 7]) {
+                if (needle.length <= n) continue;
+                const r = pick(needle.slice(-n));
+                if (r && r.multi) continue;
+                if (r) return { ...closeOut(r, form), how: '只对上句尾' };
+            }
+        }
+        return null;
+    }
+
     /**
      * 把补丁应用到一层段落上。
      * @returns {{paras: string[], applied: number, failed: Array, addedChars: number}}
@@ -1686,6 +1772,9 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         let applied = 0;
 
         let moved = 0;
+        let loose = 0;
+        const texts = paras.map((p) => p.text);
+        const looseOpts = (pt) => ({ nameForms: opts.nameForms, op: pt.op === 'replace' ? 'replace' : 'after' });
         for (const pt of patches) {
             let idx = byId.get(pt.pid);
             // 段号是全书连着编的，数字大了 AI 容易写错：段号不在本层时，锚点在本层只有一处能对上就用那一处
@@ -1698,12 +1787,19 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                         if (h.pos >= 0 || h.reason === '锚点在该段出现多次') hits.push({ k, h });
                     }
                 }
-                if (hits.length !== 1 || hits[0].h.pos < 0) {
-                    failed.push({ patch: pt, reason: hits.length ? '段号不在本层，锚点在本层也对不上唯一一处' : '段号不在本层' });
-                    continue;
+                if (hits.length === 1 && hits[0].h.pos >= 0) {
+                    idx = hits[0].k;
+                    preHit = hits[0].h;
+                } else {
+                    const lf = !hits.length && pt.anchor ? looseFind(texts, -1, pt.anchor, looseOpts(pt)) : null;
+                    if (!lf) {
+                        failed.push({ patch: pt, reason: hits.length ? '段号不在本层，锚点在本层也对不上唯一一处' : '段号不在本层' });
+                        continue;
+                    }
+                    idx = lf.k;
+                    preHit = { pos: lf.pos, len: lf.len };
+                    loose++;
                 }
-                idx = hits[0].k;
-                preHit = hits[0].h;
                 moved++;
             }
             if (!pt.text && pt.op !== 'replace') {
@@ -1746,15 +1842,26 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                         r = hits[0].h;
                         moved++;
                     } else if (hits.length) r = { pos: -1, reason: '锚点不在该段，其他段里也对不上唯一一处' };
+                    else {
+                        const lf = looseFind(texts, idx, pt.anchor, looseOpts(pt));
+                        if (lf) {
+                            if (lf.k !== idx) moved++;
+                            idx = lf.k;
+                            src = paras[idx].text;
+                            r = { pos: lf.pos, len: lf.len };
+                            loose++;
+                        }
+                    }
                 }
                 if (r.pos < 0) {
                     failed.push({ patch: pt, reason: r.reason });
                     continue;
                 }
-                if (pt.op === 'after') pos = r.pos + pt.anchor.length;
+                const alen = r.len === undefined ? pt.anchor.length : r.len;
+                if (pt.op === 'after') pos = r.pos + alen;
                 else {
                     pos = r.pos;
-                    len = pt.anchor.length;
+                    len = alen;
                 }
             }
             const overlap = edits[idx].some((e) => (len > 0 ? pos < e.pos + e.len && e.pos < pos + len : e.len > 0 && pos > e.pos && pos < e.pos + e.len));
@@ -1776,7 +1883,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
             out.push(t);
             out.push(...extraParas[i]);
         });
-        return { paras: out, applied, failed, addedChars, moved };
+        return { paras: out, applied, failed, addedChars, moved, loose };
     }
 
     // ============================================
@@ -3635,9 +3742,11 @@ ${blocks}`;
                     r.finalParas = ensureImageMarkers(layer.paras, splitParagraphs(parsed.rewrittenText));
                     r.patchStats = { applied: 0, failed: [], addedChars: parsed.rewrittenText.length - layer.chars, rewritten: true, translated: !!layer.translate };
                 } else {
-                    const ap = applyPatches(layer.paras, parsed.patches, { maxPatchChars: settings.maxPatchChars });
+                    // 主角名的几种写法：AI 引用原句当锚点时常把原名写成 {{user}} 或用户名，宽松比对时互相换着试
+                    r.patchNames = nameFormsOf(st, parsed);
+                    const ap = applyPatches(layer.paras, parsed.patches, { maxPatchChars: settings.maxPatchChars, nameForms: r.patchNames });
                     r.finalParas = ap.paras;
-                    r.patchStats = { applied: ap.applied, failed: ap.failed, addedChars: ap.addedChars, moved: ap.moved, rewritten: false };
+                    r.patchStats = { applied: ap.applied, failed: ap.failed, addedChars: ap.addedChars, moved: ap.moved, loose: ap.loose, rewritten: false };
                 }
                 const c = commit(st, i, r);
                 r.tableActions = c.out.tableActions;
@@ -4173,6 +4282,14 @@ ${blocks}`;
          * 换掉一层结果前，把旧结果记在新结果的 undo 里（最多 3 步），「撤销上一次修改」退回去。
          * 请求记录不存进去：退回时用最新的请求记录，看得到每次都回了什么。
          */
+        function nameFormsOf(st, parsed) {
+            return uniq(
+                ['{{user}}', '<user>', aliasTargetOf(settings), settings.personaName, protagonistOf(settings, st), parsed && parsed.protagonist, ...(settings.protagonistAliases || []), ...((st && st.aliases) || []), ...((parsed && parsed.aliases) || [])]
+                    .map((x) => String(x || '').trim())
+                    .filter((x) => x.length >= 2),
+            );
+        }
+
         /** 没放进去的补丁里，内容现在还不在正文里的那些 */
         function pendingFailedPatches(r) {
             const norm = (t) => String(t || '').replace(/\s+/g, '');
@@ -4197,6 +4314,7 @@ ${blocks}`;
             const left = [];
             let applied = 0;
             let added = 0;
+            const names = uniq([...(r.patchNames || []), ...nameFormsOf(replay(i), r.parsed)]);
             const put = (arr, k, pt, wrapIt) => {
                 const h = locateAnchor(arr[k], pt.anchor);
                 if (h.pos < 0) return false;
@@ -4218,7 +4336,19 @@ ${blocks}`;
                     if (h.pos >= 0 || h.reason === '锚点在该段出现多次') hits.push({ k, h });
                 }
                 if (hits.length !== 1 || hits[0].h.pos < 0) {
-                    left.push({ patch: pt, reason: hits.length ? '锚点在正文里不止一处' : '正文里找不到锚点这句话' });
+                    // 原样找不到：不看标点空格、主角名换写法、只对句尾，再找一次
+                    const lf = hits.length ? null : looseFind(paras.slice(), -1, pt.anchor, { nameForms: names, op: pt.op === 'replace' ? 'replace' : 'after' });
+                    if (!lf) {
+                        left.push({ patch: pt, reason: hits.length ? '锚点在正文里不止一处' : '正文里找不到锚点这句话' });
+                        continue;
+                    }
+                    const t = paras[lf.k];
+                    if (pt.op === 'para') paras.splice(lf.k + 1, 0, pt.text);
+                    else if (pt.op === 'after') paras[lf.k] = t.slice(0, lf.pos + lf.len) + pt.text + t.slice(lf.pos + lf.len);
+                    else paras[lf.k] = t.slice(0, lf.pos) + pt.text + t.slice(lf.pos + lf.len);
+                    marked = null;
+                    applied++;
+                    added += pt.text.length - (pt.op === 'replace' ? lf.len : 0);
                     continue;
                 }
                 const k = hits[0].k;
@@ -4513,7 +4643,7 @@ ${blocks}`;
                 const orig = new Set(layer.paras.map((p) => norm(p.text)));
                 paras = r.finalParas.map((t) => (orig.has(norm(t)) || !norm(t) ? t : MARK_OPEN + t + MARK_CLOSE));
             } else {
-                paras = applied(applyPatches(layer.paras, (r.parsed && r.parsed.patches) || [], { maxPatchChars: settings.maxPatchChars, mark: true }).paras);
+                paras = applied(applyPatches(layer.paras, (r.parsed && r.parsed.patches) || [], { maxPatchChars: settings.maxPatchChars, mark: true, nameForms: r.patchNames }).paras);
                 if (stripMarks(paras.join('\n')) !== r.finalParas.join('\n')) return null;
             }
             return paras;
@@ -5150,7 +5280,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
                     }
                 }
                 if (!n) return 0;
-                const ap = applyPatches(E.layers[i].paras, r.parsed.patches, { maxPatchChars: settings.maxPatchChars });
+                const ap = applyPatches(E.layers[i].paras, r.parsed.patches, { maxPatchChars: settings.maxPatchChars, nameForms: r.patchNames });
                 r.finalParas = ap.paras;
                 r.patchStats = { ...r.patchStats, applied: ap.applied, failed: ap.failed, addedChars: ap.addedChars, moved: ap.moved };
                 emit('layer-done', { index: i, result: r });

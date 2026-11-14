@@ -183,6 +183,33 @@ describe('补丁', () => {
 });
 
 describe('补丁段号写错', () => {
+    it('锚点和原文差在标点空格、主角名写法，或者只有句尾对得上，也能放进去', () => {
+        const ps = [
+            { id: 1, text: '吴良推开门, 屋里　很暗……只有一盏灯。' },
+            { id: 2, text: '“你来了？”杨莉抬\u200b头看了吴良一眼，又低下去。' },
+            { id: 3, text: '一群蒙着面罩的人从仓库里冲出来，把路堵死了。' },
+            { id: 4, text: '远处有人喊了一声。远处有人喊了一声。' },
+        ];
+        const r = C.applyPatches(
+            ps,
+            [
+                { pid: 1, anchor: '屋里很暗…只有一盏灯。', op: 'after', text: 'A' },
+                { pid: 9000, anchor: '杨莉抬头看了{{user}}一眼', op: 'after', text: 'B' },
+                { pid: 2, anchor: '一群戴着面罩的人从仓库里冲了出来，把路堵死了。', op: 'after', text: 'C' },
+                { pid: 2, anchor: '{{user}}推开门', op: 'replace', text: '{{user}}一脚踹开门' },
+                { pid: 4, anchor: '远处有人喊了一声!', op: 'after', text: 'D' },
+                { pid: 3, anchor: '一群戴着面罩的人从仓库里冲了出来', op: 'replace', text: 'E' },
+            ],
+            { nameForms: ['{{user}}', '吴良'] },
+        );
+        expect(r.paras[0]).toBe('{{user}}一脚踹开门, 屋里　很暗……只有一盏灯。A');
+        expect(r.paras[1]).toBe('“你来了？”杨莉抬\u200b头看了吴良一眼B，又低下去。');
+        expect(r.paras[2]).toBe('一群蒙着面罩的人从仓库里冲出来，把路堵死了。C');
+        // 多处能对上的不猜；替换不用「只对句尾」
+        expect(r.failed.map((f) => f.patch.text)).toEqual(['D', 'E']);
+        expect(r.loose).toBe(4);
+    });
+
     it('段号不在本层：锚点在本层只有一处就放进去，多处或找不到才算没放进去', () => {
         const ps = [
             { id: 8001, text: '他推开门，屋里很暗。' },
