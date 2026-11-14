@@ -182,6 +182,25 @@ describe('补丁', () => {
     });
 });
 
+describe('补丁段号写错', () => {
+    it('段号不在本层：锚点在本层只有一处就放进去，多处或找不到才算没放进去', () => {
+        const ps = [
+            { id: 8001, text: '他推开门，屋里很暗。' },
+            { id: 8002, text: '她抬头看了他一眼。' },
+            { id: 8003, text: '她抬头，又低下去。' },
+        ];
+        const r = C.applyPatches(ps, [
+            { pid: 801, anchor: '屋里很暗。', op: 'after', text: '只有一盏灯。' },
+            { pid: 1, anchor: '她抬头', op: 'after', text: 'X' },
+            { pid: 2, anchor: '不存在的话', op: 'after', text: 'Y' },
+            { pid: 3, anchor: '', op: 'after', text: 'Z' },
+        ]);
+        expect(r.paras[0]).toBe('他推开门，屋里很暗。只有一盏灯。');
+        expect(r.applied).toBe(1);
+        expect(r.failed.map((f) => f.reason)).toEqual(['段号不在本层，锚点在本层也对不上唯一一处', '段号不在本层', '段号不在本层']);
+    });
+});
+
 describe('称呼替换', () => {
     it('长的称呼先替换', () => {
         const t = C.applyAliases('长安道人路长远，路公子。', ['路长远', '长安道人', '路公子'], 'fary');
@@ -1400,6 +1419,33 @@ describe('运行引擎', () => {
         expect(p1).not.toContain('<不存在的>');
         expect(C.splitTagList('<Plotline>，摘要、 a')).toEqual(['Plotline', '摘要', 'a']);
         expect(C.splitTagList('Calculated data, <Calculated_data>')).toEqual(['Calculated data', 'Calculated_data']);
+    });
+
+    it('已经处理的层：没放进去的按锚点重新放、改过之后已在正文里的自动去掉、可以清掉', async () => {
+        const { engine, calls } = makeEngine((layer, last) => (/你是小说修改助手/.test(last) ? '<修改>\n[E1] 后面插入：第三句补充。\n</修改>' : normal(layer)));
+        await engine.run();
+        const r = engine.results[0];
+        const first = r.finalParas.find((t) => t.length > 12);
+        const anchor = first.slice(2, 10);
+        r.patchStats = { ...r.patchStats, failed: [
+            { patch: { pid: 99999, anchor, op: 'after', text: '【第一句补充】' }, reason: '段号不在本层' },
+            { patch: { pid: 99999, anchor: '正文里没有这句', op: 'after', text: '第二句补充' }, reason: '段号不在本层' },
+            { patch: { pid: 99999, anchor: '也没有这句', op: 'after', text: '第三句补充。' }, reason: '段号不在本层' },
+        ] };
+        const res = engine.retryFailedPatches(0);
+        expect([res.applied, res.left]).toEqual([1, 2]);
+        const nr = engine.results[0];
+        expect(nr.finalParas.join('\n')).toContain(anchor + '【第一句补充】');
+        expect(nr.undo[0].label).toBe('重新放句子');
+        // 按意见改：提示词里带上还没放进去的；改完已经在正文里的从列表去掉
+        await engine.editLayer(0, '把没放进去的加进去');
+        const prompt = calls[calls.length - 1].messages.map((m) => m.content).join('\n');
+        expect(prompt).toContain('上次没能放进正文的补充句子');
+        expect(prompt).toContain('第二句补充');
+        expect(engine.results[0].patchStats.failed.map((f) => f.patch.text)).toEqual(['第二句补充']);
+        expect(engine.dropFailedPatches(0)).toBe(1);
+        expect(engine.results[0].patchStats.failed).toEqual([]);
+        engine.undoLayer(0);
     });
 
     it('按意见只改几处：AI 自己找段落，只换那几段，后面的层保留', async () => {

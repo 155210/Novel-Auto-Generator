@@ -5276,9 +5276,14 @@
             if (r.patchStats.rewritten) pChanges += `<div class="nim-alert">这层是整层重新输出的（${r.patchStats.translated ? '翻译' : '剧情改写或整层模式'}），没有一条条的补丁。改了哪里看「正文」页的高亮${r.patchStats.addedChars ? `，比原文${r.patchStats.addedChars > 0 ? '多' : '少'} ${Math.abs(r.patchStats.addedChars)} 字` : ''}。</div>`;
             if (failed.length) {
                 const long = failed.filter((f) => /超过 \d+ 字/.test(f.reason)).length;
-                pChanges += `<div class="nim-sub">没放进去的 ${failed.length} 条${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div><div class="nim-chg-list">${failed
+                const lost = failed.length - long;
+                pChanges += `<div class="nim-sub">没放进去的 ${failed.length} 条${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div>${
+                    lost
+                        ? `<div class="nim-alert">AI 补的这 ${lost} 句标错了位置，没写进正文。<div class="nim-row"><button class="nim-btn sm primary" data-retry-patch>按那句话重新找位置放进去</button><button class="nim-btn sm ghost" data-drop-patch>这些不要了</button></div><div class="nim-muted">重新找只认正文里唯一能对上的那句，放错了可以撤销；还放不进去的，在下面写「把没放进去的句子加进去」让 AI 改。</div></div>`
+                        : ''
+                }<div class="nim-chg-list">${failed
                     .map((f, k) => {
-                        const btn = /超过 \d+ 字/.test(f.reason) ? `<div class="nim-row"><button class="nim-btn sm" data-force-patch="${k}">确认加进去</button></div>` : '<div class="nim-muted">锚点对不上，放不进去；要改可以在下面写意见让 AI 改，或者重 roll</div>';
+                        const btn = /超过 \d+ 字/.test(f.reason) ? `<div class="nim-row"><button class="nim-btn sm" data-force-patch="${k}">确认加进去</button></div>` : '';
                         return `<div class="nim-chg bad"><div class="nim-chg-where">接在「${esc(String(f.patch.anchor || '').slice(0, 40))}」后面 · <span class="nim-chg-why">${esc(f.reason)}</span></div><div class="nim-chg-text">${esc(f.patch.text)}</div>${btn}</div>`;
                     })
                     .join('')}</div>`;
@@ -5525,6 +5530,27 @@
                 log(`用改过的提示词重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}`);
                 await runRedo(e.redoWithPrompt(i, p, { keepLater }), i, '用改过的提示词重做');
             };
+        document.querySelectorAll('[data-retry-patch]').forEach((b) => {
+            b.onclick = () => {
+                try {
+                    const res = e.retryFailedPatches(i);
+                    toast(res.applied ? `放进去了 ${res.applied} 句${res.left ? `，还有 ${res.left} 句对不上` : ''}。不对可以点下面的撤销` : '正文里找不到能唯一对上的那句话，一句也没放进去', res.applied ? 'success' : 'warning');
+                    if (res.applied) log(`第 ${i + 1} 层：没放进去的补充句子按锚点重新放进去 ${res.applied} 句${res.left ? `，剩 ${res.left} 句` : ''}`);
+                } catch (err) {
+                    toast(err.message, 'warning');
+                }
+                saveProgress();
+                renderAll();
+            };
+        });
+        document.querySelectorAll('[data-drop-patch]').forEach((b) => {
+            b.onclick = () => {
+                if (!confirm('把这层「没放进去」的句子从列表里清掉？正文不变。')) return;
+                e.dropFailedPatches(i);
+                saveProgress();
+                renderAll();
+            };
+        });
         document.querySelectorAll('[data-force-patch]').forEach((b) => {
             b.onclick = () => {
                 if (e.running) return toast('正在处理中，先暂停再改', 'warning');

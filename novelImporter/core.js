@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.4';
+    const VERSION = '1.6.5';
 
     // ============================================
     // 默认配置
@@ -1688,9 +1688,23 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         let moved = 0;
         for (const pt of patches) {
             let idx = byId.get(pt.pid);
+            // 段号是全书连着编的，数字大了 AI 容易写错：段号不在本层时，锚点在本层只有一处能对上就用那一处
+            let preHit = null;
             if (idx === undefined) {
-                failed.push({ patch: pt, reason: '段号不在本层' });
-                continue;
+                const hits = [];
+                if (pt.anchor) {
+                    for (let k = 0; k < paras.length && hits.length < 2; k++) {
+                        const h = locateAnchor(paras[k].text, pt.anchor);
+                        if (h.pos >= 0 || h.reason === '锚点在该段出现多次') hits.push({ k, h });
+                    }
+                }
+                if (hits.length !== 1 || hits[0].h.pos < 0) {
+                    failed.push({ patch: pt, reason: hits.length ? '段号不在本层，锚点在本层也对不上唯一一处' : '段号不在本层' });
+                    continue;
+                }
+                idx = hits[0].k;
+                preHit = hits[0].h;
+                moved++;
             }
             if (!pt.text && pt.op !== 'replace') {
                 failed.push({ patch: pt, reason: '补充内容为空' });
@@ -1717,7 +1731,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                 }
                 pos = src.length;
             } else {
-                let r = locateAnchor(src, pt.anchor);
+                let r = preHit || locateAnchor(src, pt.anchor);
                 if (r.pos < 0 && r.reason === '锚点不在该段') {
                     // AI 常把段号标错一两段：本层其他段里只有一处能对上，就用那一处
                     const hits = [];
@@ -3853,6 +3867,14 @@ ${blocks}`;
             if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
             if ((cfg.outputRules || '').trim()) reminders.push('改出来的正文照「输出要求」里的每一条写');
             if (reminders.length) parts.push(`提醒（改出来的段落也要做到）：${reminders.join('。')}`);
+            const lost = pendingFailedPatches(r);
+            if (lost.length)
+                parts.push(
+                    `## 上次没能放进正文的补充句子（位置没对上，现在不在定稿里）\n用户的修改意见要求把它们加进去时，放到「原本接在」那句话所在的段落里合适的位置；意见没提到就不用管。\n${lost
+                        .slice(0, 40)
+                        .map((f, k) => `${k + 1}. 原本接在「${String(f.patch.anchor || '').slice(0, 60)}」${f.patch.op === 'replace' ? '（替换这句）' : '后面'}：${f.patch.text}`)
+                        .join('\n')}`,
+                );
             parts.push(`## 用户的修改意见\n${feedback}`);
             parts.push(
                 [
@@ -3986,6 +4008,8 @@ ${blocks}`;
             const markedOps = ed.ops.map((o) => ({ ...o, lines: o.lines.map(wrap) }));
             const markedNew = markedBase.length === paras.length ? applyEditOps(markedBase, markedOps).paras.concat(extras) : null;
             Object.assign(r, { raw, parsed, finalParas, markedParas: markedNew, edited: (old.edited || 0) + 1 });
+            // 这次改的时候已经写进正文的补充句子，从「没放进去」里去掉
+            if (r.patchStats && (r.patchStats.failed || []).length) r.patchStats = { ...r.patchStats, failed: pendingFailedPatches(r) };
             const st = replay(i);
             parsed.warnings = [...(parsed.warnings || [])];
             await mergeUnseenEntries(i, st, parsed, r);
@@ -4149,6 +4173,82 @@ ${blocks}`;
          * 换掉一层结果前，把旧结果记在新结果的 undo 里（最多 3 步），「撤销上一次修改」退回去。
          * 请求记录不存进去：退回时用最新的请求记录，看得到每次都回了什么。
          */
+        /** 没放进去的补丁里，内容现在还不在正文里的那些 */
+        function pendingFailedPatches(r) {
+            const norm = (t) => String(t || '').replace(/\s+/g, '');
+            const body = norm((r.finalParas || []).join('\n'));
+            return ((r.patchStats && r.patchStats.failed) || []).filter((f) => {
+                const t = norm(f.patch && f.patch.text);
+                return !t || !body.includes(t);
+            });
+        }
+
+        /**
+         * 没放进去的补丁按锚点在现在的正文里再找一次：只有一处能对上就放进去（段号不管）。可以撤销。
+         * 返回 { applied, left }。
+         */
+        function retryFailedPatches(i) {
+            if (E.running) throw new Error('正在处理中');
+            const r = E.results[i];
+            if (!r || r.status !== 'done' || !r.patchStats || r.patchStats.rewritten || !r.finalParas) return { applied: 0, left: 0 };
+            const paras = r.finalParas.slice();
+            const oldMarked = markedParas(i);
+            let marked = oldMarked && oldMarked.length === paras.length ? oldMarked.slice() : null;
+            const left = [];
+            let applied = 0;
+            let added = 0;
+            const put = (arr, k, pt, wrapIt) => {
+                const h = locateAnchor(arr[k], pt.anchor);
+                if (h.pos < 0) return false;
+                const ins = wrapIt && pt.text ? MARK_OPEN + pt.text + MARK_CLOSE : pt.text;
+                if (pt.op === 'para') arr.splice(k + 1, 0, ins);
+                else if (pt.op === 'after') arr[k] = arr[k].slice(0, h.pos + pt.anchor.length) + ins + arr[k].slice(h.pos + pt.anchor.length);
+                else arr[k] = arr[k].slice(0, h.pos) + ins + arr[k].slice(h.pos + pt.anchor.length);
+                return true;
+            };
+            for (const f of pendingFailedPatches(r)) {
+                const pt = f.patch;
+                if (!pt || !pt.anchor || (!pt.text && pt.op !== 'replace') || /超过 \d+ 字/.test(f.reason)) {
+                    left.push(f);
+                    continue;
+                }
+                const hits = [];
+                for (let k = 0; k < paras.length && hits.length < 2; k++) {
+                    const h = locateAnchor(paras[k], pt.anchor);
+                    if (h.pos >= 0 || h.reason === '锚点在该段出现多次') hits.push({ k, h });
+                }
+                if (hits.length !== 1 || hits[0].h.pos < 0) {
+                    left.push({ patch: pt, reason: hits.length ? '锚点在正文里不止一处' : '正文里找不到锚点这句话' });
+                    continue;
+                }
+                const k = hits[0].k;
+                if (marked && !put(marked, k, pt, true)) marked = null;
+                put(paras, k, pt, false);
+                applied++;
+                added += pt.text.length - (pt.op === 'replace' ? pt.anchor.length : 0);
+            }
+            if (!applied) {
+                r.patchStats = { ...r.patchStats, failed: left };
+                emit('layer-done', { index: i, result: r });
+                return { applied: 0, left: left.length };
+            }
+            const nr = { ...r, finalParas: paras, markedParas: marked, patchStats: { ...r.patchStats, failed: left, applied: (r.patchStats.applied || 0) + applied, addedChars: (r.patchStats.addedChars || 0) + added } };
+            pushUndo(nr, r, '重新放句子');
+            E.results[i] = nr;
+            emit('layer-done', { index: i, result: nr });
+            return { applied, left: left.length };
+        }
+
+        /** 没放进去的补丁不要了：从列表里清掉（正文不变） */
+        function dropFailedPatches(i) {
+            const r = E.results[i];
+            if (!r || !r.patchStats || !(r.patchStats.failed || []).length) return 0;
+            const n = r.patchStats.failed.length;
+            r.patchStats = { ...r.patchStats, failed: [] };
+            emit('layer-done', { index: i, result: r });
+            return n;
+        }
+
         function pushUndo(nr, old, label) {
             if (!nr || !old || old.status !== 'done' || nr === old) return;
             const snap = { ...old, label, at: Date.now() };
@@ -5056,6 +5156,8 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
                 emit('layer-done', { index: i, result: r });
                 return n;
             },
+            retryFailedPatches,
+            dropFailedPatches,
             entryHistory,
             setEntryContent,
             aiMergeEntry,
