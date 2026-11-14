@@ -5289,7 +5289,7 @@
                     .join('')}</div>`;
             }
             if (patches.length)
-                pChanges += `<div class="nim-sub">AI 补进去的 ${patches.length} 处${r.patchStats.addedChars ? `<span class="nim-muted">　共多了 ${r.patchStats.addedChars} 字</span>` : ''}</div><div class="nim-chg-list">${patches
+                pChanges += `<div class="nim-sub">AI 补进去的 ${patches.length} 处${r.patchStats.addedChars ? `<span class="nim-muted">　共多了 ${r.patchStats.addedChars} 字</span>` : ''}</div>${r.patchStats.loose ? `<div class="nim-muted">其中 ${r.patchStats.loose} 处 AI 引用的原句和原文不完全一样，是按最接近的那句放的，位置不对可以写意见让 AI 改。</div>` : ''}<div class="nim-chg-list">${patches
                     .map((x) => `<div class="nim-chg"><div class="nim-chg-where">「${esc(String(x.anchor || '').slice(0, 40))}」${x.op === 'replace' ? '换成' : x.op === 'para' ? '后面另起一段' : '后面接上'}</div><div class="nim-chg-text">${esc(x.text)}</div></div>`)
                     .join('')}</div>`;
             if (!pChanges) pChanges = '<div class="nim-empty">这层 AI 没有改动正文</div>';
