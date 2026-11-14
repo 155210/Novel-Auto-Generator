@@ -654,10 +654,17 @@
     }
 
     /** 返回回复文本；接口给了真实用量就放在 State.lastUsage */
-    async function callAPI(messages, onChunk) {
+    /**
+     * meta：这次请求的用量、思考写在这里（几层同时改时各算各的）；State.lastUsage/lastThink 也照旧写一份。
+     */
+    async function callAPI(messages, onChunk, meta = {}) {
         const s = State.settings;
         State.lastUsage = null;
         State.lastThink = '';
+        meta.usage = null;
+        meta.think = '';
+        const setUsage = (u) => (State.lastUsage = meta.usage = u);
+        const setThink = (t) => (State.lastThink = meta.think = t);
         const timeout = Number(s.apiTimeout) || 300000;
         const body = { model: s.apiModel || 'gpt-4o', messages, temperature: Number(s.temperature), stream: true };
         if (s.maxTokens) body.max_tokens = Number(s.maxTokens);
@@ -666,6 +673,16 @@
         Object.assign(body, parseExtraBody(s.extraBody));
         const controller = new AbortController();
         State.abort = controller;
+        // 几个请求同时在跑时，「停止」要把它们都停掉
+        (State.aborts || (State.aborts = new Set())).add(controller);
+        try {
+            return await callAPIWith(messages, onChunk, meta, { s, body, controller, timeout, setUsage, setThink });
+        } finally {
+            State.aborts.delete(controller);
+        }
+    }
+
+    async function callAPIWith(messages, onChunk, meta, { s, body, controller, timeout, setUsage, setThink }) {
         let timer = setTimeout(() => controller.abort(), timeout);
         let resp;
         try {
@@ -681,12 +698,12 @@
             const t = await resp.text().catch(() => '');
             if (usageOptOk && resp.status === 400 && /stream_options|include_usage/i.test(t)) {
                 usageOptOk = false;
-                return callAPI(messages, onChunk);
+                return callAPI(messages, onChunk, meta);
             }
             if (body.reasoning_effort && resp.status === 400 && /reasoning_effort|reasoning/i.test(t)) {
                 effortOk = false;
                 log('中转站不认「思考强度」（reasoning_effort），这次起不再发这个参数；可以改用「额外请求参数」');
-                return callAPI(messages, onChunk);
+                return callAPI(messages, onChunk, meta);
             }
             const err = new Error(`API 返回 ${resp.status}：${t.slice(0, 300)}`);
             err.retryable = RETRYABLE.has(resp.status);
@@ -696,19 +713,19 @@
         if (!ct.includes('event-stream') || !resp.body) {
             clearTimeout(timer);
             const data = await resp.json();
-            if (data && data.usage) State.lastUsage = data.usage;
+            if (data && data.usage) setUsage(data.usage);
             const msg = data?.choices?.[0]?.message || {};
             const text = msg.content || '';
             const th = msg.reasoning_content || msg.reasoning || msg.thinking || '';
-            if (typeof th === 'string') State.lastThink = th;
+            if (typeof th === 'string') setThink(th);
             if (onChunk) onChunk(text, text);
             return text;
         }
         try {
             return await readSSE(resp, {
                 onDelta: onChunk,
-                onUsage: (u) => (State.lastUsage = u),
-                onThink: (t) => (State.lastThink = t),
+                onUsage: setUsage,
+                onThink: setThink,
                 onTick: () => {
                     clearTimeout(timer);
                     timer = setTimeout(() => controller.abort(), timeout);
@@ -785,17 +802,31 @@
         for (let k = 0; k < 4; k++) {
             if (State.stopped) throw new Error('ABORTED');
             try {
+                const meta = {};
+                // 几层同时改时，实时输出按层分开存，界面显示当前看的那层（没有就显示最近有动静的）
+                const live = { info, text: '', body: 0, thinking: false };
+                (State.lives || (State.lives = new Map())).set(info.layer, live);
                 State.stream = '';
                 State.streamBody = 0;
                 State.streamThinking = false;
-                const text = await callAPI(messages, (_d, full, think) => {
-                    State.stream = liveText(full, think);
-                    State.streamBody = full.length;
-                    State.streamThinking = !!think && !full;
-                    renderStream(info);
-                });
+                let text;
+                try {
+                    text = await callAPI(
+                        messages,
+                        (_d, full, think) => {
+                            live.text = liveText(full, think);
+                            live.body = full.length;
+                            live.thinking = !!think && !full;
+                            State.lastLive = live;
+                            renderStream(info);
+                        },
+                        meta,
+                    );
+                } finally {
+                    if (State.lives.get(info.layer) === live) State.lives.delete(info.layer);
+                }
                 // 思考（reasoning_content）也交给引擎记在这次请求上，原始输出里能看到
-                return { text, usage: State.lastUsage, think: State.lastThink || '' };
+                return { text, usage: meta.usage, think: meta.think || '' };
             } catch (e) {
                 last = e;
                 if (!e.retryable || k === 3) throw e;
@@ -1056,6 +1087,7 @@
         State.stopped = true;
         if (State.engine) State.engine.stop();
         if (State.abort) State.abort.abort();
+        for (const c of State.aborts || []) c.abort();
         log('已停止');
     }
 
@@ -4787,6 +4819,14 @@
         if (streamRaf) return;
         streamRaf = requestAnimationFrame(() => {
             streamRaf = 0;
+            const lives = State.lives || new Map();
+            const cur = lives.get(State.selected) || (State.lastLive && [...lives.values()].includes(State.lastLive) ? State.lastLive : null) || [...lives.values()].pop();
+            if (cur) {
+                info = cur.info;
+                State.stream = cur.text;
+                State.streamBody = cur.body;
+                State.streamThinking = cur.thinking;
+            }
             const el = $('nim-stream');
             if (!el) return;
             // 用户往上翻着看的时候不拉回底部；停在底部附近才跟着新内容走
@@ -4796,7 +4836,8 @@
             el.scrollTop = follow ? el.scrollHeight : top;
             if (lvUi.src === 'stream') updateLiveViewer(State.stream, false);
             const what = info.purpose === 'card' ? '生成角色卡简介' : info.purpose === 'repair' ? `第 ${info.layer + 1} 层修格式` : info.purpose === 'wb-merge' ? `第 ${info.layer + 1} 层合并世界书旧条目` : info.purpose === 'wb-tool' ? '整理世界书' : info.purpose === 'json' ? `第 ${info.layer + 1} 层重新输出 JSON` : `第 ${info.layer + 1} 层输出`;
-            setStatus(State.streamThinking ? `${what.replace(/输出$/, '')}思考中 · ${State.stream.length} 字` : `${what}中 · ${State.streamBody || State.stream.length} 字`);
+            const others = lives.size > 1 ? `（同时还有 ${lives.size - 1} 层在改）` : '';
+            setStatus((State.streamThinking ? `${what.replace(/输出$/, '')}思考中 · ${State.stream.length} 字` : `${what}中 · ${State.streamBody || State.stream.length} 字`) + others);
         });
     }
 
@@ -4854,6 +4895,7 @@
     }
 
     function layerState(r, i, e) {
+        if (e.editing && e.editing.has(i)) return 'running';
         if (e.reviewing === i) return 'review';
         if (!r) return 'todo';
         return r.status;
@@ -5277,7 +5319,7 @@
             if (failed.length) {
                 const long = failed.filter((f) => /超过 \d+ 字/.test(f.reason)).length;
                 const lost = failed.length - long;
-                pChanges += `<div class="nim-sub">没放进去的 ${failed.length} 条${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''}</div>${
+                pChanges += `<div class="nim-sub">没放进去的 ${failed.length} 条${long > 1 ? ` <button class="nim-btn sm" data-force-patch="all">超字数的 ${long} 条全部加进去</button>` : ''} <button class="nim-btn sm" data-copy-failed>全部复制</button></div>${
                     lost
                         ? `<div class="nim-alert">AI 补的这 ${lost} 句标错了位置，没写进正文。<div class="nim-row"><button class="nim-btn sm primary" data-retry-patch>按那句话重新找位置放进去</button><button class="nim-btn sm ghost" data-drop-patch>这些不要了</button></div><div class="nim-muted">重新找只认正文里唯一能对上的那句，放错了可以撤销；还放不进去的，在下面写「把没放进去的句子加进去」让 AI 改。</div></div>`
                         : ''
@@ -5356,7 +5398,7 @@
             <button class="nim-icon-btn" data-layer-nav="-1" aria-label="上一层" ${i <= 0 ? 'disabled' : ''}>‹</button><button class="nim-icon-btn" data-layer-nav="1" aria-label="下一层" ${i >= e.layers.length - 1 ? 'disabled' : ''}>›</button>
           </div>
           ${r && r.tokens ? `<div class="nim-muted nim-dtokens">${esc(tokenText(r.tokens))}</div>` : ''}
-          ${e.running ? `<div class="nim-drun"><span class="nim-dot running"></span><span class="nim-live">${esc($('nim-status') ? $('nim-status').textContent : '')}</span><button class="nim-btn sm danger-ghost" data-dstop>停止</button></div>` : ''}
+          ${e.running ? `<div class="nim-drun"><span class="nim-dot running"></span><span class="nim-live">${esc($('nim-status') ? $('nim-status').textContent : '')}</span><button class="nim-btn sm danger-ghost" data-dstop>停止</button></div>` : e.editing && e.editing.has(i) ? `<div class="nim-drun"><span class="nim-dot running"></span><span class="nim-live">${esc(($('nim-status') && $('nim-status').textContent) || '这层正在按要求改')}</span><button class="nim-btn sm danger-ghost" data-dstop>${e.editing.size > 1 ? `停止（${e.editing.size} 层一起停）` : '停止'}</button></div>` : e.editing && e.editing.size ? `<div class="nim-muted nim-dtokens">第 ${[...e.editing].map((x) => x + 1).join('、')} 层正在按要求改，这层也可以同时改</div>` : ''}
           <div class="nim-dtabs" data-dtab-cur="${dtab}">${tabBtn('body', '正文')}${tabBtn('changes', '改动', nChanges)}${tabBtn('wb', '世界书', nWb)}${tabBtn('more', '更多')}</div>
           <div class="nim-dpanes" data-dtab-cur="${dtab}">
             <div class="nim-dpane" data-dpane="body">${pBody}</div>
@@ -5428,13 +5470,16 @@
         if (fbBtn)
             fbBtn.onclick = async () => {
                 if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
+                if (e.editing && e.editing.has(i)) return toast(`第 ${i + 1} 层正在改，等这次改完`, 'warning');
                 const fb = $('nim-layer-fb').value.trim();
                 if (!fb) return toast('请先写修改要求', 'warning');
                 const keepLater = keepLaterChecked();
+                const editMode = State.settings.feedbackEditMode !== 'full';
+                if (!editMode && e.editing && e.editing.size) return toast(`整层重做要等第 ${[...e.editing].map((x) => x + 1).join('、')} 层改完`, 'warning');
                 if (!keepLater && hasLater && !confirm(`第 ${i + 2} 层及之后的结果会清空，确定吗？`)) return;
                 collectFields();
-                State.stopped = false;
-                if (State.settings.feedbackEditMode !== 'full') {
+                if (!(e.editing && e.editing.size)) State.stopped = false;
+                if (editMode) {
                     log(`按要求改第 ${i + 1} 层：${fb}`);
                     await runEdit(e.editLayer(i, fb, { keepLater }), i);
                     return;
@@ -5530,6 +5575,15 @@
                 log(`用改过的提示词重做第 ${i + 1} 层${keepLater ? '（保留后面的层）' : ''}`);
                 await runRedo(e.redoWithPrompt(i, p, { keepLater }), i, '用改过的提示词重做');
             };
+        document.querySelectorAll('[data-copy-failed]').forEach((b) => {
+            b.onclick = () => {
+                const cur = e.results[i];
+                const list = (cur && cur.patchStats && cur.patchStats.failed) || [];
+                if (!list.length) return toast('没有没放进去的句子', 'info');
+                const text = list.map((f) => `接在「${f.patch.anchor || ''}」${f.patch.op === 'replace' ? '（替换这句）' : '后面'}：\n${f.patch.text}`).join('\n\n');
+                copyToClipboard(`第 ${i + 1} 层没放进去的 ${list.length} 句\n\n${text}`, `已复制 ${list.length} 句`);
+            };
+        });
         document.querySelectorAll('[data-retry-patch]').forEach((b) => {
             b.onclick = () => {
                 try {
@@ -6766,12 +6820,13 @@
 
     function renderButtons() {
         const e = State.engine;
-        const running = !!(e && e.running);
+        const editing = !!(e && e.editing && e.editing.size);
+        const running = !!(e && e.running) || editing;
         const allDone = !!(e && e.layers.length && e.reviewing === null && e.results.every((r) => r && r.status === 'done'));
         $('nim-start').disabled = running || allDone;
-        $('nim-start').textContent = running ? '处理中…' : allDone ? '已完成' : e && e.results.some((r) => r && r.status === 'done') ? '继续' : '开始';
+        $('nim-start').textContent = editing && !e.running ? '等改完…' : running ? '处理中…' : allDone ? '已完成' : e && e.results.some((r) => r && r.status === 'done') ? '继续' : '开始';
         if (!running && !State.importing) setStatus('');
-        $('nim-pause').disabled = !running;
+        $('nim-pause').disabled = !(e && e.running);
         $('nim-stop').disabled = !running;
         $('nim-modal').classList.toggle('is-running', running);
         const badge = $('nim-run-badge');
@@ -7689,7 +7744,7 @@ button.nim-step:hover{background:var(--surface2);}
 .nim-chg.bad{border-color:#5a4a22;background:#241f14;}
 .nim-chg-where{font-size:12px;color:var(--muted);margin-bottom:4px;word-break:break-word;}
 .nim-chg-why{color:var(--warn);}
-.nim-chg-text{font-size:14px;line-height:1.7;color:#b9f0df;white-space:pre-wrap;word-break:break-word;}
+.nim-chg-text{font-size:14px;line-height:1.7;color:#b9f0df;white-space:pre-wrap;word-break:break-word;user-select:text;-webkit-user-select:text;}
 .nim-chg .nim-row{margin-top:8px;}
 .nim-dpane .nim-fold{border:1px solid var(--line);border-radius:14px;padding:4px 12px;background:var(--bg);}
 .nim-dpane .nim-fold .nim-fold{background:transparent;}
