@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.6';
+    const VERSION = '1.6.7';
 
     // ============================================
     // 默认配置
@@ -3129,6 +3129,8 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
             results: [], // 每层：{status, raw, parsed, finalParas, tableActions, ...}
             stats: { cleanedLines: 0, repeatedLines: 0, inlineAds: 0, emptyChapters: [], inputTokens: 0, outputTokens: 0, cachedTokens: 0 },
             running: false,
+            // 正在「按要求改」的层：不同层可以同时改，同一层不能叠
+            editing: new Set(),
             pauseRequested: false,
             stopRequested: false,
             reviewing: null, // 正在等待审阅的层号
@@ -3773,7 +3775,7 @@ ${blocks}`;
 
         /** 从第一个没完成的层开始跑，直到结束、暂停、失败或需要审阅 */
         async function run() {
-            if (E.running) return;
+            if (E.running || E.editing.size) return;
             E.running = true;
             E.pauseRequested = false;
             E.stopRequested = false;
@@ -4016,7 +4018,16 @@ ${blocks}`;
          * @returns {Promise<{mode:'edit'|'full', result, applied?:number, bad?:number, reason?:string}>}
          */
         async function editLayer(i, feedback, opts = {}) {
-            return runSingle(() => editLayerInner(i, feedback, opts));
+            // 只改这一层、只发一次请求：不同层可以同时改（主流程、整层重做之类跑着的时候不行）
+            if (E.running) throw new Error('正在处理中');
+            if (E.editing.has(i)) throw new Error(`第 ${i + 1} 层正在改，等这次改完`);
+            if (!E.editing.size) E.stopRequested = false;
+            E.editing.add(i);
+            try {
+                return await editLayerInner(i, feedback, opts);
+            } finally {
+                E.editing.delete(i);
+            }
         }
 
         async function editLayerInner(i, feedback, opts) {
@@ -4041,9 +4052,16 @@ ${blocks}`;
             if (ed.full && !ed.ops.length) {
                 rec.problem = `AI 认为要整层重做：${ed.full}`;
                 keepLog();
+                // 整层重做会动后面的层：别的层还在改时不做，让用户等那边改完再提
+                if (E.editing.size > 1 || E.running) throw new Error(`AI 认为这条意见要整层重做（${ed.full}），别的层正在改，等它们改完再提一次`);
                 const extra = { feedback, previousRaw: old.raw };
-                const res = opts.review ? await redoLayer(i, extra) : await redoLayer(i, extra, { keepLater: opts.keepLater });
-                return { mode: 'full', result: res, reason: ed.full };
+                E.running = true;
+                try {
+                    const res = opts.review ? await redoLayer(i, extra) : await redoLayer(i, extra, { keepLater: opts.keepLater });
+                    return { mode: 'full', result: res, reason: ed.full };
+                } finally {
+                    E.running = false;
+                }
             }
             const wbBlock = extractTag(reply, '世界书');
             let wbNew = null;
@@ -4187,6 +4205,7 @@ ${blocks}`;
             const old = E.results[i];
             if (!old || old.status !== 'done') throw new Error('这一层还没完成');
             if (E.running) throw new Error('正在处理中');
+            if (E.editing.size) throw new Error(`第 ${[...E.editing].map((x) => x + 1).join('、')} 层正在按要求改，等改完再来`);
             // 标成运行中，界面的停止按钮才能点；上次点过停止留下的标记要清掉，不然 AI 回完了还会被当成已停止
             E.running = true;
             E.stopRequested = false;
@@ -4305,7 +4324,7 @@ ${blocks}`;
          * 返回 { applied, left }。
          */
         function retryFailedPatches(i) {
-            if (E.running) throw new Error('正在处理中');
+            if (E.running || E.editing.has(i)) throw new Error('正在处理中');
             const r = E.results[i];
             if (!r || r.status !== 'done' || !r.patchStats || r.patchStats.rewritten || !r.finalParas) return { applied: 0, left: 0 };
             const paras = r.finalParas.slice();
@@ -4392,7 +4411,7 @@ ${blocks}`;
          * edit：{ title?, body?, summary? }，没给的不变。返回新结果。
          */
         function manualEditLayer(i, edit = {}) {
-            if (E.running) throw new Error('正在处理中');
+            if (E.running || E.editing.has(i)) throw new Error('这层正在处理中');
             const r = E.results[i];
             if (!r || r.status !== 'done' || r.skipped) throw new Error('这一层还没有生成好');
             const parsed = { ...r.parsed };
@@ -4418,7 +4437,7 @@ ${blocks}`;
 
         /** 第 i 层退回上一次修改之前的样子；之后的层保留，世界书、表格按退回的结果重算 */
         function undoLayer(i) {
-            if (E.running) throw new Error('正在处理中');
+            if (E.running || E.editing.has(i)) throw new Error('这层正在处理中');
             const cur = E.results[i];
             const prev = cur && cur.undo && cur.undo[0];
             if (!prev) throw new Error('这一层没有可以撤销的修改');
@@ -4434,6 +4453,7 @@ ${blocks}`;
         /** 单层重做期间标成运行中：界面的停止按钮能点，停止后这次请求中断 */
         async function runSingle(fn) {
             if (E.running) throw new Error('正在处理中');
+            if (E.editing.size) throw new Error(`第 ${[...E.editing].map((x) => x + 1).join('、')} 层正在按要求改，等改完再来`);
             E.running = true;
             E.stopRequested = false;
             try {
