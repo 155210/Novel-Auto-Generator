@@ -73,7 +73,7 @@ function createUI() {
     <div id="nag-container">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>📚 文件转换工具</b>
+                <b>📚 A自制插件</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -278,5 +278,5 @@ jQuery(async () => {
         log('聊天记录管家将在点击时加载', 'warning');
     }
 
-    log('文件转换工具扩展已加载', 'success');
+    log('A自制插件已加载', 'success');
 });
