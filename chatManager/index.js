@@ -13,7 +13,12 @@
     window.STChatManager = { open: () => { } };
 
     const EXT = 'st-chat-manager';
-    const TRASH_AVATAR = '_stcm_trash_.png'; // 回收站 = chats/_stcm_trash_/ 目录
+    const TRASH_AVATAR = '_stcm_trash_.png'; // 旧版（复制式）回收站目录 chats/_stcm_trash_/，只用于兼容
+    // 新版回收站：把聊天文件在原角色文件夹里改名为 *.stcmtrash（酒馆只列 .jsonl，所以看不到），
+    // 由服务器直接改名，不经过浏览器；清单记在 chats/_stcm_trash_index_/index.jsonl
+    const INDEX_AVATAR = '_stcm_trash_index_.png';
+    const INDEX_ID = 'index';
+    const TRASH_EXT = '.stcmtrash';
     const LOG = '[聊天记录管家]';
     // 与服务端 sanitize-filename 一致的非法字符；含这些字符的文件名服务端会改写后再定位文件，可能指向别的文件
     const ILLEGAL_RE = /[\/\?<>\\:\*\|"\u0000-\u001f\u0080-\u009f]/;
@@ -233,37 +238,68 @@
     }
 
     // ---------------------------------------------------------------- 删除 / 回收站核心
-    /**
-     * 把一个聊天完整复制进回收站并回读校验。失败会抛错，且不会动原文件。
-     * @returns {Promise<string>} 回收站里的文件 id
-     */
-    async function copyToTrash(avatar, item) {
-        const data = await readChat(avatar, item.id);
-        if (!data.length) throw new Error('读取原文件失败或文件为空，未做任何改动');
-        const copy = JSON.parse(JSON.stringify(data));
-        let noHeader = false;
-        if (!isHeader(copy[0])) {
-            copy.unshift({ chat_metadata: {}, user_name: 'unused', character_name: 'unused' });
-            noHeader = true;
+    // 回收站清单（服务器上的一个小 jsonl 文件）。所有读写串行进行。
+    let indexLock = Promise.resolve();
+    function withIndex(fn) {
+        const run = indexLock.then(fn, fn);
+        indexLock = run.catch(() => { });
+        return run;
+    }
+    async function readIndex() {
+        const d = await readChat(INDEX_AVATAR, INDEX_ID);
+        return d.filter(x => x && x.stcm_entry === 1 && x.key && x.trash && x.avatar);
+    }
+    async function writeIndex(entries) {
+        const data = [{ chat_metadata: { stcm_trash_index: 1 }, user_name: 'unused', character_name: 'unused' }, ...entries];
+        await writeChat(INDEX_AVATAR, INDEX_ID, data);
+        const back = await readIndex();
+        if (back.length !== entries.length) throw new Error('回收站清单写入后核对不一致');
+    }
+    const indexUpdate = mutate => withIndex(async () => {
+        const list = await readIndex();
+        const next = mutate(list) || list;
+        await writeIndex(next);
+        return next;
+    });
+
+    function trashName(id) {
+        const stamp = Date.now();
+        let name = `${id}.${stamp}${TRASH_EXT}`;
+        if (new TextEncoder().encode(name).length > 240 || unsafeNameReason(name)) {
+            name = `stcm_${stamp}_${Math.random().toString(36).slice(2, 8)}${TRASH_EXT}`;
         }
-        const ch = charByAvatar(avatar);
-        copy[0].chat_metadata = Object.assign({}, copy[0].chat_metadata || {}, {
-            stcm_trash: { avatar, name: item.id, charName: ch ? ch.name : '', deletedAt: Date.now(), noHeader },
-        });
-        const trashId = `T${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        await writeChat(TRASH_AVATAR, trashId, copy);
-        const back = await readChat(TRASH_AVATAR, trashId);
-        const same = back.length === copy.length
-            && JSON.stringify(back.slice(1)) === JSON.stringify(noHeader ? data : data.slice(1));
-        if (!same) {
-            try { await deleteFile(TRASH_AVATAR, trashId + '.jsonl'); } catch (e) { /* ignore */ }
-            throw new Error('回收站副本校验不一致，已中止，原文件未动');
-        }
-        return trashId;
+        return name;
+    }
+    async function renameFile(avatar, from, to) {
+        const r = await post('/api/chats/rename', { avatar_url: avatar, original_file: from, renamed_file: to });
+        if (!r || r.ok !== true) throw new Error('改名接口未返回成功');
     }
 
     /**
-     * 删除一批聊天。逐个顺序执行，遇到任何错误立刻停下。
+     * 移入回收站：先把清单写好（确保不会出现找不到的隐藏文件），再让服务器改名。
+     * 改名在服务器上完成，文件内容一个字节都不经过浏览器。失败会抛错。
+     */
+    async function moveToTrash(avatar, item) {
+        const ch = charByAvatar(avatar);
+        const entry = {
+            stcm_entry: 1, key: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            avatar, charName: ch ? ch.name : '', orig: item.id, trash: trashName(item.id),
+            deletedAt: Date.now(), count: item.count, size: item.size, sizeText: item.sizeText,
+            preview: String(item.preview || '').slice(0, 200), state: 'pending',
+        };
+        await indexUpdate(list => { list.push(entry); });
+        try {
+            await renameFile(avatar, item.file, entry.trash);
+        } catch (e) {
+            try { await indexUpdate(list => list.filter(x => x.key !== entry.key)); } catch (e2) { /* 清单里留一条待确认，无害 */ }
+            if (e.status === 400) throw new Error('改名被拒绝：文件可能已不在了');
+            throw e;
+        }
+        try { await indexUpdate(list => { const x = list.find(y => y.key === entry.key); if (x) x.state = 'done'; }); } catch (e) { /* 仍可从回收站恢复 */ }
+    }
+
+    /**
+     * 删除或移入回收站一批聊天。逐个顺序执行，遇到任何错误立刻停下。
      * @returns {Promise<{done:string[], failed:{file:string,reason:string}[], skipped:string[]}>}
      */
     async function removeChats(avatar, items, permanent, onProgress) {
@@ -276,8 +312,8 @@
                 if (avatar !== TRASH_AVATAR && isOpenChat(avatar, it.id)) throw new Error('这是当前正打开的聊天，已保护');
                 const bad = unsafeNameReason(it.file);
                 if (bad) throw new Error(bad + '，为避免误删其它文件已拒绝，请到文件管理器手动处理');
-                if (!permanent && avatar !== TRASH_AVATAR) await copyToTrash(avatar, it);
-                await deleteFile(avatar, it.file);
+                if (!permanent && avatar !== TRASH_AVATAR) await moveToTrash(avatar, it);
+                else await deleteFile(avatar, it.file);
                 sent.push(it);
             } catch (e) {
                 result.failed.push({ file: it.file, reason: e.message || String(e) });
@@ -285,10 +321,12 @@
                 break;
             }
         }
-        // 最终核对：重新读目录，确认文件真的从磁盘上消失了
+        // 最终核对：重新读目录，确认这些 .jsonl 真的不在了
         if (sent.length) {
+            const stop = busyTimer('正在重新读取目录，确认文件已不在');
             let names = null;
             try { names = await listNames(avatar); } catch (e) { /* 见下 */ }
+            finally { stop(); }
             for (const it of sent) {
                 if (!names) result.failed.push({ file: it.file, reason: '已发送删除，但无法重新读取目录来核对' });
                 else if (names.has(it.file)) result.failed.push({ file: it.file, reason: '接口返回成功，但文件仍在磁盘上' });
@@ -298,7 +336,44 @@
         return result;
     }
 
-    /** 从回收站恢复一个聊天 */
+    /** 从回收站（新版）恢复：在原角色文件夹里改名回来 */
+    async function restoreEntry(e) {
+        const names = await listNames(e.avatar);
+        if (unsafeNameReason(e.orig + '.jsonl')) throw new Error('原文件名不合法，无法恢复');
+        let name = e.orig, n = 1;
+        while (names.has(name + '.jsonl')) name = `${e.orig} (恢复${n++})`;
+        try {
+            await renameFile(e.avatar, e.trash, name + '.jsonl');
+        } catch (err) {
+            if (err.status !== 400) throw err;
+            if (e.state === 'pending' && names.has(e.orig + '.jsonl')) {
+                // 当时改名没有成功，原文件一直都在
+                await indexUpdate(list => list.filter(x => x.key !== e.key));
+                return { avatar: e.avatar, name: e.orig, already: true };
+            }
+            throw new Error('回收站文件已不在磁盘上（可能角色连同聊天被删了）。可以点「永久删除」把这条从列表里清掉');
+        }
+        const after = await listNames(e.avatar);
+        if (!after.has(name + '.jsonl')) throw new Error('改名后没在目录里找到恢复的文件');
+        await indexUpdate(list => list.filter(x => x.key !== e.key));
+        return { avatar: e.avatar, name };
+    }
+
+    /** 从回收站（新版）永久删除 */
+    async function purgeEntry(e) {
+        let missing = false;
+        try {
+            const r = await post('/api/chats/delete', { avatar_url: e.avatar, chatfile: e.trash });
+            if (!r || r.ok !== true) throw new Error('删除接口未返回成功');
+        } catch (err) {
+            if (err.status !== 400) throw err;
+            missing = true; // 酒馆只在文件不存在时返回 400
+        }
+        await indexUpdate(list => list.filter(x => x.key !== e.key));
+        return { missing };
+    }
+
+    /** 从旧版（复制式）回收站恢复一个聊天 */
     async function restoreOne(trashItem, fallbackAvatar) {
         const data = await readChat(TRASH_AVATAR, trashItem.id);
         if (!data.length) throw new Error('回收站文件读取失败');
@@ -334,6 +409,14 @@
         box.append(t);
         setTimeout(() => t.remove(), type === 'err' ? 6000 : 2800);
     }
+    /** 显示带「已等 N 秒」的忙碌提示，返回停止函数 */
+    function busyTimer(label) {
+        const t0 = Date.now();
+        const tick = () => setBusy(`${label}…\n已等 ${Math.round((Date.now() - t0) / 1000)} 秒（只读，没删任何东西）`);
+        tick();
+        const iv = setInterval(tick, 1000);
+        return () => { clearInterval(iv); setBusy(''); };
+    }
     function setBusy(text) {
         S.busy = !!text;
         const el = S.root && S.root.querySelector('.stcm-busy');
@@ -359,7 +442,7 @@
     function itemLine(it) {
         return h('div', { class: 'stcm-confirm-item' },
             h('div', { class: 'stcm-confirm-name', text: it.id }),
-            h('div', { class: 'stcm-sub', text: `${it.count} 楼 · ${it.sizeText || fmtSize(it.size)} · ${fmtTime(it.last)}` }));
+            h('div', { class: 'stcm-sub', text: it.count === null ? '（大小未读取）' : `${it.count} 楼 · ${it.sizeText || fmtSize(it.size)} · ${fmtTime(it.last)}` }));
     }
 
     // ---------------------------------------------------------------- 列表加载与渲染
@@ -368,6 +451,12 @@
         const avatar = S.sel.avatar;
         const seq = ++S.reqSeq;
         S.loading = true; S.loadError = '';
+        const t0 = Date.now();
+        const iv = setInterval(() => {
+            if (seq !== S.reqSeq || !S.loading) { clearInterval(iv); return; }
+            const el = S.root && S.root.querySelector('.stcm-load-sec');
+            if (el) el.textContent = `已等 ${Math.round((Date.now() - t0) / 1000)} 秒`;
+        }, 1000);
         if (force || S.loadedFor !== avatar) { S.chats = []; }
         renderList();
         try {
@@ -491,7 +580,7 @@
         if (!S.sel) {
             frag.append(h('div', { class: 'stcm-empty', text: '点上方选择一个角色卡，查看它的全部聊天记录。' }));
         } else if (S.loading && !S.chats.length) {
-            frag.append(h('div', { class: 'stcm-empty' }, h('div', { class: 'stcm-spin' }), '正在读取聊天列表…聊天很多/很长时需要等一会儿'));
+            frag.append(h('div', { class: 'stcm-empty' }, h('div', { class: 'stcm-spin' }), '正在读取聊天列表…聊天很多/很大时要等一会儿', h('span', { class: 'stcm-sub stcm-load-sec' })));
         } else if (S.loadError) {
             frag.append(h('div', { class: 'stcm-empty err', text: S.loadError }));
         } else if (!S.chats.length) {
@@ -617,34 +706,10 @@
         const avatar = S.sel.avatar;
         items = items.filter(c => !isOpenChat(avatar, c.id));
         if (!items.length) { toast('当前正打开的聊天受保护，请先在酒馆里切到别的聊天再删', 'err'); return; }
-
-        // 1) 删除前重新读一遍磁盘，确保界面上看到的和磁盘上的是同一份
-        setBusy('正在核对磁盘上的最新状态…');
-        let fresh;
-        try { fresh = await listChats(avatar); } catch (e) { setBusy(''); toast('核对失败，未删除任何东西：' + e.message, 'err'); return; }
-        setBusy('');
-        if (!S.sel || S.sel.avatar !== avatar) return;
-        const changed = [], gone = [], ok = [];
-        for (const it of items) {
-            const f = fresh.find(x => x.file === it.file);
-            if (!f) gone.push(it);
-            else if (f.count !== it.count || f.sizeText !== it.sizeText) changed.push(it);
-            else ok.push(f);
-        }
-        S.chats = fresh; S.hasMeta = fresh.some(x => x.meta);
-        if (changed.length) {
-            for (const c of changed) S.checked.delete(c.file);
-            renderList();
-            await dialog('列表已过期，已中止', h('div', null,
-                h('p', { text: '下面这些聊天在你打开列表之后又发生了变化（楼层数或大小不同了）。为避免误删，本次没有删除任何东西，列表已刷新，请重新核对后再操作。' }),
-                changed.map(itemLine)));
-            return;
-        }
-        renderList();
-        if (!ok.length) { toast('选中的聊天已经不存在了，列表已刷新'); return; }
-
-        const res = await confirmAndRemove(avatar, S.sel.name, ok, gone.length, fresh);
-        if (!res) return;
+        const permanent = await confirmDelete(avatar, S.sel.name, items, S.chats);
+        if (permanent === null) return;
+        const res = await runDelete(avatar, items, permanent);
+        if (!res) { await loadChats(false); return; }
         for (const f of res.done) S.checked.delete(f);
         setBusy('正在刷新列表…');
         try { await loadChats(false); } finally { setBusy(''); }
@@ -653,55 +718,87 @@
     }
 
     /**
-     * 弹确认框 → 执行删除 → 核对。ok 必须是刚从磁盘读到的条目。
-     * @returns {Promise<null|{done:string[],failed:object[],skipped:string[],permanent:boolean}>} 取消时返回 null
+     * 确认框。items 来自已读到的列表（可能缺楼层/大小信息）。
+     * @returns {Promise<null|boolean>} 取消返回 null；否则返回是否永久删除
      */
-    async function confirmAndRemove(avatar, charName, ok, goneCount, fresh) {
+    async function confirmDelete(avatar, charName, items, list) {
         const st = settings();
         let permanent = !st.useTrash;
-        const lastOnes = ok.filter(c => isLastChat(avatar, c.id));
-        const kidsOf = ok.filter(c => fresh.some(x => x.parent === c.id && !ok.includes(x)));
-        const big = ok.filter(c => c.count >= 100);
-        const totalSize = ok.reduce((a, c) => a + c.size, 0);
+        const known = items.filter(c => c.count !== null);
+        const lastOnes = items.filter(c => isLastChat(avatar, c.id));
+        const kidsOf = items.filter(c => (list || []).some(x => x.parent === c.id && !items.some(y => y.file === x.file)));
+        const big = known.filter(c => c.count >= 100);
+        const totalSize = known.reduce((a, c) => a + c.size, 0);
         const modeRadio = (val, label, sub) => h('label', { class: 'stcm-radio' },
             h('input', { type: 'radio', name: 'stcm-mode', checked: permanent === val, onchange: () => { permanent = val; sync(); } }),
             h('span', null, h('b', { text: label }), h('div', { class: 'stcm-sub', text: sub })));
         const ack = h('input', { type: 'checkbox' });
         let sync = () => { };
         const body = h('div', null,
-            h('p', null, '角色：', h('b', { text: charName }), `　共 ${ok.length} 个聊天，${ok.reduce((a, c) => a + c.count, 0)} 楼，${fmtSize(totalSize)}`),
-            goneCount ? h('p', { class: 'stcm-warn', text: `另有 ${goneCount} 个在磁盘上已不存在，已自动忽略。` }) : null,
-            h('div', { class: 'stcm-confirm-list' }, ok.map(itemLine)),
+            h('p', null, '角色：', h('b', { text: charName }), `　共 ${items.length} 个聊天` + (known.length === items.length ? `，${known.reduce((a, c) => a + c.count, 0)} 楼，${fmtSize(totalSize)}` : '')),
+            h('div', { class: 'stcm-confirm-list' }, items.map(itemLine)),
             big.length ? h('p', { class: 'stcm-warn', text: `⚠ 其中 ${big.length} 个聊天超过 100 楼，请确认不是主线。` }) : null,
             lastOnes.length ? h('p', { class: 'stcm-warn', text: `⚠ 「${lastOnes[0].id}」是该角色上次停留的聊天。删掉后下次打开该角色，酒馆会用同名新建一个只有开场白的空聊天。` }) : null,
             kidsOf.length ? h('p', { class: 'stcm-warn', text: `⚠ 有 ${kidsOf.length} 个聊天还有没被选中的分支，删除后那些分支仍可正常使用，只是「返回主聊天」会失效。` }) : null,
-            modeRadio(false, '移入回收站（推荐）', '先完整复制到回收站并校验，再删原文件；之后可一键恢复。会多占一份空间，直到清空回收站。'
-                + (totalSize > 20 * 1048576 ? `这批共 ${fmtSize(totalSize)}，每个文件要完整读写一遍，手机上会比较慢，请耐心等。` : '')),
-            modeRadio(true, '永久删除', '直接删除本地 .jsonl 文件，无法恢复。速度快。'),
+            modeRadio(false, '移入回收站（推荐）', '由服务器把文件改名藏起来（酒馆列表里看不到），几乎瞬间完成、不多占空间，之后可一键恢复。到回收站里永久删除才真正释放空间。'),
+            modeRadio(true, '永久删除', '删除本地 .jsonl 文件，无法恢复。删除前会先完整核对一遍磁盘，聊天很大时要等一会儿。'),
             h('label', { class: 'stcm-radio' }, ack, h('span', { text: '我已核对上面的列表' })));
         const choice = await dialog('确认删除', body,
             [{ text: '取消', value: null }, { text: '删除', value: 'go', cls: 'danger', disabled: true }],
             ({ btnEls }) => {
                 sync = () => {
                     btnEls[1].disabled = !ack.checked;
-                    btnEls[1].textContent = permanent ? `永久删除 ${ok.length} 个` : `移入回收站 ${ok.length} 个`;
+                    btnEls[1].textContent = permanent ? `永久删除 ${items.length} 个` : `移入回收站 ${items.length} 个`;
                 };
                 ack.addEventListener('change', sync);
                 sync();
             });
         if (choice !== 'go') return null;
         st.useTrash = !permanent; saveSettings();
+        return permanent;
+    }
+
+    /**
+     * 执行删除。永久删除前先重读磁盘核对（文件在列表之后变过就整批中止）；
+     * 移入回收站是无损改名，不需要预先核对。
+     * @returns {Promise<null|object>} 中止时返回 null
+     */
+    async function runDelete(avatar, items, permanent) {
+        let ok = items, goneCount = 0;
+        if (permanent) {
+            const stop = busyTimer(`正在核对磁盘上的最新状态（要把这个角色的聊天都扫一遍）`);
+            let fresh;
+            try { fresh = await listChats(avatar); }
+            catch (e) { toast('核对失败，未删除任何东西：' + e.message, 'err'); return null; }
+            finally { stop(); }
+            const changed = []; ok = [];
+            for (const it of items) {
+                const f = fresh.find(x => x.file === it.file);
+                if (!f) goneCount++;
+                else if (it.count !== null && (f.count !== it.count || f.sizeText !== it.sizeText)) changed.push(it);
+                else ok.push(f);
+            }
+            if (changed.length) {
+                await dialog('列表已过期，已中止', h('div', null,
+                    h('p', { text: '下面这些聊天在你打开列表之后又发生了变化（楼层数或大小不同了）。为避免误删，本次没有删除任何东西，请刷新后重新核对。' }),
+                    changed.map(itemLine)));
+                return null;
+            }
+            if (!ok.length) { toast('选中的聊天在磁盘上已经不存在了', 'err'); return null; }
+        }
         setBusy('准备删除…');
         try {
             const res = await removeChats(avatar, ok, permanent, (i, n, it) => setBusy(`${permanent ? '删除' : '移入回收站'} ${i + 1}/${n}：${it.id}`));
             res.permanent = permanent;
+            res.gone = goneCount;
             return res;
         } finally { setBusy(''); }
     }
 
     async function reportResult(res) {
         const word = res.permanent ? '永久删除' : '移入回收站';
-        if (!res.failed.length && !res.skipped.length) { toast(`已${word} ${res.done.length} 个聊天`, 'ok'); return; }
+        const goneNote = res.gone ? `（另有 ${res.gone} 个在磁盘上已不存在，已忽略）` : '';
+        if (!res.failed.length && !res.skipped.length) { toast(`已${word} ${res.done.length} 个聊天${goneNote}`, 'ok'); return; }
         await dialog('删除未全部完成', h('div', null,
             h('p', { text: res.done.length ? `已${word} ${res.done.length} 个（已重新读取目录确认）。` : '没有删除任何聊天。' }),
             res.failed.length ? h('div', null, h('p', { class: 'stcm-warn', text: `失败 ${res.failed.length} 个（已停止后续操作）：` }),
@@ -803,14 +900,12 @@
         N.deleting = true;
         try {
             await withOverlay(async () => {
-                setBusy('正在核对磁盘上的最新状态…');
-                let fresh;
-                try { fresh = await listChats(cur.avatar); }
-                catch (e) { toast('核对失败，未删除任何东西：' + e.message, 'err'); return; }
-                finally { setBusy(''); }
-                const ok = fresh.filter(c => ids.has(c.id) && !isOpenChat(cur.avatar, c.id));
-                if (!ok.length) { toast('选中的聊天在磁盘上已不存在', 'err'); return; }
-                const res = await confirmAndRemove(cur.avatar, cur.name, ok, ids.size - ok.length, fresh);
+                const known = S.loadedFor === cur.avatar ? S.chats : [];
+                const items = [...ids].map(id => known.find(c => c.id === id)
+                    || { file: id + '.jsonl', id, count: null, size: 0, sizeText: '', last: 0, preview: '', parent: '' });
+                const permanent = await confirmDelete(cur.avatar, cur.name, items, known);
+                if (permanent === null) return;
+                const res = await runDelete(cur.avatar, items, permanent);
                 if (!res) return;
                 const gone = new Set(res.done.map(stripExt));
                 for (const x of nativeBlocks()) if (gone.has(x.id)) x.w.remove();
@@ -905,10 +1000,39 @@
             [{ text: '关闭', value: null }], a => { api = a; });
     }
 
+    /** 只保留最新的 N 个（按最后活动时间；正在打开的聊天算在 N 里，且永远不会被勾） */
+    function keepNewest(n) {
+        const open = c => (isOpenChat(S.sel.avatar, c.id) ? 1 : 0);
+        // 时间相同时，正在打开的聊天排前面（优先保留），再按名字，保证结果稳定
+        const all = visibleChats().map(r => r.c).sort((a, b) => (b.last - a.last) || (open(b) - open(a)) || a.id.localeCompare(b.id));
+        const keep = new Set(all.slice(0, Math.max(0, n)).map(c => c.file));
+        return all.filter(c => !keep.has(c.file) && !isOpenChat(S.sel.avatar, c.id));
+    }
+    async function quickKeep() {
+        const total = visibleChats().length;
+        if (!total) return;
+        const inp = h('input', { class: 'stcm-input stcm-num', type: 'number', min: '0', value: String(settings().keepN ?? 3) });
+        const hint = h('p', { class: 'stcm-sub' });
+        const upd = () => {
+            const n = Math.max(0, Math.floor(Number(inp.value) || 0));
+            const sel = keepNewest(n);
+            hint.textContent = `共 ${total} 个聊天` + (S.filter || S.contentHits ? '（当前筛选结果）' : '') + `：保留最新 ${Math.min(n, total)} 个，勾选其余 ${sel.length} 个。正在打开的聊天永远不会被勾。勾完还要点「删除」并确认。`;
+            return sel;
+        };
+        inp.addEventListener('input', upd);
+        const v = await dialog('只保留最新的几个', h('div', null, h('div', { class: 'stcm-toolbar' }, h('span', { text: '保留最新的' }), inp, h('span', { text: '个，其余全部勾选' })), hint),
+            [{ text: '取消', value: null }, { text: '勾选', value: 'go', cls: 'primary' }], () => upd());
+        if (v !== 'go') return;
+        const n = Math.max(0, Math.floor(Number(inp.value) || 0));
+        settings().keepN = n; saveSettings();
+        S.checked.clear();
+        keepNewest(n).forEach(c => S.checked.add(c.file));
+        renderList();
+    }
     async function quickSelect() {
         const rows = visibleChats().map(r => r.c).filter(c => !isOpenChat(S.sel.avatar, c.id));
         const num = (v, d) => h('input', { class: 'stcm-input stcm-num', type: 'number', min: '0', value: String(d), onclick: e => e.stopPropagation() });
-        const nFloor = num(0, 5), nDay = num(0, 30), nKeep = num(0, 3);
+        const nFloor = num(0, 5), nDay = num(0, 30), nKeep = num(0, settings().keepN ?? 3);
         let api;
         const pick = (fn, add) => () => {
             if (!add) S.checked.clear();
@@ -918,6 +1042,7 @@
         const item = (label, fn, extra) => h('div', { class: 'stcm-menu-item', onclick: pick(fn) }, label, extra || null);
         await dialog('快速选择', h('div', { class: 'stcm-menu' },
             h('div', { class: 'stcm-sub', text: '只在当前显示的列表里选；正在打开的聊天永远不会被选中。选完还要再点「删除」并确认。' }),
+            item('只保留最新的 N 个，其余全选', () => keepNewest(Math.max(0, Math.floor(Number(nKeep.value) || 0))), nKeep),
             item('全选', () => rows),
             item('反选', () => { const old = new Set(checkedItems().map(c => c.file)); return rows.filter(c => !old.has(c.file)); }),
             item('全部分支 / 检查点', () => rows.filter(isBranchLike)),
@@ -931,7 +1056,6 @@
             }),
             item('楼层数 ≤ ', () => rows.filter(c => c.count <= Number(nFloor.value || 0)), nFloor),
             item('最后活动早于（天）', () => rows.filter(c => c.last && Date.now() - c.last > Number(nDay.value || 0) * 86400000), nDay),
-            item('除最新的 N 个以外全部 ', () => rows.slice().sort((a, b) => b.last - a.last).slice(Math.max(0, Number(nKeep.value || 0))), nKeep),
             h('div', { class: 'stcm-menu-item', onclick: () => { S.checked.clear(); api.close(null); renderList(); } }, '清空选择')),
             [{ text: '关闭', value: null }], a => { api = a; });
     }
@@ -1100,44 +1224,54 @@
     // ---------------------------------------------------------------- 回收站
     async function loadTrash() {
         S.trash.loading = true; renderTrash();
+        const items = [];
         try {
-            const list = await listChats(TRASH_AVATAR);
-            S.trash.items = list.map(c => Object.assign(c, { info: (c.meta && c.meta.stcm_trash) || null }))
-                .sort((a, b) => ((b.info && b.info.deletedAt) || 0) - ((a.info && a.info.deletedAt) || 0));
-            const names = new Set(list.map(c => c.file));
-            for (const f of [...S.trash.checked]) if (!names.has(f)) S.trash.checked.delete(f);
-        } catch (e) { toast('读取回收站失败：' + e.message, 'err'); }
+            for (const e of await withIndex(readIndex)) {
+                items.push({ kind: 'r', key: 'r:' + e.key, e, title: e.orig, avatar: e.avatar, charName: e.charName, deletedAt: e.deletedAt, count: e.count, sizeText: e.sizeText, size: e.size || 0, preview: e.preview || '' });
+            }
+        } catch (err) { toast('读取回收站清单失败：' + err.message, 'err'); }
+        try {
+            // 旧版（复制式）回收站里可能还有东西
+            for (const c of await listChats(TRASH_AVATAR)) {
+                const info = (c.meta && c.meta.stcm_trash) || {};
+                items.push({ kind: 'c', key: 'c:' + c.file, c, title: info.name || c.id, avatar: info.avatar, charName: info.charName, deletedAt: info.deletedAt, count: c.count, sizeText: c.sizeText, size: c.size, preview: c.preview });
+            }
+        } catch (err) { /* 没有旧版回收站目录 */ }
+        items.sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+        S.trash.items = items;
+        const keys = new Set(items.map(x => x.key));
+        for (const k of [...S.trash.checked]) if (!keys.has(k)) S.trash.checked.delete(k);
         S.trash.loading = false; renderTrash();
     }
     function renderTrash() {
         if (!S.root) return;
         const el = S.root.querySelector('.stcm-view-trash');
         const T = S.trash;
-        const picked = () => T.items.filter(c => T.checked.has(c.file));
+        const picked = () => T.items.filter(x => T.checked.has(x.key));
+        const toggle = x => { T.checked.has(x.key) ? T.checked.delete(x.key) : T.checked.add(x.key); renderTrash(); };
         const list = h('div', { class: 'stcm-list' });
         if (T.loading && !T.items.length) list.append(h('div', { class: 'stcm-empty' }, h('div', { class: 'stcm-spin' }), '正在读取回收站…'));
         else if (!T.items.length) list.append(h('div', { class: 'stcm-empty', text: '回收站是空的。' }));
-        for (const c of T.items) {
-            const info = c.info || {};
-            const exists = info.avatar && charByAvatar(info.avatar);
-            const title = info.name || c.id;
-            list.append(h('div', { class: 'stcm-row' + (T.checked.has(c.file) ? ' checked' : '') },
-                h('label', { class: 'stcm-check' }, h('input', { type: 'checkbox', checked: T.checked.has(c.file), onchange: e => { e.target.checked ? T.checked.add(c.file) : T.checked.delete(c.file); renderTrash(); } })),
-                h('div', { class: 'stcm-row-main', onclick: () => openPreview(TRASH_AVATAR, c, { title: '[回收站] ' + title }) },
-                    h('div', { class: 'stcm-row-title' }, h('span', { class: 'stcm-row-name', text: title })),
+        for (const x of T.items) {
+            const exists = x.avatar && charByAvatar(x.avatar);
+            list.append(h('div', { class: 'stcm-row' + (T.checked.has(x.key) ? ' checked' : ''), 'data-key': x.key },
+                h('label', { class: 'stcm-check' }, h('input', { type: 'checkbox', checked: T.checked.has(x.key), onchange: () => toggle(x) })),
+                h('div', { class: 'stcm-row-main', onclick: () => x.kind === 'c' ? openPreview(TRASH_AVATAR, x.c, { title: '[回收站] ' + x.title }) : toggle(x) },
+                    h('div', { class: 'stcm-row-title' }, h('span', { class: 'stcm-row-name', text: x.title })),
                     h('div', { class: 'stcm-tags' },
-                        h('span', { class: 'stcm-tag' + (exists ? '' : ' dup'), text: info.avatar ? `角色：${info.charName || info.avatar}${exists ? '' : '（已不存在）'}` : '来源未知（点开可预览）' }),
-                        h('span', { class: 'stcm-sub', text: `${c.count} 楼 · ${c.sizeText}` + (info.deletedAt ? ` · 删除于 ${fmtTime(info.deletedAt)}` : '') })),
-                    h('div', { class: 'stcm-preview-line', text: c.preview.replace(/\s+/g, ' ').slice(0, 160) }))));
+                        h('span', { class: 'stcm-tag' + (exists ? '' : ' dup'), text: x.avatar ? `角色：${x.charName || x.avatar}${exists ? '' : '（角色卡已不在）'}` : '来源未知' }),
+                        x.kind === 'r' && x.e.state === 'pending' ? h('span', { class: 'stcm-tag dup', text: '状态待确认' }) : null,
+                        h('span', { class: 'stcm-sub', text: (x.count === null || x.count === undefined ? '' : `${x.count} 楼 · ${x.sizeText} · `) + (x.deletedAt ? `删除于 ${fmtTime(x.deletedAt)}` : '') })),
+                    h('div', { class: 'stcm-preview-line', text: String(x.preview || '').replace(/\s+/g, ' ').slice(0, 160) }))));
         }
         const n = picked().length;
         el.replaceChildren(
             h('div', { class: 'stcm-pv-head' },
                 h('button', { class: 'stcm-btn', onclick: () => { showView('list'); if (S.sel) loadChats(false); } }, '← 返回'),
                 h('div', { class: 'stcm-pv-title' }, h('div', { class: 'stcm-row-name', text: '回收站' }),
-                    h('div', { class: 'stcm-sub', text: `${T.items.length} 个聊天 · 占用 ${fmtSize(T.items.reduce((a, c) => a + c.size, 0))}（数据目录 chats/_stcm_trash_/）` }))),
+                    h('div', { class: 'stcm-sub', text: `${T.items.length} 个聊天 · ${fmtSize(T.items.reduce((a, x) => a + (x.size || 0), 0))}。文件改名后藏在原角色的聊天文件夹里，永久删除才释放空间` }))),
             h('div', { class: 'stcm-toolbar' },
-                h('button', { class: 'stcm-btn small', onclick: () => { if (T.checked.size === T.items.length) T.checked.clear(); else T.items.forEach(c => T.checked.add(c.file)); renderTrash(); } }, T.checked.size && T.checked.size === T.items.length ? '取消全选' : '全选'),
+                h('button', { class: 'stcm-btn small', onclick: () => { if (T.checked.size === T.items.length) T.checked.clear(); else T.items.forEach(x => T.checked.add(x.key)); renderTrash(); } }, T.checked.size && T.checked.size === T.items.length ? '取消全选' : '全选'),
                 h('button', { class: 'stcm-btn small primary', disabled: !n, onclick: () => restoreFlow(picked()) }, `恢复 ${n || ''}`),
                 h('button', { class: 'stcm-btn small danger', disabled: !n, onclick: () => purgeFlow(picked()) }, `永久删除 ${n || ''}`),
                 h('button', { class: 'stcm-btn small', onclick: loadTrash }, '刷新')),
@@ -1148,28 +1282,45 @@
         const fails = []; let ok = 0;
         try {
             for (let i = 0; i < items.length; i++) {
-                setBusy(`恢复 ${i + 1}/${items.length}…`);
-                try { await restoreOne(items[i], S.sel && S.sel.avatar); ok++; S.trash.checked.delete(items[i].file); }
-                catch (e) { fails.push({ it: items[i], reason: e.message }); }
+                setBusy(`恢复 ${i + 1}/${items.length}：${items[i].title}`);
+                try {
+                    if (items[i].kind === 'r') await restoreEntry(items[i].e);
+                    else await restoreOne(items[i].c, S.sel && S.sel.avatar);
+                    ok++; S.trash.checked.delete(items[i].key);
+                } catch (e) { fails.push({ it: items[i], reason: e.message }); }
             }
         } finally { setBusy(''); }
+        S.loadedFor = null;
         await loadTrash();
         if (fails.length) await dialog('部分恢复失败', h('div', null, h('p', { text: `成功 ${ok} 个，失败 ${fails.length} 个（失败的仍在回收站里）：` }),
-            fails.map(f => h('div', { class: 'stcm-confirm-item' }, h('div', { class: 'stcm-confirm-name', text: (f.it.info && f.it.info.name) || f.it.id }), h('div', { class: 'stcm-sub', text: f.reason })))));
+            fails.map(f => h('div', { class: 'stcm-confirm-item' }, h('div', { class: 'stcm-confirm-name', text: f.it.title }), h('div', { class: 'stcm-sub', text: f.reason })))));
         else toast(`已恢复 ${ok} 个聊天到原角色`, 'ok');
     }
     async function purgeFlow(items) {
         if (S.busy || !items.length) return;
         const v = await dialog('永久删除', h('div', null, h('p', { class: 'stcm-warn', text: `将从回收站永久删除 ${items.length} 个聊天，无法恢复。` }),
-            h('div', { class: 'stcm-confirm-list' }, items.map(c => itemLine(Object.assign({}, c, { id: (c.info && c.info.name) || c.id }))))),
+            h('div', { class: 'stcm-confirm-list' }, items.map(x => itemLine({ id: x.title, count: x.count === undefined ? null : x.count, sizeText: x.sizeText, size: x.size, last: x.deletedAt })))),
             [{ text: '取消', value: null }, { text: `永久删除 ${items.length} 个`, value: 'go', cls: 'danger' }]);
         if (v !== 'go') return;
-        let res;
-        try { res = await removeChats(TRASH_AVATAR, items, true, (i, n) => setBusy(`永久删除 ${i + 1}/${n}…`)); }
-        finally { setBusy(''); }
+        const fails = []; let done = 0, missing = 0;
+        try {
+            const legacy = items.filter(x => x.kind === 'c');
+            const fresh = items.filter(x => x.kind === 'r');
+            for (let i = 0; i < fresh.length; i++) {
+                setBusy(`永久删除 ${i + 1}/${items.length}…`);
+                try { const r = await purgeEntry(fresh[i].e); done++; if (r.missing) missing++; S.trash.checked.delete(fresh[i].key); }
+                catch (e) { fails.push({ file: fresh[i].title, reason: e.message }); break; }
+            }
+            if (legacy.length && !fails.length) {
+                const res = await removeChats(TRASH_AVATAR, legacy.map(x => x.c), true, (i) => setBusy(`永久删除 ${fresh.length + i + 1}/${items.length}…`));
+                done += res.done.length;
+                fails.push(...res.failed);
+            }
+        } finally { setBusy(''); }
         await loadTrash();
-        if (res.failed.length) await dialog('未全部完成', h('div', null, res.failed.map(f => h('div', { class: 'stcm-confirm-item' }, h('div', { class: 'stcm-confirm-name', text: f.file }), h('div', { class: 'stcm-sub', text: f.reason })))));
-        else toast(`已永久删除 ${res.done.length} 个`, 'ok');
+        if (fails.length) await dialog('未全部完成', h('div', null, h('p', { text: `已删除 ${done} 个，下面的出错后已停止：` }),
+            fails.map(f => h('div', { class: 'stcm-confirm-item' }, h('div', { class: 'stcm-confirm-name', text: f.file }), h('div', { class: 'stcm-sub', text: f.reason })))));
+        else toast(`已永久删除 ${done} 个` + (missing ? `（其中 ${missing} 个文件本来就不在了，已从列表清掉）` : ''), 'ok');
     }
 
     // ---------------------------------------------------------------- 面板
@@ -1199,6 +1350,7 @@
                             h('option', { value: 'time' }, '按时间'), h('option', { value: 'count' }, '按楼层数'), h('option', { value: 'size' }, '按大小'), h('option', { value: 'name' }, '按名称')),
                         h('button', { class: 'stcm-btn small stcm-dir', onclick: () => { st.sortDesc = !st.sortDesc; saveSettings(); renderList(); } }),
                         h('button', { class: 'stcm-btn small stcm-tree', onclick: () => { st.tree = !st.tree; saveSettings(); renderList(); }, title: '把分支挂在父聊天下面显示' }, '分支树'),
+                        h('button', { class: 'stcm-btn small stcm-keep', onclick: () => S.sel && quickKeep() }, '只留最新N个'),
                         h('button', { class: 'stcm-btn small', onclick: () => S.sel && quickSelect() }, '快速选择'),
                         h('button', { class: 'stcm-btn small', onclick: () => loadChats(false), title: '重新读取' }, '刷新')),
                     h('div', { class: 'stcm-stats stcm-sub' }),

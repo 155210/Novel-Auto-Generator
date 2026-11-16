@@ -6,6 +6,6 @@
     "js": "index.js",
     "css": "style.css",
     "author": "AutoNovel",
-    "version": "4.2.0",
+    "version": "4.2.1",
     "description": "EPUB转TXT、TXT转世界书、世界书导出、小说导入改写、聊天记录管家"
 }
