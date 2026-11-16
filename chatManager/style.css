@@ -8,6 +8,14 @@
     --stcm-danger: #d9534f;
     position: fixed;
     inset: 0;
+    /* 尺寸位置由脚本按 visualViewport 设定；下面几项覆盖 popover 的浏览器默认样式 */
+    margin: 0;
+    padding: 0;
+    border: 0;
+    max-width: none;
+    max-height: none;
+    overflow: hidden;
+    overflow: clip;
     /* 放到最上层：别的插件/主题的悬浮条（层级常见 9999~999999）不会再盖住管家 */
     z-index: 2147483000;
     display: none;
@@ -23,16 +31,18 @@
     position: relative;
     width: 100%;
     max-width: 860px;
-    height: 100vh;
-    height: 100dvh;
+    height: 100%;
     background: linear-gradient(var(--stcm-bg), var(--stcm-bg)), #1f2024;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    overflow: clip;
 }
 @media (min-width: 900px) {
-    .stcm-panel { height: 92vh; margin-top: 4vh; border: 1px solid var(--stcm-border); border-radius: 10px; }
+    .stcm-panel { height: calc(100% - 6vh); margin-top: 3vh; border: 1px solid var(--stcm-border); border-radius: 10px; }
 }
+.stcm-root:popover-open { display: flex; }
+.stcm-root::backdrop { background: transparent; }
 .stcm-view { flex: 1; min-height: 0; flex-direction: column; padding: 8px 10px; gap: 6px; }
 /* 全面屏/刘海屏：顶部留出状态栏的安全区 */
 .stcm-view-list, .stcm-view-preview, .stcm-view-trash { padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
