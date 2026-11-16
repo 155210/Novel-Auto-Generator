@@ -39,6 +39,21 @@ async function loadScript(filename) {
     });
 }
 
+function loadStyle(filename) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = `${extensionFolderPath}/${filename}?v=${LOAD_STAMP}`;
+    document.head.appendChild(link);
+}
+
+// 聊天记录管家：启动时就加载（要给酒馆自带的聊天记录面板加「多选」按钮）
+async function loadChatManager() {
+    if (window.STChatManager && window.STChatManager.close) return true;
+    loadStyle('chatManager/style.css');
+    await loadScript('chatManager/index.js');
+    return !!(window.STChatManager && window.STChatManager.close);
+}
+
 // ============================================
 // 设置 & UI
 // ============================================
@@ -106,6 +121,15 @@ function createUI() {
                     </div>
                     <div style="margin-top: 10px; font-size: 12px; opacity: 0.7; text-align: center;">
                         小说分层改写导入酒馆聊天，同时生成世界书、填写记忆表格
+                    </div>
+
+                    <div class="nag-btn-row" style="margin-top: 15px;">
+                        <button id="stcm-nag-btn" class="menu_button" style="background: linear-gradient(135deg, #e74c3c, #c0392b); width: 100%;">
+                            🗂 聊天记录管家
+                        </button>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 12px; opacity: 0.7; text-align: center;">
+                        按角色卡搜索、预览、批量删除聊天记录和分支；酒馆聊天记录面板里也能多选删除
                     </div>
                 </div>
             </div>
@@ -193,6 +217,16 @@ function bindEvents() {
         }
     });
 
+    $('#stcm-nag-btn').on('click', async () => {
+        try {
+            if (!(await loadChatManager())) throw new Error('模块未就绪');
+            window.STChatManager.open();
+        } catch (e) {
+            toastr.error('聊天记录管家加载失败');
+            console.error('[NovelGen] 加载 chatManager 失败:', e);
+        }
+    });
+
     $('#nag-btn-worldbook-export').on('click', async () => {
         if (typeof window.WorldbookExport === 'undefined') {
             try {
@@ -238,5 +272,11 @@ jQuery(async () => {
         log('世界书导出模块将在点击时加载', 'warning');
     }
     
+    try {
+        if (await loadChatManager()) log('聊天记录管家已加载', 'success');
+    } catch (e) {
+        log('聊天记录管家将在点击时加载', 'warning');
+    }
+
     log('文件转换工具扩展已加载', 'success');
 });
