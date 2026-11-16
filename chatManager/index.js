@@ -1,5 +1,5 @@
 /*
- * 聊天记录管家（文件转换工具的子模块，入口在「📚 文件转换工具」面板里）
+ * 聊天记录管家（A自制插件的子模块，入口在「📚 A自制插件」面板里）
  * 按角色卡管理 SillyTavern 聊天记录/分支：搜索、预览、批量删除（带回收站）、导出、重命名；
  * 并在酒馆自带的「聊天记录」面板里加「多选」删除。
  *
@@ -1515,7 +1515,7 @@
         injectNag();
         nativeInstall();
     }
-    /** 在「文件转换工具」(Novel-Auto-Generator) 的面板里加一个入口按钮 */
+    /** 在「A自制插件」(Novel-Auto-Generator) 的面板里加一个入口按钮 */
     function injectNag() {
         const sec = document.querySelector('#nag-container .nag-section');
         if (!sec || document.getElementById('stcm-nag-btn')) return !!sec;
