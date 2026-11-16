@@ -884,11 +884,11 @@
 
     /** 没打开管家面板时，借用管家的弹窗层来显示确认框/进度 */
     async function withOverlay(fn) {
-        if (!S.root) { S.root = build(); document.body.append(S.root); }
+        mountRoot();
         const bare = !S.open;
-        if (bare) { S.root.classList.add('stcm-bare'); S.root.style.display = 'flex'; }
+        if (bare) { S.root.classList.add('stcm-bare'); showRoot(); }
         try { return await fn(); }
-        finally { if (bare && !S.open) { S.root.style.display = 'none'; S.root.classList.remove('stcm-bare'); } }
+        finally { if (bare && !S.open) { hideRoot(); S.root.classList.remove('stcm-bare'); } }
     }
 
     async function nativeDelete() {
@@ -1369,8 +1369,8 @@
 
     function openPanel() {
         if (S.open) return;
-        if (!S.root) { S.root = build(); document.body.append(S.root); }
-        S.root.style.display = 'flex';
+        mountRoot();
+        showRoot();
         S.open = true;
         showView('list');
         const cur = currentInfo();
@@ -1381,10 +1381,58 @@
     }
     function closePanel() {
         if (!S.root || S.busy) return;
-        S.root.style.display = 'none';
+        hideRoot();
         S.root.querySelectorAll('.stcm-mask').forEach(m => m.remove());
         S.open = false;
         S.countRun++;
+    }
+
+    // ---------------------------------------------------------------- 显示层
+    // 1) 支持 popover 的浏览器里放进「顶层」，任何网页元素（不管 z-index 多大）都盖不住；
+    // 2) 位置和大小跟随 visualViewport（手机上真正可见的区域），避免键盘/地址栏伸缩后整体错位露出黑边；
+    // 3) 面板不允许被浏览器「滚动到输入框」之类的操作挪动。
+    const canPopover = typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.showPopover === 'function';
+    function fitViewport() {
+        if (!S.root || S.root.style.display === 'none') return;
+        const vv = window.visualViewport;
+        const st = S.root.style;
+        if (!vv) { st.top = st.left = '0px'; st.width = '100%'; st.height = '100%'; return; }
+        st.top = Math.max(0, vv.offsetTop) + 'px';
+        st.left = Math.max(0, vv.offsetLeft) + 'px';
+        st.width = vv.width + 'px';
+        st.height = vv.height + 'px';
+        const panel = S.root.querySelector('.stcm-panel');
+        if (panel && panel.scrollTop) panel.scrollTop = 0;
+        if (S.root.scrollTop) S.root.scrollTop = 0;
+    }
+    let vvBound = false;
+    function showRoot() {
+        S.root.style.display = 'flex';
+        if (canPopover) {
+            try { if (!S.root.matches(':popover-open')) S.root.showPopover(); } catch (e) { /* 旧浏览器：退回普通层级 */ }
+        }
+        if (!vvBound) {
+            vvBound = true;
+            const vv = window.visualViewport;
+            if (vv) { vv.addEventListener('resize', fitViewport); vv.addEventListener('scroll', fitViewport); }
+            window.addEventListener('resize', fitViewport);
+            window.addEventListener('orientationchange', () => setTimeout(fitViewport, 300));
+        }
+        fitViewport();
+    }
+    function hideRoot() {
+        if (canPopover) { try { if (S.root.matches(':popover-open')) S.root.hidePopover(); } catch (e) { /* ignore */ } }
+        S.root.style.display = 'none';
+    }
+    function mountRoot() {
+        if (S.root) return;
+        S.root = build();
+        if (canPopover) S.root.setAttribute('popover', 'manual');
+        document.body.append(S.root);
+        const panel = S.root.querySelector('.stcm-panel');
+        const noScroll = el => el.addEventListener('scroll', () => { if (el.scrollTop || el.scrollLeft) { el.scrollTop = 0; el.scrollLeft = 0; } });
+        noScroll(S.root); noScroll(panel);
+        S.root.querySelectorAll('.stcm-view').forEach(noScroll);
     }
 
     // ---------------------------------------------------------------- 入口
