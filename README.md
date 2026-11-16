@@ -24,6 +24,8 @@
 
 **[小说导入改写](novelImporter.md)** — 把长篇小说一层一层交给 AI：起标题、替换主角称呼、按比例补写、提取世界书、填写记忆表格，遇到送女/NTR 等情节按规则改写；最后一键导入成角色卡 + 世界书 + 聊天，并让记忆表格插件逐层重建表格。详见 [完整文档](novelImporter.md)。
 
+**[聊天记录管家](chatManager.md)** — 按角色卡看、搜、预览、批量删除聊天记录和分支，删除默认先进回收站、可恢复；酒馆自带的「聊天记录」面板里也加了「多选」删除。详见 [完整文档](chatManager.md)。
+
 ---
 
 ## 快速开始
@@ -186,6 +188,7 @@ novel-auto-generator/
 ├── manifest.json          # 扩展配置
 ├── index.js               # 主程序（自动生成模块）
 ├── style.css              # 样式表
+├── chatManager/           # 聊天记录管家（index.js + style.css，启动时加载）
 ├── novelImporter/         # 小说导入改写模块
 │   ├── core.js            # 分层、提示词、解析、补丁、世界书、表格模拟（不碰 DOM）
 │   ├── stBridge.js        # 和酒馆、记忆表格插件打交道
@@ -206,7 +209,8 @@ novel-auto-generator/
 ├── README.md              # 本文档
 ├── CHANGELOG.md           # 更新日志
 ├── txtToWorldbook.md      # TXT转世界书详细文档
-└── novelImporter.md       # 小说导入改写详细文档
+├── novelImporter.md       # 小说导入改写详细文档
+└── chatManager.md         # 聊天记录管家详细文档
 ```
 
 ---
