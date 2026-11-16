@@ -8,7 +8,8 @@
     --stcm-danger: #d9534f;
     position: fixed;
     inset: 0;
-    z-index: 30000;
+    /* 放到最上层：别的插件/主题的悬浮条（层级常见 9999~999999）不会再盖住管家 */
+    z-index: 2147483000;
     display: none;
     align-items: stretch;
     justify-content: center;
@@ -33,6 +34,8 @@
     .stcm-panel { height: 92vh; margin-top: 4vh; border: 1px solid var(--stcm-border); border-radius: 10px; }
 }
 .stcm-view { flex: 1; min-height: 0; flex-direction: column; padding: 8px 10px; gap: 6px; }
+/* 全面屏/刘海屏：顶部留出状态栏的安全区 */
+.stcm-view-list, .stcm-view-preview, .stcm-view-trash { padding-top: calc(8px + env(safe-area-inset-top, 0px)); }
 
 .stcm-topbar, .stcm-toolbar, .stcm-charbar, .stcm-hitbar, .stcm-actionbar, .stcm-pv-head {
     display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
@@ -175,7 +178,7 @@
 .stcm-pick-name { flex: 1; min-width: 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; word-break: break-all; }
 .stcm-count { font-size: 12px; opacity: .7; white-space: nowrap; }
 
-.stcm-busy { position: absolute; inset: 0; z-index: 9; background: rgba(0, 0, 0, .65); flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; text-align: center; color: #fff; word-break: break-all; }
+.stcm-busy { white-space: pre-line; position: absolute; inset: 0; z-index: 9; background: rgba(0, 0, 0, .65); flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 20px; text-align: center; color: #fff; word-break: break-all; }
 .stcm-spin { width: 28px; height: 28px; border: 3px solid rgba(255, 255, 255, .25); border-top-color: var(--stcm-accent); border-radius: 50%; animation: stcm-spin 1s linear infinite; }
 @keyframes stcm-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .stcm-spin { animation-duration: 3s; } }
