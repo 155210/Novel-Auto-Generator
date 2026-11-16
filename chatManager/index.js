@@ -40,6 +40,8 @@
         filter: '',
         contentHits: null,    // null 或 { query, ids:Set }
         counts: new Map(),    // avatar -> 聊天数量
+        exactSize: new Map(), // avatar -> 该角色 .jsonl 总字节（打开过列表的角色才有，最准）
+        freed: new Map(),     // avatar -> { base, bytes }：本次在酒馆算出 chat_size 之后又删掉的字节
         simpleOk: null,       // 服务端是否支持 simple 列表
         countRun: 0,
         view: 'list',         // list | preview | trash
@@ -237,6 +239,28 @@
         if (!r || r.ok !== true) throw new Error('删除接口未返回成功');
     }
 
+    // ---------------------------------------------------------------- 占用空间
+    /** 记一笔「真正从磁盘删掉」的字节，用来修正酒馆缓存的 chat_size */
+    function noteFreed(avatar, bytes) {
+        const ch = charByAvatar(avatar);
+        if (!ch || typeof ch.chat_size !== 'number' || !bytes) return;
+        const old = S.freed.get(avatar);
+        const base = ch.chat_size;
+        S.freed.set(avatar, { base, bytes: (old && old.base === base ? old.bytes : 0) + bytes });
+    }
+    /**
+     * 某角色的聊天占用空间（不含回收站）。酒馆的 chat_size 是加载角色列表时算的整个文件夹大小，
+     * 包含藏在里面的回收站文件；打开过列表的角色用实际列表求和。
+     * @returns {number|null} 不知道时返回 null
+     */
+    function chatBytes(c, trashBytes) {
+        if (S.exactSize.has(c.avatar)) return S.exactSize.get(c.avatar);
+        if (typeof c.chat_size !== 'number') return null;
+        const f = S.freed.get(c.avatar);
+        const freed = f && f.base === c.chat_size ? f.bytes : 0;
+        return Math.max(0, c.chat_size - ((trashBytes && trashBytes.get(c.avatar)) || 0) - freed);
+    }
+
     // ---------------------------------------------------------------- 删除 / 回收站核心
     // 回收站清单（服务器上的一个小 jsonl 文件）。所有读写串行进行。
     let indexLock = Promise.resolve();
@@ -313,7 +337,7 @@
                 const bad = unsafeNameReason(it.file);
                 if (bad) throw new Error(bad + '，为避免误删其它文件已拒绝，请到文件管理器手动处理');
                 if (!permanent && avatar !== TRASH_AVATAR) await moveToTrash(avatar, it);
-                else await deleteFile(avatar, it.file);
+                else { await deleteFile(avatar, it.file); if (avatar !== TRASH_AVATAR) noteFreed(avatar, it.size || 0); }
                 sent.push(it);
             } catch (e) {
                 result.failed.push({ file: it.file, reason: e.message || String(e) });
@@ -369,6 +393,7 @@
             if (err.status !== 400) throw err;
             missing = true; // 酒馆只在文件不存在时返回 400
         }
+        if (!missing) noteFreed(e.avatar, e.size || 0);
         await indexUpdate(list => list.filter(x => x.key !== e.key));
         return { missing };
     }
@@ -466,6 +491,7 @@
             S.loadedFor = avatar;
             S.hasMeta = list.some(x => x.meta);
             S.counts.set(avatar, list.length);
+            S.exactSize.set(avatar, list.reduce((a, c) => a + c.size, 0));
             const names = new Set(list.map(x => x.file));
             for (const f of [...S.checked]) if (!names.has(f)) S.checked.delete(f);
         } catch (e) {
@@ -644,41 +670,66 @@
     // ---------------------------------------------------------------- 角色选择器
     function openCharPicker() {
         const cur = currentInfo();
-        let q = '', sort = 'recent';
+        const st = settings();
+        let q = '', sort = st.pickSort || 'recent';
+        let trashBytes = new Map();
         const listEl = h('div', { class: 'stcm-picker-list' });
+        const totalEl = h('div', { class: 'stcm-sub' });
         const run = ++S.countRun;
         const draw = () => {
             const chars = ctx().characters.filter(c => c && c.avatar);
+            const size = new Map(chars.map(c => [c.avatar, chatBytes(c, trashBytes)]));
             const ql = q.trim().toLowerCase();
             let arr = chars.filter(c => !ql || String(c.name || '').toLowerCase().includes(ql) || String(c.avatar).toLowerCase().includes(ql));
             const t = c => parseTime(c.date_last_chat) || 0;
             if (sort === 'count') arr.sort((a, b) => (S.counts.get(b.avatar) ?? -1) - (S.counts.get(a.avatar) ?? -1));
+            else if (sort === 'size') arr.sort((a, b) => (size.get(b.avatar) ?? -1) - (size.get(a.avatar) ?? -1));
             else if (sort === 'name') arr.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
             else arr.sort((a, b) => t(b) - t(a));
-            const i = arr.findIndex(c => c.avatar === cur.avatar);
-            if (i > 0) arr.unshift(arr.splice(i, 1)[0]);
+            // 按大小/数量排时不把当前角色硬顶到第一个，否则排序看着不对
+            if (sort !== 'size' && sort !== 'count') {
+                const i = arr.findIndex(c => c.avatar === cur.avatar);
+                if (i > 0) arr.unshift(arr.splice(i, 1)[0]);
+            }
+            const known = chars.map(c => size.get(c.avatar)).filter(v => v !== null);
+            const trashTotal = [...trashBytes.values()].reduce((a, b) => a + b, 0);
+            totalEl.textContent = known.length
+                ? `全部角色聊天共 ${fmtSize(known.reduce((a, b) => a + b, 0))}` + (known.length < chars.length ? `（${chars.length - known.length} 个角色大小未知）` : '') + (trashTotal ? ` · 回收站另占 ${fmtSize(trashTotal)}` : '')
+                : '当前酒馆版本不提供角色的聊天大小；打开过的角色才会显示';
             const frag = document.createDocumentFragment();
             for (const c of arr.slice(0, 300)) {
                 const n = S.counts.get(c.avatar);
-                frag.append(h('button', { class: 'stcm-pick' + (S.sel && S.sel.avatar === c.avatar ? ' on' : ''), 'data-avatar': c.avatar, onclick: () => { api.close(true); selectChar(c.avatar); } },
+                const b = size.get(c.avatar);
+                const meta = [b === null ? '' : fmtSize(b), n === undefined ? '' : n + ' 个聊天'].filter(Boolean).join(' · ');
+                frag.append(h('button', { class: 'stcm-pick' + (S.sel && S.sel.avatar === c.avatar ? ' on' : ''), 'data-avatar': c.avatar, 'data-bytes': b === null ? '' : String(b), onclick: () => { api.close(true); selectChar(c.avatar); } },
                     h('img', { class: 'stcm-avatar', src: thumb(c.avatar), alt: '', loading: 'lazy' }),
                     h('span', { class: 'stcm-pick-name' }, c.name || c.avatar, c.avatar === cur.avatar ? h('span', { class: 'stcm-tag cur', text: '当前角色' }) : null),
-                    h('span', { class: 'stcm-count', text: n === undefined ? '' : n + ' 个聊天' })));
+                    h('span', { class: 'stcm-count', text: meta })));
             }
             if (arr.length > 300) frag.append(h('div', { class: 'stcm-sub', text: `还有 ${arr.length - 300} 个角色未显示，请输入名字搜索` }));
             if (!arr.length) frag.append(h('div', { class: 'stcm-empty', text: '没有匹配的角色' }));
             listEl.replaceChildren(frag);
         };
+        const sel = h('select', { class: 'stcm-input', onchange: e => { sort = e.target.value; st.pickSort = sort; saveSettings(); draw(); } },
+            h('option', { value: 'recent' }, '按最近聊天'), h('option', { value: 'size' }, '按占用空间'), h('option', { value: 'count' }, '按聊天数量'), h('option', { value: 'name' }, '按名字'));
+        sel.value = sort;
         let api = null;
         const body = h('div', { class: 'stcm-picker' },
             h('input', { class: 'stcm-input stcm-picker-search', type: 'search', placeholder: '搜索角色卡名字…', oninput: e => { q = e.target.value; draw(); } }),
-            h('div', { class: 'stcm-toolbar' },
-                h('select', { class: 'stcm-input', onchange: e => { sort = e.target.value; draw(); } },
-                    h('option', { value: 'recent' }, '按最近聊天'), h('option', { value: 'count' }, '按聊天数量'), h('option', { value: 'name' }, '按名字')),
-                h('span', { class: 'stcm-sub stcm-count-status' })),
+            h('div', { class: 'stcm-toolbar' }, sel, h('span', { class: 'stcm-sub stcm-count-status' })),
+            totalEl,
             listEl);
-        dialog('选择角色卡', body, [{ text: '关闭', value: null }], a => { api = a; draw(); countAll(run, draw, body.querySelector('.stcm-count-status')); })
-            .then(() => { S.countRun++; });
+        dialog('选择角色卡', body, [{ text: '关闭', value: null }], a => {
+            api = a; draw();
+            countAll(run, draw, body.querySelector('.stcm-count-status'));
+            // 酒馆算的大小包含藏在角色文件夹里的回收站文件，读清单扣掉
+            withIndex(readIndex).then(entries => {
+                const m = new Map();
+                for (const e of entries) m.set(e.avatar, (m.get(e.avatar) || 0) + (e.size || 0));
+                trashBytes = m;
+                if (run === S.countRun) draw();
+            }).catch(() => { });
+        }).then(() => { S.countRun++; });
     }
 
     /** 后台统计每个角色的聊天数量（只在服务端支持 simple 快速列表时进行） */
@@ -911,6 +962,7 @@
                 for (const x of nativeBlocks()) if (gone.has(x.id)) x.w.remove();
                 for (const id of gone) N.picked.delete(id);
                 S.loadedFor = null;
+                S.exactSize.delete(cur.avatar);
                 await reportResult(res);
             });
         } finally { N.deleting = false; nativeSync(); }
