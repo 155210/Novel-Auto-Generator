@@ -1020,7 +1020,15 @@
             return sel;
         };
         inp.addEventListener('input', upd);
-        const v = await dialog('只保留最新的几个', h('div', null, h('div', { class: 'stcm-toolbar' }, h('span', { text: '保留最新的' }), inp, h('span', { text: '个，其余全部勾选' })), hint),
+        const setN = n => { inp.value = String(Math.max(0, n)); upd(); };
+        const chip = n => h('button', { class: 'stcm-btn small', onclick: () => setN(n) }, String(n));
+        const v = await dialog('只保留最新的几个', h('div', null,
+            h('div', { class: 'stcm-toolbar' }, h('span', { text: '保留最新的' }),
+                h('button', { class: 'stcm-btn small', onclick: () => setN((Number(inp.value) || 0) - 1) }, '−'), inp,
+                h('button', { class: 'stcm-btn small', onclick: () => setN((Number(inp.value) || 0) + 1) }, '+'),
+                h('span', { text: '个' })),
+            h('div', { class: 'stcm-toolbar stcm-chips' }, h('span', { class: 'stcm-sub', text: '常用：' }), [1, 2, 3, 5, 10].map(chip)),
+            hint),
             [{ text: '取消', value: null }, { text: '勾选', value: 'go', cls: 'primary' }], () => upd());
         if (v !== 'go') return;
         const n = Math.max(0, Math.floor(Number(inp.value) || 0));
