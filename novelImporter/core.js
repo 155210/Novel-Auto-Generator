@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.7';
+    const VERSION = '1.6.8';
 
     // ============================================
     // 默认配置
@@ -4487,9 +4487,11 @@ ${blocks}`;
          * 词语替换直接改到已生成的层里（正文、标题、摘要、世界书、表格、原始回复），之后的展示、导出、重做都用改过的。
          * 请求记录不动。返回改到的层数。
          */
-        function applyReplaceToResults(text, scope) {
+        function applyReplaceToResults(text, scope, opts = {}) {
             const rules = parseWordReplace(text);
             if (!rules.length) return 0;
+            // opts.skip：预览里取消勾选的那几处（previewReplaceInResults 给的 hit.id），只换剩下的
+            if (opts.skip && opts.skip.size) return applyReplaceSkipping(text, rules, opts.skip);
             // scope：只替换哪几处（标题、正文、摘要、世界书、表格）；不传或全选就是全部，连原始回复一起换
             const all = !Array.isArray(scope) || REPLACE_SCOPES.every((k) => scope.includes(k));
             const has = (k) => all || scope.includes(k);
@@ -4530,6 +4532,60 @@ ${blocks}`;
         }
 
         /**
+         * 按预览的顺序一处一处数着换，跳过 skip 里的那几处。数的顺序必须和 previewReplaceInResults 完全一样。
+         * 表格改 parsed.tableOps（表格操作重算时从它算出来）。
+         */
+        function applyReplaceSkipping(text, rules, skip) {
+            const ctr = { n: 0 };
+            const one = (str) => {
+                let t = String(str ?? '');
+                for (const r of rules) {
+                    const single = new RegExp(r.re.source, r.re.flags.replace('g', ''));
+                    t = t.replace(new RegExp(r.re.source, r.re.flags), (m) => {
+                        if (!m) return m;
+                        const id = ctr.n++;
+                        return skip.has(id) ? m : m.replace(single, r.to);
+                    });
+                }
+                return t;
+            };
+            const walk = (v) => {
+                if (typeof v === 'string') return one(v);
+                if (Array.isArray(v)) return v.map(walk);
+                if (v && typeof v === 'object') {
+                    const out = {};
+                    for (const [k, x] of Object.entries(v)) {
+                        const nk = one(k);
+                        out[nk] = walk(x);
+                    }
+                    return out;
+                }
+                return v;
+            };
+            let changed = 0;
+            for (let i = 0; i < E.results.length; i++) {
+                const r = E.results[i];
+                if (!r || r.status !== 'done') continue;
+                const p = r.parsed || {};
+                const np = { ...p };
+                if ('title' in p) np.title = walk(p.title);
+                const finalParas = (r.finalParas || []).map(walk);
+                const sums = walk([p.summary, p.bigSummary]);
+                if ('summary' in p) np.summary = sums[0];
+                if ('bigSummary' in p) np.bigSummary = sums[1];
+                if ('worldbook' in p) np.worldbook = walk(p.worldbook);
+                const nr = { ...r, parsed: np, finalParas };
+                if (p.tableOps) np.tableOps = walk(p.tableOps);
+                else if (r.tableActions) nr.tableActions = walk(r.tableActions);
+                if (JSON.stringify([nr.finalParas, np, nr.tableActions]) === JSON.stringify([r.finalParas, p, r.tableActions])) continue;
+                if (JSON.stringify(nr.finalParas) !== JSON.stringify(r.finalParas)) nr.markedParas = null;
+                E.results[i] = nr;
+                changed++;
+            }
+            return changed;
+        }
+
+        /**
          * 先看看词语替换会换掉哪些地方，不改内容。
          * 返回 { rules: [{ text, count }], hits: [{ layer, where, rule, from, to, pre, post }] }。
          */
@@ -4554,8 +4610,10 @@ ${blocks}`;
                 (r.finalParas || []).forEach((x) => scan(i, '正文', x));
                 scan(i, '摘要', [p.summary, p.bigSummary]);
                 scan(i, '世界书', p.worldbook);
-                scan(i, '表格', r.tableActions || p.tableOps);
+                // 表格以 tableOps 为准（表格操作重算时从它算），旧存档没有才看 tableActions
+                scan(i, '表格', p.tableOps || r.tableActions);
             }
+            hits.forEach((h, k) => (h.id = k));
             return { rules: lines.map((l, ri) => ({ text: l, count: hits.filter((h) => h.rule === ri).length })), hits };
         }
 
