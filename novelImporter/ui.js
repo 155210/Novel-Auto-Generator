@@ -5522,6 +5522,10 @@
                         renderButtons();
                         const out = await job;
                         let msg = `${out.done.length}/${out.total} 层已换上新的${what}${out.stopped ? '，已停止' : ''}`;
+                        if (out.userPaused !== undefined && !out.paused) {
+                            msg += `，已暂停。要接着跑就打开第 ${out.userPaused + 1} 层，勾「改到最后」再点一次`;
+                            State.selected = out.userPaused;
+                        }
                         if (out.paused) {
                             const at = out.paused.index + 1;
                             msg += out.paused.partial
