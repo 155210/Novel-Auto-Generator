@@ -368,6 +368,106 @@ describe('记忆表格', () => {
         expect(C.simulateTableActions(st, plan.actions).rows[1].length).toBe(2);
     });
 
+    // 照记忆表格 v2 的 executeAction 写的小模拟：用来核对插件里显示的表和导进酒馆后一样
+    function runLikeV2(tableRows, columns, actions) {
+        const rows = tableRows.map((r) => r.slice());
+        const norm = (v) => String(v ?? '').trim().replace(/\s+/g, '').toLowerCase();
+        const prim = (v) => norm(String(v ?? '').split(/[|｜]/)[0]);
+        const aliases = (v) => String(v ?? '').split(/[|｜]/).slice(1).map(norm);
+        const find = (name, allowAlias = true) => {
+            const k = prim(name);
+            const i = rows.findIndex((r) => prim(r[0]) === k);
+            if (i >= 0 || !allowAlias) return i;
+            const hits = rows.map((r, ri) => (aliases(r[0]).includes(k) ? ri : -1)).filter((x) => x >= 0);
+            return hits.length === 1 ? hits[0] : -1;
+        };
+        const write = (ri, data) => {
+            for (const [c, v] of Object.entries(data)) {
+                const w = C.resolveCellWrite(columns[c], rows[ri][c], v, Number(c) === 0, true);
+                if (w !== undefined) rows[ri][c] = w;
+            }
+        };
+        const insert = (data) => {
+            const j = find(data[0], false);
+            if (j >= 0) return write(j, data);
+            rows.push(columns.map((_, c) => String(data[c] ?? '')));
+        };
+        const prio = { update: 0, insert: 1, delete: 2 };
+        const sorted = actions.slice().sort((a, b) => (a.type === 'delete' && b.type === 'delete' ? b.rowIndex - a.rowIndex : prio[a.type] - prio[b.type]));
+        for (const a of sorted) {
+            if (a.type === 'update') {
+                let ri = a.rowIndex;
+                if (a.data[0] && find(a.data[0]) !== ri) {
+                    ri = find(a.data[0]);
+                    if (ri < 0) {
+                        insert(a.data);
+                        continue;
+                    }
+                }
+                write(ri, a.data);
+            } else if (a.type === 'insert') insert(a.data);
+            else rows.splice(a.rowIndex, 1);
+        }
+        return rows;
+    }
+
+    it('AI 把一行改名合并（公交车姑娘 → 罗婧|公交车姑娘），导进酒馆后也不会多出旧名字那一行', () => {
+        const st = { tables: C.createTableState(TEMPLATE) };
+        st.tables.rows[1] = [
+            ['苏青绮', '', '温柔', '医师'],
+            ['公交车姑娘', '短发', '安静', ''],
+        ];
+        const plan = C.planTableActions(st, {
+            角色特征表格: [{ 操作: '更新或插入', 主键: '公交车姑娘', 数据: { 角色名: '罗婧|公交车姑娘', 职业: '学生' } }],
+        });
+        const view = C.simulateTableActions(st, plan.actions).rows[1];
+        expect(view).toEqual([
+            ['苏青绮', '', '温柔', '医师'],
+            ['罗婧|公交车姑娘', '短发', '安静', '学生'],
+        ]);
+        expect(runLikeV2(st.tables.rows[1], TEMPLATE.tables[1].columns, plan.actions)).toEqual(view);
+    });
+
+    it('改名成表里已有的人：并进那一行，旧行删掉', () => {
+        const st = { tables: C.createTableState(TEMPLATE) };
+        st.tables.rows[1] = [
+            ['罗婧', '', '', '学生'],
+            ['公交车姑娘', '短发', '安静', '打工'],
+        ];
+        const plan = C.planTableActions(st, {
+            角色特征表格: [{ 操作: '更新或插入', 主键: '公交车姑娘', 数据: { 角色名: '罗婧|公交车姑娘' } }],
+        });
+        const view = C.simulateTableActions(st, plan.actions).rows[1];
+        expect(view).toEqual([['罗婧|公交车姑娘', '短发', '安静', '学生']]);
+        expect(runLikeV2(st.tables.rows[1], TEMPLATE.tables[1].columns, plan.actions)).toEqual(view);
+    });
+
+    it('只是用外号称呼某人时不改主名；插入已有的人改成更新；空值不覆盖', () => {
+        const st = { tables: C.createTableState(TEMPLATE) };
+        st.tables.rows[1] = [['佐仓花恋|花恋', '长发', '开朗', '']];
+        const plan = C.planTableActions(st, {
+            角色特征表格: [
+                { 操作: '更新或插入', 主键: '花恋', 数据: { 角色名: '花恋', 性格: '' , 职业: '学生' } },
+                { 操作: '插入', 数据: { 角色名: '佐仓花恋', 身体特征: '短发' } },
+            ],
+        });
+        const view = C.simulateTableActions(st, plan.actions).rows[1];
+        expect(view).toEqual([['佐仓花恋|花恋', '短发', '开朗', '学生']]);
+        expect(runLikeV2(st.tables.rows[1], TEMPLATE.tables[1].columns, plan.actions)).toEqual(view);
+    });
+
+    it('# 列只追加、! 列只填一次，和 v2 插件一样', () => {
+        const tpl = C.parseTableTemplate({
+            tableStructure: [{ tableName: '人物', enable: true, columns: ['姓名', '#经历', '!初见'] }],
+        });
+        const st = { tables: C.createTableState(tpl) };
+        st.tables.rows[0] = [['罗婧', '上车', '公交车上']];
+        const plan = C.planTableActions(st, { 人物: [{ 操作: '更新或插入', 主键: '罗婧', 数据: { '#经历': '上车/下车', '!初见': '学校' } }] });
+        const view = C.simulateTableActions(st, plan.actions).rows[0];
+        expect(view).toEqual([['罗婧', '上车；下车', '公交车上']]);
+        expect(runLikeV2(st.tables.rows[0], tpl.tables[0].columns, plan.actions)).toEqual(view);
+    });
+
     it('单行表只保留一行，追加表只能插入', () => {
         let st = { tables: C.createTableState(TEMPLATE) };
         st.tables.rows[0] = [['第一天', '夜', '破庙', '路长远']];

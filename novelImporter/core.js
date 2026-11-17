@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.8';
+    const VERSION = '1.6.9';
 
     // ============================================
     // 默认配置
@@ -2509,6 +2509,208 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
         return hits.length === 1 ? hits[0] : -1;
     }
 
+    // ---- 和记忆表格 v2 插件写格子的规则保持一致（core/rowIdentity.js），插件里看到的表和导进酒馆后的表才会一样 ----
+    const KEYED_HEADERS = ['角色名', '姓名', '名字', '人物', '人物名', 'name'];
+    const V2_TITLES = new Set([
+        '师姐', '师兄', '师妹', '师弟', '师父', '师傅', '师尊', '小姐', '夫人', '太太', '姑娘', '公子', '少爷', '大小姐',
+        '姐姐', '妹妹', '哥哥', '弟弟', '阿姨', '叔叔', '大叔', '大姐', '大哥', '妈妈', '爸爸', '母亲', '父亲',
+        '老师', '同学', '学姐', '学长', '学妹', '学弟', '前辈', '大人', '主人', '老板', '老大', '殿下', '陛下', '娘娘',
+        '宝贝', '亲爱的', '老婆', '老公', '女儿', '儿子', '那个人', '她', '他',
+    ]);
+    const cellText = (v) => String(v ?? '').trim();
+    const stripColMark = (h) => cellText(h).replace(/^[#!！]+/, '');
+    const isKeyedTable = (tb) => {
+        const h = stripColMark(tb.columns[0] || '');
+        return KEYED_HEADERS.includes(h) || KEYED_HEADERS.includes(h.toLowerCase());
+    };
+    function parseNameCell(v) {
+        const parts = nameParts(v);
+        const primary = parts[0] || '';
+        const seen = new Set([nameKey(primary)]);
+        const aliases = [];
+        for (const a of parts.slice(1)) {
+            const k = nameKey(a);
+            if (!k || seen.has(k) || V2_TITLES.has(a)) continue;
+            seen.add(k);
+            aliases.push(a);
+        }
+        return { primary, aliases };
+    }
+    /** 合并名字格：主名用已有的，外号取并集 */
+    function mergeNameCells(existing, incoming) {
+        const a = parseNameCell(existing);
+        const b = parseNameCell(incoming);
+        if (!a.primary) return cellText(incoming);
+        const all = [a.primary, ...a.aliases];
+        const keys = new Set(all.map(nameKey));
+        for (const n of [b.primary, ...b.aliases]) {
+            if (n && !keys.has(nameKey(n)) && !V2_TITLES.has(n)) {
+                keys.add(nameKey(n));
+                all.push(n);
+            }
+        }
+        return all.join('|');
+    }
+    const SEG_SPLIT = /[；;]/;
+    const ITEM_SPLIT = /(?<!\d)[/／]|[/／](?!\d)/;
+    const itemKey = (x) => nameKey(x).replace(/[。.,，、!！]+$/, '');
+    const splitItems = (s) => cellText(s).split(SEG_SPLIT).flatMap((seg) => seg.split(ITEM_SPLIT)).map(cellText).filter(Boolean);
+    function dedupeAppendText(s) {
+        const seen = new Set();
+        return cellText(s)
+            .split(SEG_SPLIT)
+            .map((seg) =>
+                seg
+                    .split(ITEM_SPLIT)
+                    .map(cellText)
+                    .filter((x) => {
+                        const k = itemKey(x);
+                        if (!k || seen.has(k)) return false;
+                        seen.add(k);
+                        return true;
+                    })
+                    .join('/'),
+            )
+            .filter(Boolean)
+            .join('；');
+    }
+    /** 一格写进去后是什么；undefined 表示不变。# 列只追加、! 列只填一次、角色类表空值不覆盖、名字列合并外号 */
+    function resolveCellWrite(header, oldValue, newValue, isName, keepOnEmpty) {
+        const next = cellText(newValue);
+        const prev = cellText(oldValue);
+        if (!next) return keepOnEmpty || !prev ? undefined : '';
+        if (prev && next.includes('…') && next.split('…').every((p) => !p || prev.includes(p))) return undefined;
+        if (isName) {
+            const m = mergeNameCells(prev, next);
+            return m === prev ? undefined : m;
+        }
+        const h = cellText(header);
+        if (h.startsWith('!') || h.startsWith('！')) return prev ? undefined : next;
+        if (h.startsWith('#')) {
+            if (!prev) return dedupeAppendText(next);
+            const base = dedupeAppendText(prev);
+            const seen = new Set(splitItems(base).map(itemKey));
+            const fresh = dedupeAppendText(
+                splitItems(next)
+                    .filter((x) => !seen.has(itemKey(x)))
+                    .join('/'),
+            );
+            if (!fresh) return base === prev ? undefined : base;
+            return `${base}；${fresh}`;
+        }
+        return next === prev ? undefined : next;
+    }
+
+    /**
+     * 把一张表的 update/insert 换成「按 v2 规则算好的结果」，两个插件执行出来都和这里模拟的一样：
+     * - 更新只发真正变了的格子，值是按列规则算好的（# 列已追加好、! 列已填过的不发）
+     * - 角色类表：插入一个表里已有的主名 → 改成更新那一行（v2 本来就这么做，原版会多出一行）
+     * - 角色类表：更新把名字改成另一个人（「公交车姑娘」→「罗婧|公交车姑娘」）→ v2 会当成新人另插一行、旧行留着，
+     *   所以这里直接发「删旧行 + 插入合并好的整行」；新名字表里已有就并进那一行再删旧行
+     */
+    function alignTableActions(t, actions) {
+        const out = actions.filter((a) => a.type === 'delete');
+        const tables = [...new Set(actions.filter((a) => a.type !== 'delete').map((a) => a.tableIndex))];
+        const others = actions.filter((a) => a.type !== 'delete');
+        for (const ti of tables) {
+            const tb = t.template.tables[ti];
+            const rows = t.rows[ti] || [];
+            const cols = tb.columns;
+            const keyed = isKeyedTable(tb);
+            const mine = others.filter((a) => a.tableIndex === ti);
+            const deletes = new Set(out.filter((a) => a.tableIndex === ti).map((a) => a.rowIndex));
+            const upd = new Map(); // rowIndex -> [data, ...]，按顺序写
+            const addUpd = (ri, d) => {
+                if (!upd.has(ri)) upd.set(ri, []);
+                upd.get(ri).push(d);
+            };
+            const ins = [];
+            const primaryRow = (key, except) => rows.findIndex((r, ri) => ri !== except && !deletes.has(ri) && nameKey(parseNameCell(r[0]).primary) === key);
+            for (const a of mine) {
+                if (a.type === 'update' && a.rowIndex < rows.length) addUpd(a.rowIndex, a.data || {});
+                else if (a.type === 'update') ins.push({ ...(a.data || {}) });
+                else if (keyed) {
+                    const key = nameKey(parseNameCell(a.data && a.data[0]).primary);
+                    const j = key ? primaryRow(key, -1) : -1;
+                    if (j >= 0) addUpd(j, a.data);
+                    else ins.push({ ...(a.data || {}) });
+                } else ins.push(a.data);
+            }
+            const apply = (row, list) => {
+                const next = row.slice();
+                while (next.length < cols.length) next.push('');
+                for (const d of list) {
+                    for (const [c, v] of Object.entries(d || {})) {
+                        const ci = Number(c);
+                        if (!(ci < cols.length) || v === undefined) continue;
+                        const w = resolveCellWrite(cols[ci], next[ci], v, keyed && ci === 0, keyed);
+                        if (w !== undefined) next[ci] = w;
+                    }
+                }
+                return next;
+            };
+            // 改名：先挑出来，换成删旧行 + 插入/并入
+            if (keyed) {
+                for (const [ri, list] of [...upd]) {
+                    const named = list.filter((d) => d && cellText(d[0]));
+                    if (!named.length) continue;
+                    const inc = parseNameCell(named[named.length - 1][0]);
+                    const old = parseNameCell(rows[ri][0]);
+                    const incKey = nameKey(inc.primary);
+                    const oldKey = nameKey(old.primary);
+                    if (!incKey || incKey === oldKey) continue;
+                    const oldNames = old.aliases.map(nameKey);
+                    const promote = inc.aliases.map(nameKey).includes(oldKey);
+                    if (oldNames.includes(incKey) && !promote) continue; // 只是用外号称呼这一行，不算改名
+                    const name = mergeNameCells([inc.primary, ...inc.aliases].join('|'), rows[ri][0]);
+                    const full = apply(rows[ri], list.map((d) => ({ ...d, 0: undefined })));
+                    full[0] = name;
+                    upd.delete(ri);
+                    deletes.add(ri);
+                    out.push({ type: 'delete', tableIndex: ti, rowIndex: ri });
+                    const target = primaryRow(incKey, ri);
+                    if (target >= 0) {
+                        // 并进已有的那一行：那一行原来有的不被旧行盖掉（# 列照样追加）
+                        const carry = {};
+                        full.forEach((v, c) => {
+                            if (c === 0 || cellText(cols[c]).startsWith('#') || !cellText(rows[target][c])) carry[c] = v;
+                        });
+                        carry[0] = name;
+                        const later = upd.get(target) || [];
+                        upd.set(target, [carry, ...later]);
+                    } else {
+                        const k = ins.findIndex((d) => nameKey(parseNameCell(d[0]).primary) === incKey);
+                        if (k >= 0) ins[k] = Object.fromEntries(apply(full, [ins[k]]).map((v, c) => [c, v]));
+                        else ins.push(Object.fromEntries(full.map((v, c) => [c, v])));
+                    }
+                }
+            }
+            for (const [ri, list] of upd) {
+                const next = apply(rows[ri], list);
+                const data = {};
+                next.forEach((v, c) => {
+                    if (v !== cellText(rows[ri][c])) data[c] = v;
+                });
+                if (!Object.keys(data).length) continue;
+                // v2 按名字核对行号，名字格一直带上
+                if (keyed && data[0] === undefined && rows[ri][0]) data[0] = rows[ri][0];
+                out.push({ type: 'update', tableIndex: ti, rowIndex: ri, data });
+            }
+            // 角色类表里同一个主名插了两次：v2 第二次会改成更新第一行，这里先并好
+            const merged = [];
+            for (const d of ins) {
+                const key = keyed ? nameKey(parseNameCell(d[0]).primary) : '';
+                const prev = key ? merged.find((m) => nameKey(parseNameCell(m[0]).primary) === key) : null;
+                if (prev) {
+                    const row = apply(cols.map((_, c) => cellText(prev[c])), [d]);
+                    row.forEach((v, c) => (prev[c] = v));
+                } else merged.push(d);
+            }
+            for (const d of merged) out.push({ type: 'insert', tableIndex: ti, data: d });
+        }
+        return out;
+    }
+
     function tablesForPrompt(state, text, settings) {
         const t = state.tables;
         if (!t) return '（无）';
@@ -2723,13 +2925,14 @@ ${tr ? '- 翻译时直接译成新的写法，原文里的旧名字不要出现�
                 }
             }
         }
+        const aligned = alignTableActions(t, actions);
         // 插件插入新行时，没给的列会写成 undefined，这里补成空字符串
-        for (const a of actions) {
+        for (const a of aligned) {
             if (a.type !== 'insert') continue;
             const w = t.template.tables[a.tableIndex].columns.length;
             for (let c = 0; c < w; c++) if (a.data[c] === undefined) a.data[c] = '';
         }
-        return { actions, log };
+        return { actions: aligned, log };
     }
 
     /** 按插件的执行规则模拟一遍，得到本层之后的表格 */
@@ -5745,6 +5948,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
         parseTableTemplate,
         createTableState,
         planTableActions,
+        resolveCellWrite,
         simulateTableActions,
         renderTableEdit,
         buildFloorText,
