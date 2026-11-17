@@ -4696,6 +4696,8 @@
         wrUi.hits = hits;
         // 每次打开默认全选；只想换表格就把别的点掉
         wrUi.scope = new Set(C.REPLACE_SCOPES);
+        // 单独取消勾选的那几处（hit.id）
+        wrUi.off = new Set();
         renderReplacePreview();
         $('nim-wr').hidden = false;
     }
@@ -4703,7 +4705,8 @@
     /** 词语替换预览：上面一排选「只替换哪里」，下面只列选中的那几处 */
     function renderReplacePreview() {
         const all = wrUi.hits;
-        const hits = all.filter((h) => wrUi.scope.has(h.where));
+        const inScope = all.filter((h) => wrUi.scope.has(h.where));
+        const hits = inScope.filter((h) => !wrUi.off.has(h.id));
         wrUi.total = hits.length;
         wrUi.summary = wrUi.rules
             .map((r, ri) => ({ text: r.text, count: hits.filter((h) => h.rule === ri).length }))
@@ -4711,16 +4714,21 @@
             .map((r) => `${r.text}（${r.count} 处）`)
             .join('；');
         const MAX = 500;
-        const row = (h) =>
-            `<li><div class="nim-cl-chap">第 ${h.layer + 1} 层 · ${esc(h.where)}</div><div>${esc(h.pre)}<del class="nim-cl-mark">${esc(h.from)}</del><ins class="nim-wr-to">${esc(h.to) || '（删掉）'}</ins>${esc(h.post)}</div></li>`;
+        const row = (h) => {
+            const on = !wrUi.off.has(h.id);
+            return `<li class="nim-wr-hit ${on ? '' : 'off'}" data-wr-hit="${h.id}"><label class="nim-wr-pick"><input type="checkbox" data-wr-hit-box="${h.id}" ${on ? 'checked' : ''}><span><span class="nim-cl-chap">第 ${h.layer + 1} 层 · ${esc(h.where)}${on ? '' : ' · 不换'}</span><span class="nim-wr-line">${esc(h.pre)}<del class="nim-cl-mark">${esc(h.from)}</del><ins class="nim-wr-to">${esc(h.to) || '（删掉）'}</ins>${esc(h.post)}</span></span></label></li>`;
+        };
         const groups = wrUi.rules
             .map((r, ri) => {
-                const list = hits.filter((h) => h.rule === ri);
+                const shown = inScope.filter((h) => h.rule === ri);
+                const list = shown.filter((h) => !wrUi.off.has(h.id));
                 const where = {};
                 for (const h of list) where[h.where] = (where[h.where] || 0) + 1;
                 const layers = new Set(list.map((h) => h.layer)).size;
-                const info = list.length ? `${list.length} 处，${layers} 层（${Object.entries(where).map(([k, n]) => `${k} ${n}`).join('、')}）` : '没有匹配';
-                return `<details class="nim-cl-group" ${list.length ? '' : 'disabled'}><summary>${esc(r.text)}<span class="nim-muted">${info}</span></summary><ul class="nim-cl-list">${list.slice(0, MAX).map(row).join('')}</ul>${list.length > MAX ? `<div class="nim-muted">太多了，只列出前 ${MAX} 处</div>` : ''}</details>`;
+                const offN = shown.length - list.length;
+                const info = shown.length ? `${list.length} 处，${layers} 层（${Object.entries(where).map(([k, n]) => `${k} ${n}`).join('、') || '都取消了'}）${offN ? `，取消了 ${offN} 处` : ''}` : '没有匹配';
+                const tools = shown.length ? `<div class="nim-row nim-wr-tools"><button class="nim-btn sm" data-wr-group="${ri}" data-v="on">这组全换</button><button class="nim-btn sm" data-wr-group="${ri}" data-v="off">这组都不换</button><span class="nim-muted">点一条就能取消或选上</span></div>` : '';
+                return `<details class="nim-cl-group" ${shown.length ? '' : 'disabled'}><summary>${esc(r.text)}<span class="nim-muted">${info}</span></summary>${tools}<ul class="nim-cl-list">${shown.slice(0, MAX).map(row).join('')}</ul>${shown.length > MAX ? `<div class="nim-muted">太多了，只列出前 ${MAX} 处（后面的用「这组都不换」或上面的范围按钮控制）</div>` : ''}</details>`;
             })
             .join('');
         const chips = C.REPLACE_SCOPES.map((k) => {
@@ -4730,7 +4738,7 @@
         const keep = snapshotUi($('nim-wr-body'), '');
         $('nim-wr-body').innerHTML =
             `<div class="nim-wr-scope"><div class="nim-sub" style="margin-top:0">只替换哪里（点一下取消或选上）</div><div class="nim-wr-chips">${chips}</div></div>` +
-            `<div class="nim-muted">选中的地方共 ${hits.length} 处。红色删除线是原来的字，绿色是换成的字。核对没问题再点「确认替换」，改完不能撤销，只能重跑那一层。</div>` +
+            `<div class="nim-muted">选中的地方共 ${hits.length} 处${inScope.length > hits.length ? `（单独取消了 ${inScope.length - hits.length} 处）` : ''}。展开每条规则，点一处就能取消这处不换。红色删除线是原来的字，绿色是换成的字。改完不能撤销，只能重跑那一层。</div>` +
             groups;
         restoreUi($('nim-wr-body'), keep, '');
         const ok = document.querySelector('#nim-wr [data-wr="apply"]');
@@ -7808,6 +7816,13 @@ button.nim-step:hover{background:var(--surface2);}
 .nim-reset-all{justify-content:center;margin-top:18px;}
 .nim-wr-scope{position:sticky;top:-14px;z-index:2;margin:-14px -16px 0;padding:12px 16px 10px;background:var(--bg);border-bottom:1px solid var(--line);}
 .nim-wr-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.nim-wr-pick{display:flex;gap:10px;align-items:flex-start;cursor:pointer;}
+.nim-wr-pick input{flex:none;width:20px;height:20px;margin-top:2px;accent-color:var(--accent);}
+.nim-wr-pick .nim-cl-chap{display:block;}
+.nim-wr-line{display:block;}
+.nim-wr-hit.off .nim-wr-line{opacity:.45;}
+.nim-wr-hit.off .nim-wr-to{display:none;}
+.nim-wr-tools{margin:6px 0;}
 .nim-chip:disabled{opacity:.4;cursor:default;}
 /* 导入酒馆 */
 .nim-exp-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:0 4px;}
@@ -8101,7 +8116,22 @@ button.nim-step:hover{background:var(--surface2);}
             if (!C.parseWordReplace(text).length) return toast('还没填替换规则', 'warning');
             openReplacePreview(text);
         });
+        $('nim-wr').addEventListener('change', (ev) => {
+            const box = ev.target.closest('[data-wr-hit-box]');
+            if (!box) return;
+            const id = Number(box.dataset.wrHitBox);
+            if (box.checked) wrUi.off.delete(id);
+            else wrUi.off.add(id);
+            renderReplacePreview();
+        });
         $('nim-wr').addEventListener('click', (ev) => {
+            const grp = ev.target.closest('[data-wr-group]');
+            if (grp) {
+                ev.preventDefault();
+                const ri = Number(grp.dataset.wrGroup);
+                for (const h of wrUi.hits) if (h.rule === ri && wrUi.scope.has(h.where)) grp.dataset.v === 'on' ? wrUi.off.delete(h.id) : wrUi.off.add(h.id);
+                return renderReplacePreview();
+            }
             const sc = ev.target.closest('[data-wr-scope]');
             if (sc) {
                 const k = sc.dataset.wrScope;
@@ -8116,11 +8146,13 @@ button.nim-step:hover{background:var(--surface2);}
                 if (!wrUi.total) return;
                 const part = C.REPLACE_SCOPES.filter((k) => wrUi.scope.has(k) && wrUi.hits.some((h) => h.where === k));
                 const whole = !wrUi.hits.some((h) => !wrUi.scope.has(h.where));
-                const n = e.applyReplaceToResults(wrUi.text, whole ? undefined : part);
+                // 有单独取消的：按预览一处一处换，没选的（范围外的、取消的）跳过
+                const skip = new Set(wrUi.hits.filter((h) => !wrUi.scope.has(h.where) || wrUi.off.has(h.id)).map((h) => h.id));
+                const n = wrUi.off.size ? e.applyReplaceToResults(wrUi.text, null, { skip }) : e.applyReplaceToResults(wrUi.text, whole ? undefined : part);
                 saveProgress();
                 renderAll();
                 toast(`已替换 ${wrUi.total} 处，涉及 ${n} 层`, 'success');
-                log(`词语替换已写入 ${n} 层${whole ? '' : `（只换了${part.join('、')}）`}：${wrUi.summary}`);
+                log(`词语替换已写入 ${n} 层${whole ? '' : `（只换了${part.join('、')}）`}${wrUi.off.size ? `（单独取消了 ${wrUi.off.size} 处）` : ''}：${wrUi.summary}`);
             } else if (ev.target === $('nim-wr') || ev.target.closest('[data-wr="close"]')) $('nim-wr').hidden = true;
         });
         on('nim-preview', 'click', async () => {

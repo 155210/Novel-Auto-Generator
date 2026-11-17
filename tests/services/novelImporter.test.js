@@ -1351,6 +1351,28 @@ describe('运行引擎', () => {
         expect(C.stripMarks(marked)).toBe(engine.renderFloors()[0].body);
     });
 
+    it('词语替换预览里单独取消的几处不换，其余照换', async () => {
+        const { engine } = makeEngine(normal);
+        await engine.run();
+        engine.results[0].parsed.summary = '裘月寒来了，裘月寒又走了';
+        engine.results[0].finalParas = [...engine.results[0].finalParas, '裘月寒看着裘月寒的影子。'];
+        const pv = engine.previewReplaceInResults('裘月寒 → 裘寒月');
+        expect(pv.hits.every((h, k) => h.id === k)).toBe(true);
+        const sums = pv.hits.filter((h) => h.where === '摘要');
+        expect(sums.length).toBe(2);
+        const body = pv.hits.filter((h) => h.where === '正文');
+        expect(body.length).toBeGreaterThan(1);
+        // 取消摘要第二处、正文第一处
+        const skip = new Set([sums[1].id, body[0].id]);
+        expect(engine.applyReplaceToResults('裘月寒 → 裘寒月', null, { skip })).toBeGreaterThan(0);
+        expect(engine.results[0].parsed.summary).toBe('裘寒月来了，裘月寒又走了');
+        const left = engine.previewReplaceInResults('裘月寒 → 裘寒月').hits;
+        expect(left.map((h) => h.where).sort()).toEqual(['摘要', '正文']);
+        expect(left.find((h) => h.where === '正文').post).toBe(body[0].post);
+        // 世界书、表格里有的也照换（没取消）
+        expect(left.some((h) => h.where === '世界书' || h.where === '表格')).toBe(false);
+    });
+
     it('分隔线不会把上一行变成 Markdown 标题，**第二话** 也认成章节标题', () => {
         const lines = C.formatBodyHeadings(['笑了很久。', '---', '**第二话 试着幼驯染**', '正文', '=====', '后文', '***'], {}, '话');
         expect(C.fixSeparators(lines, 'bt')).toEqual(['笑了很久。', '<bt>\n#第2话：试着幼驯染\n</bt>', '正文', '', '=====', '后文']);
