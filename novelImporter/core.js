@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.12';
+    const VERSION = '1.6.13';
 
     // ============================================
     // 默认配置
@@ -4240,12 +4240,19 @@ ${blocks}`;
             if (!todo.length) throw new Error('这层往后没有完成的层');
             E.running = true;
             E.stopRequested = false;
+            E.pauseRequested = false;
+            E.pauseAfterCurrent = false;
             // paused：某层没换成，或换上了但有段 JSON 用不上（表格没放进去）→ 停在这层，后面的层不动，免得在缺了东西的表格上接着算
             const out = { done: [], failed: [], stopped: false, paused: null, total: todo.length };
             try {
                 for (const k of todo) {
                     if (E.stopRequested) {
                         out.stopped = true;
+                        break;
+                    }
+                    // 点了暂停：当前这层写完就停，从下一层接着跑
+                    if (E.pauseRequested || E.pauseAfterCurrent) {
+                        out.userPaused = k;
                         break;
                     }
                     try {
@@ -4269,6 +4276,8 @@ ${blocks}`;
                 }
             } finally {
                 E.running = false;
+                E.pauseRequested = false;
+                E.pauseAfterCurrent = false;
             }
             return out;
         }
