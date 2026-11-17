@@ -988,6 +988,7 @@
             const r = State.engine && State.engine.results[p.index];
             log(`第 ${p.index + 1} 层失败：${p.error}${r && r.tokens ? `；已用 ${tokenText(r.tokens)}` : ''}`);
         }
+        else if (type === 'layer-done' && p.json) saveProgress(); // 只重新输出 JSON：结果由按钮那边写日志，这里不再报「第 N 层完成」
         else if (type === 'layer-done') {
             const r = p.result;
             const f = r.patchStats.failed.length;
@@ -5520,9 +5521,16 @@
                         });
                         renderButtons();
                         const out = await job;
-                        const msg = `${out.done.length}/${out.total} 层已换上新的${what}${out.failed.length ? `，第 ${out.failed.map((x) => x.index + 1).join('、')} 层没换成（保留原来的）` : ''}${out.stopped ? '，已停止' : ''}`;
+                        let msg = `${out.done.length}/${out.total} 层已换上新的${what}${out.stopped ? '，已停止' : ''}`;
+                        if (out.paused) {
+                            const at = out.paused.index + 1;
+                            msg += out.paused.partial
+                                ? `。第 ${at} 层有内容没放进去（${out.paused.error}），已暂停在这层，后面的层没动。处理好后在第 ${at} 层或第 ${at + 1} 层再勾「改到最后」接着跑`
+                                : `。第 ${at} 层没换成（${out.paused.error}），保留原来的，已暂停，后面的层没动。处理好后在第 ${at} 层再勾「改到最后」接着跑`;
+                            State.selected = out.paused.index;
+                        }
                         log(msg);
-                        toast(msg, out.failed.length || out.stopped ? 'warning' : 'success');
+                        toast(msg, out.paused || out.stopped ? 'warning' : 'success');
                     } catch (err) {
                         log(`重新输出${what}失败：${err.message}`);
                         toast(`没开始：${err.message}`, 'error');

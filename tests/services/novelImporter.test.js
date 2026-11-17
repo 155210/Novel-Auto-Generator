@@ -1468,6 +1468,32 @@ describe('运行引擎', () => {
         expect(engine.results[2].undo[engine.results[2].undo.length - 1].label).toBe('只重新输出表格');
     });
 
+    it('改到最后时某层没换成或有 JSON 用不上：停在那层，后面的层不动', async () => {
+        let mode = 'bad';
+        const { engine } = makeEngine((layer, last) => {
+            if (/只按要求输出这一层的/.test(last)) {
+                if (/第 2 层已经定稿/.test(last)) return mode === 'bad' ? '<表格>{坏</表格>' : '我不回';
+                return '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "新"}}]}</表格>';
+            }
+            if (/只修正格式/.test(last)) return '还是坏的';
+            return normal(layer);
+        });
+        await engine.run();
+        const third = engine.results[2];
+        const out = await engine.regenJsonRange(0, '', { part: 'table' });
+        expect(out.done).toEqual([0, 1]);
+        expect(out.paused.index).toBe(1);
+        expect(out.paused.partial).toBe(true);
+        expect(engine.results[2]).toBe(third);
+        mode = 'none';
+        const out2 = await engine.regenJsonRange(1, '', { part: 'table' });
+        expect(out2.done).toEqual([]);
+        expect(out2.failed.map((x) => x.index)).toEqual([1]);
+        expect(out2.paused.index).toBe(1);
+        expect(engine.results[2]).toBe(third);
+        expect(engine.running).toBe(false);
+    });
+
     it('只重新输出 JSON：旧回复里同一标签出现两次（后一段坏的），换的是读的那一段', async () => {
         const { engine } = makeEngine((layer, last) => {
             if (/只按要求输出这一层的/.test(last)) return '<世界书>{"角色": {"林晚": {"关键词": ["林晚"], "内容": "新的林晚"}}}</世界书>\n<表格>{}</表格>';
