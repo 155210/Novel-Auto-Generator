@@ -1437,6 +1437,37 @@ describe('运行引擎', () => {
         expect(engine.results[0].calls[3].problem).toContain('回复里没有');
     });
 
+    it('只重新输出表格，并从这层一直改到最后一层：世界书不动，每层表格按前一层新结果接着算', async () => {
+        const seen = [];
+        const { engine, calls } = makeEngine((layer, last) => {
+            if (/只按要求输出这一层的/.test(last)) {
+                seen.push(last);
+                const n = seen.length;
+                // AI 多写了世界书也不用
+                return `<世界书>{"角色": {"乱入": {"关键词": ["乱入"], "内容": "不该进来"}}}</世界书>\n<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "重写事件${n}"}}]}</表格>`;
+            }
+            return normal(layer);
+        });
+        await engine.run();
+        const bodies = engine.renderFloors().map((f) => f.body);
+        const wbBefore = JSON.stringify(engine.exportWorldbook());
+        const got = [];
+        const out = await engine.regenJsonRange(1, '', { part: 'table' }, (k, res) => got.push([k, res.ok]));
+        expect(out.done).toEqual([1, 2]);
+        expect(out.failed).toEqual([]);
+        expect(got).toEqual([[1, true], [2, true]]);
+        expect(engine.running).toBe(false);
+        // 提示词只要表格，不带世界书任务
+        expect(seen[0]).toContain('<表格>');
+        expect(seen[0]).not.toContain('<改写判定>{');
+        expect(seen[0]).not.toContain('<世界书>JSON');
+        expect(calls[calls.length - 1].info.purpose).toBe('json');
+        expect(engine.renderFloors().map((f) => f.body)).toEqual(bodies);
+        { const A = JSON.parse(wbBefore).entries; const B = engine.exportWorldbook().entries; expect(Object.values(B).map((e) => [e.comment, e.content])).toEqual(Object.values(A).map((e) => [e.comment, e.content])); }
+        expect(engine.exportTables().find((t) => t.name === '事件历史').data.slice(1).map((r) => r[0])).toEqual(['事件1', '重写事件1', '重写事件2']);
+        expect(engine.results[2].undo[engine.results[2].undo.length - 1].label).toBe('只重新输出表格');
+    });
+
     it('只重新输出 JSON：旧回复里同一标签出现两次（后一段坏的），换的是读的那一段', async () => {
         const { engine } = makeEngine((layer, last) => {
             if (/只按要求输出这一层的/.test(last)) return '<世界书>{"角色": {"林晚": {"关键词": ["林晚"], "内容": "新的林晚"}}}</世界书>\n<表格>{}</表格>';

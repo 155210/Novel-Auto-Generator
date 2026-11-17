@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.10';
+    const VERSION = '1.6.11';
 
     // ============================================
     // 默认配置
@@ -4171,29 +4171,40 @@ ${blocks}`;
 
         /** 只让 AI 重新输出 JSON 的提示词：用这层处理完的正文当原文，不再要正文 */
         let jsonWbNames = [];
-        function buildJsonOnlyPrompt(i, st, extraPrompt) {
+        /** 只重新输出哪几段：all 三段都要；table 只要表格；worldbook 只要世界书 */
+        const JSON_PART_TAGS = { all: JSON_TAGS, table: ['表格'], worldbook: ['世界书'] };
+        function jsonPartTags(part) {
+            return JSON_PART_TAGS[part] || JSON_TAGS;
+        }
+        function buildJsonOnlyPrompt(i, st, extraPrompt, part = 'all') {
             const s = { ...DEFAULT_SETTINGS, ...settings };
+            const tags = jsonPartTags(part);
             jsonWbNames = [];
             const r = E.results[i];
             const body = splitBodyBlocks(r.finalParas.join('\n'), settings.bodyTag).body;
-            const parts = [`你是小说资料整理助手。下面是一部小说第 ${i + 1} 层已经定稿的正文。正文不用改、也不要输出；只按要求输出这一层的 <改写判定>、<世界书>、<表格> 三段，每段都必须是能被 JSON.parse 解析的合法 JSON（键和字符串用英文双引号，字符串里的双引号写成 \\"，不要注释、尾逗号、代码块标记）。`];
-            const div = buildDivergenceSection(s, st, !!E.layers[i].translate);
+            const parts = [`你是小说资料整理助手。下面是一部小说第 ${i + 1} 层已经定稿的正文。正文不用改、也不要输出；只按要求输出这一层的 ${tags.map((t) => `<${t}>`).join('、')}${tags.length > 1 ? ` ${tags.length} 段` : ''}，每段都必须是能被 JSON.parse 解析的合法 JSON（键和字符串用英文双引号，字符串里的双引号写成 \\"，不要注释、尾逗号、代码块标记）。`];
+            const div = tags.includes('改写判定') ? buildDivergenceSection(s, st, !!E.layers[i].translate) : '';
             if (div) parts.push(div);
-            if (s.worldbookEnabled) {
+            if (s.worldbookEnabled && tags.includes('世界书')) {
                 parts.push(buildWorldbookSection(s));
                 const ctx = worldbookContext(st.worldbook, body, s);
                 if (ctx.text) parts.push(ctx.text);
                 jsonWbNames = ctx.names;
             }
-            const table = buildTableSection(s, st, body);
+            const table = tags.includes('表格') ? buildTableSection(s, st, body) : '';
             if (table) parts.push(table);
-            const old = JSON_TAGS.map((t) => extractTag(r.raw, t)).some((x) => x.found)
-                ? `## 你上次给的（格式有问题或需要改，供参考）\n${JSON_TAGS.map((t) => `<${t}>\n${extractTag(r.raw, t).content}\n</${t}>`).join('\n')}`
+            const old = tags.map((t) => extractTag(r.raw, t)).some((x) => x.found)
+                ? `## 你上次给的（格式有问题或需要改，供参考）\n${tags.map((t) => `<${t}>\n${extractTag(r.raw, t).content}\n</${t}>`).join('\n')}`
                 : '';
             if (old) parts.push(old);
             if ((extraPrompt || '').trim()) parts.push(`## 用户的补充要求（优先遵守）\n${extraPrompt.trim()}`);
             parts.push(`## 本层定稿正文\n<原文>\n${body}\n</原文>`);
-            parts.push(`## 输出格式（只输出这三段，别的什么都不要写）\n<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false, "事实": [], "作废": []}</改写判定>\n<世界书>JSON，没有新内容就输出 {}</世界书>\n<表格>JSON，没有变化就输出 {}</表格>\n\n${String(s.jsonReminder ?? JSON_REMINDER).trim()}`);
+            const fmt = {
+                改写判定: '<改写判定>{"触发": false, "规则": "", "说明": "", "回归原文": false, "事实": [], "作废": []}</改写判定>',
+                世界书: '<世界书>JSON，没有新内容就输出 {}</世界书>',
+                表格: '<表格>JSON，没有变化就输出 {}</表格>',
+            };
+            parts.push(`## 输出格式（只输出${tags.length > 1 ? `这 ${tags.length} 段` : '这一段'}，别的什么都不要写）\n${tags.map((t) => fmt[t]).join('\n')}\n\n${String(s.jsonReminder ?? JSON_REMINDER).trim()}`);
             return parts.join('\n\n');
         }
 
@@ -4216,9 +4227,50 @@ ${blocks}`;
             }
         }
 
+        /**
+         * 从第 from 层起，一层接一层只重新输出 JSON（或只表格/只世界书）直到最后一层。
+         * 必须按顺序：后一层的表格要在前一层新结果的基础上算。某层失败就记下来接着往后走（那层保留旧的）。
+         * onLayer(i, {ok, result, error}) 每层完了调一次。点停止就停在当前层之后。
+         */
+        async function regenJsonRange(from, extraPrompt, opts = {}, onLayer) {
+            if (E.running) throw new Error('正在处理中');
+            if (E.editing.size) throw new Error(`第 ${[...E.editing].map((x) => x + 1).join('、')} 层正在按要求改，等改完再来`);
+            const todo = [];
+            for (let k = from; k < E.layers.length; k++) if (E.results[k] && E.results[k].status === 'done') todo.push(k);
+            if (!todo.length) throw new Error('这层往后没有完成的层');
+            E.running = true;
+            E.stopRequested = false;
+            const out = { done: [], failed: [], stopped: false, total: todo.length };
+            try {
+                for (const k of todo) {
+                    if (E.stopRequested) {
+                        out.stopped = true;
+                        break;
+                    }
+                    try {
+                        const r = await regenJsonInner(k, E.results[k], extraPrompt, opts);
+                        out.done.push(k);
+                        if (onLayer) onLayer(k, { ok: true, result: r });
+                    } catch (err) {
+                        if (E.stopRequested || err.message === 'ABORTED') {
+                            out.stopped = true;
+                            break;
+                        }
+                        out.failed.push({ index: k, error: err.message });
+                        if (onLayer) onLayer(k, { ok: false, error: err.message });
+                    }
+                }
+            } finally {
+                E.running = false;
+            }
+            return out;
+        }
+
         async function regenJsonInner(i, old, extraPrompt, opts) {
             const st = replay(i);
-            const prompt = buildJsonOnlyPrompt(i, st, extraPrompt);
+            const part = opts.part || 'all';
+            const tags = jsonPartTags(part);
+            const prompt = buildJsonOnlyPrompt(i, st, extraPrompt, part);
             const wbNames = jsonWbNames;
             const messages = opts.usePreset
                 ? buildMessages(prompt)
@@ -4236,7 +4288,8 @@ ${blocks}`;
             }
             let raw = old.raw;
             const got = [];
-            for (const t of JSON_TAGS) {
+            // 只换要的那几段：AI 多写了别的段也不用
+            for (const t of tags) {
                 const x = extractTag(reply, t);
                 if (!x.closed) continue;
                 got.push(t);
@@ -4247,7 +4300,7 @@ ${blocks}`;
             const keepLog = () => Object.assign(old, { calls: r.calls, tokens: r.tokens });
             if (!got.length) {
                 keepLog();
-                rec.problem = '回复里没有 <改写判定>/<世界书>/<表格>';
+                rec.problem = `回复里没有 ${tags.map((t) => `<${t}>`).join('/')}`;
                 throw new Error(rec.problem);
             }
             const layer = E.layers[i];
@@ -4278,9 +4331,14 @@ ${blocks}`;
                     dropFacts: nd.dropFacts && nd.dropFacts.length ? nd.dropFacts : od.dropFacts || [],
                 };
             }
+            // 没要的那几段照旧用原来解析好的（世界书合并时打的「接在后面」等标记在里面，重新解析会丢，条目会被整条换掉）
+            const op = old.parsed || {};
+            if (!tags.includes('世界书') && op.worldbook) parsed.worldbook = op.worldbook;
+            if (!tags.includes('表格') && op.tableOps) parsed.tableOps = op.tableOps;
+            if (part !== 'all') parsed.warnings = parsed.warnings.filter((w) => tags.some((t) => String(w).includes(t)));
             Object.assign(r, { raw, parsed, warnings: parsed.warnings, providedNames: uniq([...(old.providedNames || []), ...wbNames]) });
             try {
-                await mergeUnseenEntries(i, st, parsed, r);
+                if (tags.includes('世界书')) await mergeUnseenEntries(i, st, parsed, r);
             } catch (err) {
                 keepLog();
                 throw err;
@@ -4290,7 +4348,7 @@ ${blocks}`;
             r.tableLog = c.out.tableLog;
             r.divergenceStart = c.out.divergenceStart;
             r.inDivergence = c.out.inDivergence;
-            pushUndo(r, old, '只重新输出 JSON');
+            pushUndo(r, old, part === 'table' ? '只重新输出表格' : part === 'worldbook' ? '只重新输出世界书' : '只重新输出 JSON');
             // 换成新对象，重放缓存会从这层往后重新算
             E.results[i] = r;
             emit('layer-done', { index: i, result: r });
@@ -5313,6 +5371,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             redoWithPrompt,
             redoWithFeedback,
             regenJson,
+            regenJsonRange,
             applyReplaceToResults,
             previewReplaceInResults,
             setLayerNote,

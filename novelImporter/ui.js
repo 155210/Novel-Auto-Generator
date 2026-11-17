@@ -5354,8 +5354,10 @@
                 const bad = r.warnings && r.warnings.length;
                 pWb += `<details class="nim-fold"${bad ? ' open' : ''}><summary>只让 AI 重新输出这部分（正文不动）${bad ? '<span class="nim-muted">：这层有 JSON 没用上</span>' : ''}</summary>
               <textarea id="nim-json-fb" class="nim-input nim-textarea" rows="3" placeholder="可留空。例如：表格 JSON 里的字符串引号要转义；世界书补上花恋的身高"></textarea>
+              <div class="nim-row"><label class="nim-muted">要哪些：</label><select id="nim-json-part" class="nim-input" style="width:auto"><option value="all">三段都要（改写判定、世界书、表格）</option><option value="table">只要表格</option><option value="worldbook">只要世界书</option></select></div>
+              <div class="nim-row"><label class="nim-muted"><input type="checkbox" id="nim-json-tail"> 从这层一直改到最后一层（一层接一层自动跑）</label></div>
               <div class="nim-row"><label class="nim-muted"><input type="checkbox" id="nim-json-preset"> 套用酒馆预设（AI 拒绝时再勾）</label></div>
-              <div class="nim-row"><button id="nim-json-go" class="nim-btn sm">只重新输出 JSON</button><span class="nim-muted">只要改写判定、世界书、表格三段，之后的层保留</span></div>
+              <div class="nim-row"><button id="nim-json-go" class="nim-btn sm">只重新输出这部分</button><span class="nim-muted">正文不动；不勾「改到最后」时之后的层保留</span></div>
             </details>`;
             }
             pMore += `<details class="nim-fold" id="nim-medit"><summary>手动编辑这层（标题、正文、摘要）</summary>
@@ -5501,18 +5503,42 @@
                 if (e.running) return toast('正在处理中，先暂停再重做', 'warning');
                 const extra = $('nim-json-fb').value.trim();
                 const usePreset = $('nim-json-preset').checked;
+                const part = ($('nim-json-part') && $('nim-json-part').value) || 'all';
+                const tail = $('nim-json-tail') && $('nim-json-tail').checked;
+                const what = { all: 'JSON', table: '表格', worldbook: '世界书' }[part] || 'JSON';
                 collectFields();
                 // 点过停止后这个标记还留着，不清掉请求一发就会被当成已停止
                 State.stopped = false;
                 jsonBtn.disabled = true;
-                log(`第 ${i + 1} 层只重新输出 JSON${extra ? `：${extra}` : ''}`);
+                if (tail) {
+                    log(`从第 ${i + 1} 层到最后一层只重新输出${what}${extra ? `：${extra}` : ''}`);
+                    try {
+                        const job = e.regenJsonRange(i, extra, { usePreset, part }, (k, res) => {
+                            log(res.ok ? `第 ${k + 1} 层${what}已换上${res.result.warnings && res.result.warnings.length ? `（${res.result.warnings.join('；')}）` : ''}` : `第 ${k + 1} 层${what}没换成：${res.error}`);
+                            saveProgress();
+                            renderAll();
+                        });
+                        renderButtons();
+                        const out = await job;
+                        const msg = `${out.done.length}/${out.total} 层已换上新的${what}${out.failed.length ? `，第 ${out.failed.map((x) => x.index + 1).join('、')} 层没换成（保留原来的）` : ''}${out.stopped ? '，已停止' : ''}`;
+                        log(msg);
+                        toast(msg, out.failed.length || out.stopped ? 'warning' : 'success');
+                    } catch (err) {
+                        log(`重新输出${what}失败：${err.message}`);
+                        toast(`没开始：${err.message}`, 'error');
+                    }
+                    saveProgress();
+                    renderAll();
+                    return;
+                }
+                log(`第 ${i + 1} 层只重新输出${what}${extra ? `：${extra}` : ''}`);
                 try {
-                    const job = e.regenJson(i, extra, { usePreset });
+                    const job = e.regenJson(i, extra, { usePreset, part });
                     renderButtons();
                     const nr = await job;
-                    toast(nr.warnings && nr.warnings.length ? `换上了能用的部分，还有：${nr.warnings.join('；')}` : '已换上新的 JSON', nr.warnings && nr.warnings.length ? 'warning' : 'success');
+                    toast(nr.warnings && nr.warnings.length ? `换上了能用的部分，还有：${nr.warnings.join('；')}` : `已换上新的${what}`, nr.warnings && nr.warnings.length ? 'warning' : 'success');
                 } catch (err) {
-                    log(`第 ${i + 1} 层重新输出 JSON 失败：${err.message}`);
+                    log(`第 ${i + 1} 层重新输出${what}失败：${err.message}`);
                     if (State.stopped) toast('已停止，这层结果没动', 'info');
                     else toast(`没换成：${err.message}（原始输出在下面「请求记录」里）`, 'error');
                 }
