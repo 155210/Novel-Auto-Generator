@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.11';
+    const VERSION = '1.6.12';
 
     // ============================================
     // 默认配置
@@ -4240,7 +4240,8 @@ ${blocks}`;
             if (!todo.length) throw new Error('这层往后没有完成的层');
             E.running = true;
             E.stopRequested = false;
-            const out = { done: [], failed: [], stopped: false, total: todo.length };
+            // paused：某层没换成，或换上了但有段 JSON 用不上（表格没放进去）→ 停在这层，后面的层不动，免得在缺了东西的表格上接着算
+            const out = { done: [], failed: [], stopped: false, paused: null, total: todo.length };
             try {
                 for (const k of todo) {
                     if (E.stopRequested) {
@@ -4251,6 +4252,10 @@ ${blocks}`;
                         const r = await regenJsonInner(k, E.results[k], extraPrompt, opts);
                         out.done.push(k);
                         if (onLayer) onLayer(k, { ok: true, result: r });
+                        if (r.warnings && r.warnings.length && opts.pauseOnWarn !== false) {
+                            out.paused = { index: k, error: r.warnings.join('；'), partial: true };
+                            break;
+                        }
                     } catch (err) {
                         if (E.stopRequested || err.message === 'ABORTED') {
                             out.stopped = true;
@@ -4258,6 +4263,8 @@ ${blocks}`;
                         }
                         out.failed.push({ index: k, error: err.message });
                         if (onLayer) onLayer(k, { ok: false, error: err.message });
+                        out.paused = { index: k, error: err.message };
+                        break;
                     }
                 }
             } finally {
@@ -4351,7 +4358,7 @@ ${blocks}`;
             pushUndo(r, old, part === 'table' ? '只重新输出表格' : part === 'worldbook' ? '只重新输出世界书' : '只重新输出 JSON');
             // 换成新对象，重放缓存会从这层往后重新算
             E.results[i] = r;
-            emit('layer-done', { index: i, result: r });
+            emit('layer-done', { index: i, result: r, json: true });
             return r;
         }
 
