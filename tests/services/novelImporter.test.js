@@ -416,6 +416,15 @@ describe('解析回复', () => {
         expect(r.worldbook.角色.a.内容).toBe('b');
     });
 
+    it('说明里提到 <改写正文> 但实际用了完整的 <补丁>：按补丁处理，不报截断', () => {
+        const raw = reply({ patches: 'P2 | 天色渐晚 | +风吹过树梢。' }).replace('<补丁>', '我不重写整层，<改写正文> 不用，改用补丁：\n<补丁>');
+        const r = C.parseLayerResponse(raw);
+        expect(r.ok).toBe(true);
+        expect(r.errors).toEqual([]);
+        expect(r.rewrittenText).toBe(null);
+        expect(r.warnings.join('')).toContain('按 <补丁> 处理');
+    });
+
     it('<改写正文> 全是补丁行时按补丁处理，不当正文', () => {
         const r = C.parseLayerResponse(reply({ rewritten: '\nP2 | 天色渐晚 | +风吹过树梢。\n[P3-P5 同原文]\nP6 | 他推开门 | =他轻轻推开门。\n' }));
         expect(r.ok).toBe(true);

@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.14';
+    const VERSION = '1.6.15';
 
     // ============================================
     // 默认配置
@@ -1526,7 +1526,11 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
             if (!rewritten.closed || !rewritten.content) errors.push(`缺少完整的 <${bodyTag}> 译文（或被截断）`);
             else if (tooShort(rewritten.content)) errors.push(`<${bodyTag}> 只有 ${rewritten.content.length} 字，原文 ${opts.sourceChars} 字，译文不完整`);
         } else {
-            if (rewritten.found && !rewritten.closed) errors.push('<改写正文> 被截断');
+            // AI 常在说明、思考里提一句「<改写正文>」却实际用补丁写：补丁完整就按补丁处理，不算截断
+            if (rewritten.found && !rewritten.closed) {
+                if (patch.closed) warnings.push('回复里有个没配对的 <改写正文>（多半是 AI 在说明里提到了这个标签），这层按 <补丁> 处理');
+                else errors.push('<改写正文> 被截断');
+            }
             if (!rewritten.found && !patch.closed) errors.push('缺少 <补丁>（或被截断）');
         }
 
@@ -4259,8 +4263,9 @@ ${blocks}`;
                         const r = await regenJsonInner(k, E.results[k], extraPrompt, opts);
                         out.done.push(k);
                         if (onLayer) onLayer(k, { ok: true, result: r });
-                        if (r.warnings && r.warnings.length && opts.pauseOnWarn !== false) {
-                            out.paused = { index: k, error: r.warnings.join('；'), partial: true };
+                        const jsonWarn = (r.warnings || []).filter((w) => JSON_TAGS.some((t) => String(w).includes(t)));
+                        if (jsonWarn.length && opts.pauseOnWarn !== false) {
+                            out.paused = { index: k, error: jsonWarn.join('；'), partial: true };
                             break;
                         }
                     } catch (err) {
