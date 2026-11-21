@@ -20,6 +20,7 @@
         mapScanExtra: '', // 扫描时的额外要求
         // 扫描套不套酒馆预设：off 不套；fail 失败的层套（扫描时失败自动套预设再试一次，重扫失败层直接套）；on 每层都套
         mapScanPreset: 'off',
+        mapPlanPreset: 'off',
         // 「拉取模型列表」拉到的模型存下来，主模型和剧情地图的模型都从这里选
         apiModels: [],
         mapScanEndpoint: '',
@@ -3324,6 +3325,16 @@
         return C.assemblePresetMessages(State.settings.preset || C.presetDefaults(), prompt, substituteMacros);
     }
 
+    /** 「AI 提议改写点」「整体改写方案」：设置里选了套预设就按处理正文那套预设拼消息 */
+    function planMessages(prompt) {
+        if ((State.settings.mapPlanPreset || 'off') !== 'on') return null;
+        if (!presetLiveCount()) {
+            log('剧情地图：设置了出方案套预设，但预设里没有开着的条目，这次等于没套');
+            return null;
+        }
+        return scanMessages(prompt, true);
+    }
+
     /** 预设里开着、有内容的条目数（不算「本层提示词」占位） */
     function presetLiveCount() {
         const p = State.settings.preset;
@@ -3526,7 +3537,8 @@
         setStatus('AI 正在通读剧情地图、找要改的地方…');
         try {
             const pref = (State.settings.mapToxic || '') + (State.settings.divergenceDirection ? `\n改写方向：${State.settings.divergenceDirection}` : '');
-            const res = await callSideAPI(PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules, protagonist: mapHero(), judgeNotes: C.TOXIC_JUDGE_NOTES }), { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(4000), onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
+            const prompt = PM.buildSuggestPrompt(e.layers, State.plan, { preference: pref, toxicRules: State.settings.divergenceRules, protagonist: mapHero(), judgeNotes: C.TOXIC_JUDGE_NOTES });
+            const res = await callSideAPI(prompt, { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(4000), messages: planMessages(prompt), onChunk: (_d, full, think) => mapLive('AI 提议改写点', liveText(full, think)) });
             mapLive('AI 提议改写点', res.text, false, true);
             const list = PM.parseSuggestResponse(res.text, C.parseLooseJson);
             State.plan = { ...State.plan, suggestions: list };
@@ -3566,7 +3578,8 @@
         const key = '整体改写方案';
         try {
             const prev = revise ? { idea: ov.idea, facts: ov.facts, points: ov.points || State.plan.suggestions } : null;
-            const res = await callSideAPI(PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero(), prev, feedback: rounds }), { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(8000), onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
+            const prompt = PM.buildOverallPrompt(e.layers, State.plan, { request, protagonist: mapHero(), prev, feedback: rounds });
+            const res = await callSideAPI(prompt, { signal: mapUi.busyCtl.signal, maxTokens: sideMaxTokens(8000), messages: planMessages(prompt), onChunk: (_d, full, think) => mapLive(key, liveText(full, think)) });
             mapLive(key, res.text, false, true);
             const r = PM.parseOverallResponse(res.text, C.parseLooseJson);
             // 新设定没变就保持「已加进账本」；变了要重新加（加的时候会换掉旧的那几条）
@@ -3971,6 +3984,7 @@
            <div class="nim-row"><button id="nim-map-suggest" class="nim-btn">AI 提议改写点</button></div>
            <div class="nim-field nim-mt"><label>整体改写（改设定、改主线，AI 通读全书大纲后出方案）</label>
              <textarea id="nim-map-overall-req" class="nim-input nim-textarea" rows="3" placeholder="比如：去掉奴隶设定，地牢里的女孩都是自愿跟随的伙伴，契约改成雇佣关系，可以随时解约"></textarea>
+             <div class="nim-field"><label>提议改写点、出整体方案时套用酒馆预设</label><select class="nim-input" data-map-set="mapPlanPreset"><option value="off">不套（默认）</option><option value="on">套预设（AI 拒绝时选这个）</option></select></div>
              <div class="nim-row"><button id="nim-map-overall" class="nim-btn">AI 通读全书出整体方案</button></div></div>
            <div class="nim-row nim-row-quiet"><button id="nim-map-rescan" class="nim-btn ghost sm">全部重扫</button><button id="nim-map-export" class="nim-btn ghost sm">导出规划</button><label class="nim-btn ghost sm">导入规划<input type="file" id="nim-map-plan-file" accept=".json" hidden></label></div>
       </div></details>
