@@ -45,6 +45,8 @@
         extraBody: '',
         // 有请求在跑时放一段听不见的声音，页面切到后台不容易被浏览器 / 系统暂停
         keepAlive: true,
+        // 加强：再循环播放一段极小声的音频文件；有的系统只认这种，但可能会把正在放的音乐暂停
+        keepAliveStrong: false,
     };
 
     const State = {
@@ -481,7 +483,8 @@
             { key: 'retries', label: '格式错误重试次数', type: 'number' },
             { key: 'layerDelayMin', label: '每层之间最少等几秒', type: 'number', hint: '处理完一层后随机等一会儿再发下一层，在最少和最多之间随机取；两个都填 0 就不等' },
             { key: 'layerDelayMax', label: '每层之间最多等几秒', type: 'number' },
-            { key: 'keepAlive', label: '处理时保持后台运行', type: 'check', hint: '有请求在跑时放一段听不见的声音，切到别的 App 时页面不容易被暂停；不打断正在放的音乐。断网时会自动等一会儿重试，最长两分钟左右' },
+            { key: 'keepAlive', label: '处理时保持后台运行', type: 'check', hint: '有请求在跑时放一段听不见的声音，切到别的 App 时页面不容易被暂停；不打断正在放的音乐。日志里会写「后台保活已启动」，页面被暂停过也会写暂停了多少秒' },
+            { key: 'keepAliveStrong', label: '后台保活加强', type: 'check', hint: '上面那项开着、日志里仍然出现「页面被暂停了」时再开：改成循环播放一段极小声的音频，有的系统只认这种。可能会把正在放的音乐暂停' },
         ],
     };
 
@@ -646,8 +649,16 @@
     // （30Hz、音量约千分之二）。用 Web Audio 而不是 <audio>：不抢音频焦点，不会打断正在放的音乐。
     const KeepAlive = (() => {
         let ctx = null;
+        let media = null; // 「加强」模式用的 <audio>
         let users = 0;
         let offTimer = null;
+        let beat = null;
+        let lastBeat = 0;
+        let hiddenAt = 0;
+        let told = ''; // 上次在日志里报的状态，变了才再报
+        const enabled = () => !!State.settings && State.settings.keepAlive !== false;
+        const strong = () => enabled() && !!State.settings.keepAliveStrong;
+
         function open() {
             if (ctx) return;
             const AC = window.AudioContext || window.webkitAudioContext;
@@ -665,33 +676,126 @@
                 ctx = null;
             }
         }
+        /** 2 秒、8kHz、16 位的 30Hz 极小声正弦波，循环播放 */
+        function quietWav() {
+            const n = 16000;
+            const buf = new ArrayBuffer(44 + n * 2);
+            const v = new DataView(buf);
+            const str = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+            str(0, 'RIFF');
+            v.setUint32(4, 36 + n * 2, true);
+            str(8, 'WAVEfmt ');
+            v.setUint32(16, 16, true);
+            v.setUint16(20, 1, true);
+            v.setUint16(22, 1, true);
+            v.setUint32(24, 8000, true);
+            v.setUint32(28, 16000, true);
+            v.setUint16(32, 2, true);
+            v.setUint16(34, 16, true);
+            str(36, 'data');
+            v.setUint32(40, n * 2, true);
+            for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, Math.round(60 * Math.sin((2 * Math.PI * 30 * i) / 8000)), true);
+            return new Blob([buf], { type: 'audio/wav' });
+        }
+        function playMedia() {
+            if (!strong()) return;
+            try {
+                if (!media) {
+                    media = new Audio(URL.createObjectURL(quietWav()));
+                    media.loop = true;
+                }
+                if (media.paused) Promise.resolve(media.play()).catch(() => {});
+            } catch (e) {
+                media = null;
+            }
+        }
         function resume() {
             if (ctx && ctx.state === 'suspended') Promise.resolve(ctx.resume()).catch(() => {});
         }
-        // 浏览器要求先有过点击才让出声：之后每次点按都顺手再试一次
-        if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('pointerdown', () => users > 0 && resume(), true);
+        const running = () => (!!ctx && ctx.state === 'running') || (!!media && !media.paused);
+        function shut() {
+            clearInterval(beat);
+            beat = null;
+            told = '';
+            if (media) {
+                try {
+                    media.pause();
+                } catch (e) {
+                    /* 忽略 */
+                }
+            }
+            if (ctx) {
+                const c = ctx;
+                ctx = null;
+                Promise.resolve(c.close()).catch(() => {});
+            }
+        }
+        function idleLater() {
+            clearTimeout(offTimer);
+            offTimer = setTimeout(() => users === 0 && shut(), 90000);
+        }
+        /** 状态变了在日志里说一声：没启动的话，用户得知道要点一下页面 */
+        let offFor = 0;
+        function report() {
+            const now = running() ? 'on' : 'off';
+            // 刚开始那一两秒声音还没起来，不算没启动
+            offFor = now === 'off' ? offFor + 1 : 0;
+            if (now === told || (now === 'off' && offFor < 3)) return;
+            told = now;
+            log(now === 'on' ? '后台保活已启动' : '后台保活没能启动（浏览器要先有一次点按才让出声）：点一下页面任意位置就会启动');
+        }
+        function tick() {
+            const t = Date.now();
+            const gap = t - lastBeat;
+            lastBeat = t;
+            // 正常每秒一次；隔了很久才轮到，说明这段时间页面被浏览器或系统停住了
+            if (gap > 20000) log(`页面被暂停了约 ${Math.round(gap / 1000)} 秒（切到后台后被浏览器或系统停住）${running() ? '' : '，后台保活没在运行'}`);
+            if (users > 0) report();
+        }
+        if (typeof document !== 'undefined' && document.addEventListener) {
+            // 浏览器只在点按的那一下允许开始出声，所以窗口开着时每次点按都把声音准备好；
+            // 点「开始」的那一下就已经在出声了，之后的请求不用再等点按
+            document.addEventListener(
+                'pointerdown',
+                () => {
+                    if (!enabled() || (users === 0 && !document.getElementById('nim-modal'))) return;
+                    open();
+                    resume();
+                    playMedia();
+                    if (users === 0) idleLater();
+                },
+                true,
+            );
+            document.addEventListener('visibilitychange', () => {
+                if (users === 0) return;
+                if (document.hidden) hiddenAt = Date.now();
+                else if (hiddenAt) {
+                    log(`回到前台，离开了 ${Math.round((Date.now() - hiddenAt) / 1000)} 秒，后台保活${running() ? '一直在运行' : '没在运行'}`);
+                    hiddenAt = 0;
+                    resume();
+                }
+            });
+        }
         return {
             acquire() {
-                if (!State.settings || State.settings.keepAlive === false) return false;
+                if (!enabled()) return false;
                 users++;
                 clearTimeout(offTimer);
                 open();
                 resume();
+                playMedia();
+                if (!beat) {
+                    lastBeat = Date.now();
+                    beat = setInterval(tick, 1000);
+                }
                 return true;
             },
             /** 两层之间会歇一会儿，过一阵没有新请求才真的关掉 */
             release() {
                 users = Math.max(0, users - 1);
-                if (users > 0) return;
-                clearTimeout(offTimer);
-                offTimer = setTimeout(() => {
-                    if (users > 0 || !ctx) return;
-                    const c = ctx;
-                    ctx = null;
-                    Promise.resolve(c.close()).catch(() => {});
-                }, 90000);
+                if (users === 0) idleLater();
             },
-            active: () => !!ctx && ctx.state === 'running',
+            active: running,
         };
     })();
 
