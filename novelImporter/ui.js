@@ -986,6 +986,7 @@ onmessage = async (e) => {
                 body: { getReader: () => ({ read: () => new Promise((res, rej) => ((waiter = { resolve: res, reject: rej }), pump())) }) },
                 text: readAll,
                 json: async () => JSON.parse(await readAll()),
+                close: () => finish(),
             };
             worker.onmessage = (e) => {
                 const m = e.data || {};
@@ -1030,7 +1031,9 @@ onmessage = async (e) => {
     function stallNote(e) {
         const i = e && e.info;
         if (!i) return '';
-        return `（请求已进行 ${i.secs} 秒，收到 ${(i.got / 1024).toFixed(1)}KB，最后 ${i.quiet} 秒没有数据）`;
+        const p = e.partial;
+        const tail = p ? `，正文已到 ${p.chars} 字${p.think && !p.chars ? `（还在思考，思考 ${p.think} 字）` : ''}，没等到结束标记` : '';
+        return `（请求已进行 ${i.secs} 秒，收到 ${(i.got / 1024).toFixed(1)}KB，最后 ${i.quiet} 秒没有数据${tail}）`;
     }
 
     /** 返回回复文本；接口给了真实用量就放在 State.lastUsage */
@@ -1134,6 +1137,9 @@ onmessage = async (e) => {
             throw e;
         } finally {
             clearTimeout(timer);
+            // 提前用了已收全的内容时，连接可能还挂着：关掉
+            if (resp.close) resp.close();
+            else if (!controller.signal.aborted) controller.abort();
         }
     }
 
@@ -1141,15 +1147,45 @@ onmessage = async (e) => {
      * 读 OpenAI 格式的 SSE 流：每段增量调 onDelta(delta, full, think)，每次收到数据先调 onTick（续超时）。
      * DeepSeek 等推理模型先在 reasoning_content 里输出思考，think 是累计的思考内容，只用来显示，不算进回复。
      */
+    const FINISH_GRACE = 5000;
+
     async function readSSE(resp, { onDelta, onUsage, onTick, onThink }) {
         const reader = resp.body.getReader();
         const dec = new TextDecoder();
         let buf = '';
         let full = '';
         let think = '';
+        // 正文已经给了结束标记（finish_reason）之后，只剩用量和 [DONE]。有的环境（页面在后台或小窗）
+        // 这最后一小段或「连接已关闭」迟迟交不过来，干等只会等到超时、把一份完整的回复当成断线重发。
+        // 所以见到结束标记后最多再等 FINISH_GRACE 毫秒，等不到就直接用已经收全的正文。
+        let finished = false;
+        let pending = null;
+        const TIMEOUT = {};
         for (;;) {
             if (onTick) onTick();
-            const { done, value } = await reader.read();
+            let res;
+            try {
+                if (!pending) pending = reader.read();
+                if (finished) {
+                    let tm;
+                    res = await Promise.race([pending, new Promise((r) => (tm = setTimeout(() => r(TIMEOUT), FINISH_GRACE)))]);
+                    clearTimeout(tm);
+                    if (res === TIMEOUT) {
+                        pending.catch(() => {});
+                        log('回复已经收全，结束信号没等到，直接用收到的内容');
+                        break;
+                    }
+                } else {
+                    res = await pending;
+                }
+            } catch (e) {
+                // 结束标记都到了才断的，正文是全的
+                if (finished && !State.stopped) break;
+                if (e && typeof e === 'object') e.partial = { chars: full.length, think: think.length };
+                throw e;
+            }
+            pending = null;
+            const { done, value } = res;
             if (done) break;
             buf += dec.decode(value, { stream: true });
             const lines = buf.split('\n');
@@ -1158,7 +1194,8 @@ onmessage = async (e) => {
                 const t = line.trim();
                 if (!t.startsWith('data:')) continue;
                 const d = t.slice(5).trim();
-                if (!d || d === '[DONE]') continue;
+                if (!d) continue;
+                if (d === '[DONE]') return full;
                 let j;
                 try {
                     j = JSON.parse(d);
@@ -1168,6 +1205,7 @@ onmessage = async (e) => {
                 if (j.error) throw new Error(`流式错误：${j.error.message || JSON.stringify(j.error)}`);
                 if (j.usage && onUsage) onUsage(j.usage);
                 const dl = j.choices?.[0]?.delta || {};
+                if (j.choices?.[0]?.finish_reason) finished = true;
                 const r = dl.reasoning_content || dl.reasoning || dl.thinking || '';
                 if (r && typeof r === 'string') {
                     think += r;
@@ -3673,6 +3711,8 @@ onmessage = async (e) => {
             } finally {
                 clearTimeout(timer);
                 if (signal) signal.removeEventListener('abort', onAbort);
+                // 提前用了已收全的内容时，连接可能还挂着：关掉
+                if (!ctl.signal.aborted) ctl.abort();
             }
         }
         throw last;
