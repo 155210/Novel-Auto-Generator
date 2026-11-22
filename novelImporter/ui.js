@@ -43,6 +43,8 @@
         reasoningEffort: '',
         // 额外请求参数（JSON），原样合并进请求体，给不认 reasoning_effort 的中转站用
         extraBody: '',
+        // 有请求在跑时放一段听不见的声音，页面切到后台不容易被浏览器 / 系统暂停
+        keepAlive: true,
     };
 
     const State = {
@@ -479,6 +481,7 @@
             { key: 'retries', label: '格式错误重试次数', type: 'number' },
             { key: 'layerDelayMin', label: '每层之间最少等几秒', type: 'number', hint: '处理完一层后随机等一会儿再发下一层，在最少和最多之间随机取；两个都填 0 就不等' },
             { key: 'layerDelayMax', label: '每层之间最多等几秒', type: 'number' },
+            { key: 'keepAlive', label: '处理时保持后台运行', type: 'check', hint: '有请求在跑时放一段听不见的声音，切到别的 App 时页面不容易被暂停；不打断正在放的音乐。断网时会自动等一会儿重试，最长两分钟左右' },
         ],
     };
 
@@ -632,6 +635,65 @@
     }
 
     const RETRYABLE = new Set([408, 409, 425, 429, 500, 502, 503, 504, 529]);
+    /** 网络错误隔多久重试（秒）：网络抖一下常常十几秒才恢复，退避要比它长，一共等两分钟左右 */
+    const NET_BACKOFF = [2, 4, 8, 15, 30, 60];
+
+    // ============================================
+    // 后台保活
+    // ============================================
+    // 手机上页面切到后台后，浏览器会把定时器和网络请求放慢甚至暂停，有的系统还会把整个应用冻住，
+    // 挂机处理到一半就断了。正在出声的页面不会被这样对待，所以有请求在跑时放一段听不见的低频声音
+    // （30Hz、音量约千分之二）。用 Web Audio 而不是 <audio>：不抢音频焦点，不会打断正在放的音乐。
+    const KeepAlive = (() => {
+        let ctx = null;
+        let users = 0;
+        let offTimer = null;
+        function open() {
+            if (ctx) return;
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            try {
+                ctx = new AC();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.frequency.value = 30;
+                gain.gain.value = 0.002;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+            } catch (e) {
+                ctx = null;
+            }
+        }
+        function resume() {
+            if (ctx && ctx.state === 'suspended') Promise.resolve(ctx.resume()).catch(() => {});
+        }
+        // 浏览器要求先有过点击才让出声：之后每次点按都顺手再试一次
+        if (typeof document !== 'undefined' && document.addEventListener) document.addEventListener('pointerdown', () => users > 0 && resume(), true);
+        return {
+            acquire() {
+                if (!State.settings || State.settings.keepAlive === false) return false;
+                users++;
+                clearTimeout(offTimer);
+                open();
+                resume();
+                return true;
+            },
+            /** 两层之间会歇一会儿，过一阵没有新请求才真的关掉 */
+            release() {
+                users = Math.max(0, users - 1);
+                if (users > 0) return;
+                clearTimeout(offTimer);
+                offTimer = setTimeout(() => {
+                    if (users > 0 || !ctx) return;
+                    const c = ctx;
+                    ctx = null;
+                    Promise.resolve(c.close()).catch(() => {});
+                }, 90000);
+            },
+            active: () => !!ctx && ctx.state === 'running',
+        };
+    })();
 
     /** 流式调用，超时按「多久没收到新数据」算 */
     // 有的中转站不认 stream_options，报错一次后就不再带
@@ -676,10 +738,12 @@
         State.abort = controller;
         // 几个请求同时在跑时，「停止」要把它们都停掉
         (State.aborts || (State.aborts = new Set())).add(controller);
+        const kept = KeepAlive.acquire();
         try {
             return await callAPIWith(messages, onChunk, meta, { s, body, controller, timeout, setUsage, setThink });
         } finally {
             State.aborts.delete(controller);
+            if (kept) KeepAlive.release();
         }
     }
 
@@ -737,6 +801,12 @@
                 const err = new Error('响应中断：太久没有收到新数据');
                 err.retryable = !State.stopped;
                 throw err;
+            }
+            // 回复传到一半断了（网络抖动、中转站报流式错误）：和连不上一样，等一会儿再试
+            if (e.retryable === undefined) {
+                if (!/^流式错误/.test(e.message || '')) e.message = `回复传到一半断了：${e.message}`;
+                e.retryable = !State.stopped;
+                e.midStream = true;
             }
             throw e;
         } finally {
@@ -800,7 +870,9 @@
     /** 给引擎用：网络错误自己退避重试，格式错误交给引擎重试 */
     async function callModel(messages, info) {
         let last;
-        for (let k = 0; k < 4; k++) {
+        // 传到一半才断的，前面那段已经花了 token：最多再试 3 次，免得一直出同样的错还一直花钱
+        let midStream = 0;
+        for (let k = 0; k <= NET_BACKOFF.length; k++) {
             if (State.stopped) throw new Error('ABORTED');
             try {
                 const meta = {};
@@ -830,9 +902,11 @@
                 return { text, usage: meta.usage, think: meta.think || '' };
             } catch (e) {
                 last = e;
-                if (!e.retryable || k === 3) throw e;
-                log(`第 ${info.layer + 1} 层请求失败，${2 ** k * 2} 秒后重试：${e.message}`);
-                await sleep(2 ** k * 2000);
+                if (!e.retryable || k === NET_BACKOFF.length) throw e;
+                if (e.midStream && ++midStream > 3) throw e;
+                log(`第 ${info.layer + 1} 层请求失败，${NET_BACKOFF[k]} 秒后重试：${e.message}`);
+                // 等的时候每秒看一眼，点了停止马上停
+                for (let t = 0; t < NET_BACKOFF[k] && !State.stopped; t++) await sleep(1000);
             }
         }
         throw last;
@@ -3207,6 +3281,15 @@
         const h = { 'Content-Type': 'application/json' };
         if (m.key) h.Authorization = `Bearer ${m.key}`;
         const timeout = Number(State.settings.apiTimeout) || 300000;
+        const kept = KeepAlive.acquire();
+        try {
+            return await callSideAPIWith(m, h, timeout, prompt, { signal, maxTokens, onChunk, messages });
+        } finally {
+            if (kept) KeepAlive.release();
+        }
+    }
+
+    async function callSideAPIWith(m, h, timeout, prompt, { signal, maxTokens, onChunk, messages }) {
         let last;
         for (let k = 0; k < 3; k++) {
             if (signal && signal.aborted) throw new Error('ABORTED');
