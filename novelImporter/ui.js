@@ -47,6 +47,8 @@
         keepAlive: true,
         // 加强：再循环播放一段极小声的音频文件；有的系统只认这种，但可能会把正在放的音乐暂停
         keepAliveStrong: false,
+        // 用独立线程接收回复：页面不在最前面时，有的浏览器内核会停下页面里的接收，独立线程不受影响
+        bgReceive: true,
     };
 
     const State = {
@@ -485,6 +487,7 @@
             { key: 'layerDelayMax', label: '每层之间最多等几秒', type: 'number' },
             { key: 'keepAlive', label: '处理时保持后台运行', type: 'check', hint: '有请求在跑时放一段听不见的声音，切到别的 App 时页面不容易被暂停；不打断正在放的音乐。日志里会写「后台保活已启动」，页面被暂停过也会写暂停了多少秒' },
             { key: 'keepAliveStrong', label: '后台保活加强', type: 'check', hint: '上面那项开着、日志里仍然出现「页面被暂停了」时再开：改成循环播放一段极小声的音频，有的系统只认这种。可能会把正在放的音乐暂停' },
+            { key: 'bgReceive', label: '用独立线程接收回复', type: 'check', hint: '页面不在最前面（切到别的 App、开小窗）时，有的浏览器内核会暂停页面里的数据接收，回复收到一半就停。开着时由独立线程接收，超时也由它判断，回到前台直接接上。遇到请求发不出去再关掉' },
         ],
     };
 
@@ -659,7 +662,44 @@
         const enabled = () => !!State.settings && State.settings.keepAlive !== false;
         const strong = () => enabled() && !!State.settings.keepAliveStrong;
 
+        // 另外两种浏览器认的「这个页面有事在忙，别停」的信号：占着一把 Web Lock、开着一个 WebRTC 连接对象
+        let lockRelease = null;
+        let peer = null;
+        function holdExtras() {
+            try {
+                if (!lockRelease && typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+                    // 锁是过一会儿才拿到的：拿到时要是已经不需要了，马上放掉
+                    let wanted = true;
+                    lockRelease = () => (wanted = false);
+                    Promise.resolve(navigator.locks.request('novel-importer-keepalive', () => (wanted ? new Promise((res) => (lockRelease = res)) : undefined))).catch(() => {});
+                }
+            } catch (e) {
+                /* 忽略 */
+            }
+            try {
+                const PC = typeof window !== 'undefined' && (window.RTCPeerConnection || window.webkitRTCPeerConnection);
+                if (!peer && PC) {
+                    peer = new PC();
+                    if (peer.createDataChannel) peer.createDataChannel('keepalive');
+                }
+            } catch (e) {
+                peer = null;
+            }
+        }
+        function dropExtras() {
+            if (lockRelease) lockRelease();
+            lockRelease = null;
+            if (peer) {
+                try {
+                    peer.close();
+                } catch (e) {
+                    /* 忽略 */
+                }
+            }
+            peer = null;
+        }
         function open() {
+            holdExtras();
             if (ctx) return;
             const AC = window.AudioContext || window.webkitAudioContext;
             if (!AC) return;
@@ -717,6 +757,7 @@
             clearInterval(beat);
             beat = null;
             told = '';
+            dropExtras();
             if (media) {
                 try {
                     media.pause();
@@ -820,6 +861,178 @@
         return v;
     }
 
+    // ============================================
+    // 独立线程接收
+    // ============================================
+    // 页面不在最前面时，有的内核（安卓 WebView）会停下页面里「接收数据」这类任务，定时器却照常走：
+    // 回复收到一半就没了下文，页面等到超时才当成断线重发，上游其实已经生成完、钱也花了。
+    // 所以把请求放到 Worker 里发、在 Worker 里收：它不归页面这套规则管，「多久没数据」也由它来算。
+    // 收到的数据通过消息交给页面，页面一时处理不了也只是排着队，不会丢。
+    const BG_WORKER_SRC = `
+let ctl = null;
+onmessage = async (e) => {
+    const m = e.data;
+    if (m.t === 'abort') { if (ctl) ctl.abort(); return; }
+    ctl = new AbortController();
+    let got = 0, idle = false, timer = null;
+    const t0 = Date.now();
+    let last = t0;
+    const arm = () => { clearTimeout(timer); timer = setTimeout(() => { idle = true; ctl.abort(); }, m.idleMs); };
+    try {
+        arm();
+        const r = await fetch(m.url, { method: m.method, headers: m.headers, body: m.body, signal: ctl.signal });
+        postMessage({ t: 'head', status: r.status, ct: r.headers.get('content-type') || '' });
+        if (r.body) {
+            const rd = r.body.getReader();
+            for (;;) {
+                arm();
+                const { done, value } = await rd.read();
+                if (done) break;
+                got += value.byteLength;
+                last = Date.now();
+                postMessage({ t: 'chunk', buf: value });
+            }
+        }
+        clearTimeout(timer);
+        postMessage({ t: 'done' });
+    } catch (err) {
+        clearTimeout(timer);
+        postMessage({ t: 'err', idle, name: err && err.name, message: String((err && err.message) || err), got, secs: Math.round((Date.now() - t0) / 1000), quiet: Math.round((Date.now() - last) / 1000) });
+    }
+};`;
+    let bgWorkerUrl = null;
+    let bgBroken = false;
+
+    function bgUsable() {
+        return !bgBroken && State.settings && State.settings.bgReceive !== false && typeof Worker === 'function' && typeof Blob === 'function' && typeof URL !== 'undefined' && !!URL.createObjectURL;
+    }
+
+    /**
+     * 和 fetch 用法差不多，但请求在 Worker 里跑。idleMs：多久没收到数据算断（Worker 自己计时）。
+     * 返回的对象只有这里用得到的那几样：ok、status、headers.get、text()、json()、body.getReader()。
+     * 超时或被停止时抛 AbortError，err.info 里带着收了多少、多久没数据。
+     */
+    function bgFetch(url, init, idleMs, signal) {
+        return new Promise((resolve, reject) => {
+            let worker;
+            try {
+                if (!bgWorkerUrl) bgWorkerUrl = URL.createObjectURL(new Blob([BG_WORKER_SRC], { type: 'text/javascript' }));
+                worker = new Worker(bgWorkerUrl);
+            } catch (e) {
+                bgBroken = true;
+                const err = new Error('BG_UNAVAILABLE');
+                err.bgUnavailable = true;
+                reject(err);
+                return;
+            }
+            const queue = [];
+            let waiter = null;
+            let ended = false;
+            let failure = null;
+            let headed = false;
+            const finish = () => {
+                if (signal) signal.removeEventListener('abort', onAbort);
+                try {
+                    worker.terminate();
+                } catch (e) {
+                    /* 忽略 */
+                }
+            };
+            const toError = (m) => {
+                const aborted = m.idle || m.name === 'AbortError';
+                const err = new Error(aborted ? 'aborted' : m.message);
+                err.name = aborted ? 'AbortError' : m.name || 'TypeError';
+                err.info = { idle: !!m.idle, got: m.got || 0, secs: m.secs || 0, quiet: m.quiet || 0 };
+                return err;
+            };
+            const pump = () => {
+                if (!waiter) return;
+                if (queue.length) {
+                    const w = waiter;
+                    waiter = null;
+                    w.resolve({ done: false, value: queue.shift() });
+                } else if (failure) {
+                    const w = waiter;
+                    waiter = null;
+                    w.reject(failure);
+                } else if (ended) {
+                    const w = waiter;
+                    waiter = null;
+                    w.resolve({ done: true, value: undefined });
+                }
+            };
+            function onAbort() {
+                try {
+                    worker.postMessage({ t: 'abort' });
+                } catch (e) {
+                    /* 忽略 */
+                }
+            }
+            const readAll = async () => {
+                const parts = [];
+                const rd = resp.body.getReader();
+                for (;;) {
+                    const { done, value } = await rd.read();
+                    if (done) break;
+                    parts.push(value);
+                }
+                const dec = new TextDecoder();
+                return parts.map((p) => dec.decode(p, { stream: true })).join('') + dec.decode();
+            };
+            const resp = {
+                ok: false,
+                status: 0,
+                headers: { get: () => '' },
+                body: { getReader: () => ({ read: () => new Promise((res, rej) => ((waiter = { resolve: res, reject: rej }), pump())) }) },
+                text: readAll,
+                json: async () => JSON.parse(await readAll()),
+            };
+            worker.onmessage = (e) => {
+                const m = e.data || {};
+                if (m.t === 'head') {
+                    headed = true;
+                    resp.status = m.status;
+                    resp.ok = m.status >= 200 && m.status < 300;
+                    resp.headers = { get: (k) => (String(k).toLowerCase() === 'content-type' ? m.ct : '') };
+                    resolve(resp);
+                } else if (m.t === 'chunk') {
+                    queue.push(m.buf);
+                    pump();
+                } else if (m.t === 'done') {
+                    ended = true;
+                    finish();
+                    pump();
+                } else if (m.t === 'err') {
+                    failure = toError(m);
+                    finish();
+                    if (headed) pump();
+                    else reject(failure);
+                }
+            };
+            worker.onerror = (e) => {
+                // Worker 本身起不来（被安全策略拦了之类）：以后都走页面里的老办法
+                if (!headed) bgBroken = true;
+                failure = new Error(`独立线程出错：${(e && e.message) || '未知'}`);
+                failure.bgUnavailable = !headed;
+                finish();
+                if (headed) pump();
+                else reject(failure);
+            };
+            if (signal) {
+                if (signal.aborted) onAbort();
+                else signal.addEventListener('abort', onAbort);
+            }
+            worker.postMessage({ url, method: init.method, headers: init.headers, body: init.body, idleMs });
+        });
+    }
+
+    /** 断线时在日志里多说一句：收了多少、多久没数据，好判断是真断还是页面没收到 */
+    function stallNote(e) {
+        const i = e && e.info;
+        if (!i) return '';
+        return `（请求已进行 ${i.secs} 秒，收到 ${(i.got / 1024).toFixed(1)}KB，最后 ${i.quiet} 秒没有数据）`;
+    }
+
     /** 返回回复文本；接口给了真实用量就放在 State.lastUsage */
     /**
      * meta：这次请求的用量、思考写在这里（几层同时改时各算各的）；State.lastUsage/lastThink 也照旧写一份。
@@ -852,13 +1065,18 @@
     }
 
     async function callAPIWith(messages, onChunk, meta, { s, body, controller, timeout, setUsage, setThink }) {
-        let timer = setTimeout(() => controller.abort(), timeout);
+        // 独立线程接收时由它自己算超时：页面的定时器在后台照常走，数据却可能还排着队没交过来，不能拿它判断断没断
+        const bg = bgUsable();
+        let timer = bg ? null : setTimeout(() => controller.abort(), timeout);
         let resp;
         try {
-            resp = await fetch(chatUrl(s.apiEndpoint), { method: 'POST', headers: headers(), body: JSON.stringify(body), signal: controller.signal });
+            const init = { method: 'POST', headers: headers(), body: JSON.stringify(body) };
+            resp = bg ? await bgFetch(chatUrl(s.apiEndpoint), init, timeout, controller.signal) : await fetch(chatUrl(s.apiEndpoint), { ...init, signal: controller.signal });
         } catch (e) {
             clearTimeout(timer);
-            const err = new Error(e.name === 'AbortError' ? '请求超时或已停止' : `网络错误：${e.message}`);
+            // 独立线程起不来：这次起改回页面里收
+            if (e.bgUnavailable) return callAPIWith(messages, onChunk, meta, { s, body, controller, timeout, setUsage, setThink });
+            const err = new Error(e.name === 'AbortError' ? `请求超时或已停止${stallNote(e)}` : `网络错误：${e.message}`);
             err.retryable = e.name !== 'AbortError' || !State.stopped;
             throw err;
         }
@@ -896,13 +1114,14 @@
                 onUsage: setUsage,
                 onThink: setThink,
                 onTick: () => {
+                    if (bg) return;
                     clearTimeout(timer);
                     timer = setTimeout(() => controller.abort(), timeout);
                 },
             });
         } catch (e) {
             if (e.name === 'AbortError') {
-                const err = new Error('响应中断：太久没有收到新数据');
+                const err = new Error(`响应中断：太久没有收到新数据${stallNote(e)}`);
                 err.retryable = !State.stopped;
                 throw err;
             }
@@ -3402,13 +3621,26 @@
             const ctl = new AbortController();
             const onAbort = () => ctl.abort();
             if (signal) signal.addEventListener('abort', onAbort);
-            let timer = setTimeout(() => ctl.abort(), timeout);
+            const bg = bgUsable();
+            let timer = bg ? null : setTimeout(() => ctl.abort(), timeout);
             const tick = () => {
+                if (bg) return;
                 clearTimeout(timer);
                 timer = setTimeout(() => ctl.abort(), timeout);
             };
             try {
-                const resp = await fetch(chatUrl(m.endpoint), { method: 'POST', headers: h, body: JSON.stringify(body), signal: ctl.signal });
+                const init = { method: 'POST', headers: h, body: JSON.stringify(body) };
+                let resp;
+                try {
+                    resp = bg ? await bgFetch(chatUrl(m.endpoint), init, timeout, ctl.signal) : await fetch(chatUrl(m.endpoint), { ...init, signal: ctl.signal });
+                } catch (e) {
+                    // 独立线程起不来：这次不算，改回页面里收再发一遍
+                    if (e.bgUnavailable) {
+                        k--;
+                        continue;
+                    }
+                    throw e;
+                }
                 if (!resp.ok) {
                     const t = await resp.text().catch(() => '');
                     if (sideUsageOk && resp.status === 400 && /stream_options|include_usage/i.test(t)) {
@@ -3432,7 +3664,7 @@
                 return { text, usage };
             } catch (e) {
                 if (signal && signal.aborted) throw new Error('ABORTED');
-                if (e.name === 'AbortError') last = new Error('响应中断：太久没有收到新数据');
+                if (e.name === 'AbortError') last = new Error(`响应中断：太久没有收到新数据${stallNote(e)}`);
                 else {
                     last = e;
                     if (e.retryable === false) throw e;
