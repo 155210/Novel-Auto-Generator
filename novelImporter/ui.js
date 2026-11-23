@@ -49,6 +49,8 @@
         keepAliveStrong: false,
         // 用独立线程接收回复：页面不在最前面时，有的浏览器内核会停下页面里的接收，独立线程不受影响
         bgReceive: true,
+        // 回复写到一半断了：把已写出来的部分交回给 AI 接着往下写，不重头生成
+        resumeStream: true,
     };
 
     const State = {
@@ -487,6 +489,7 @@
             { key: 'layerDelayMax', label: '每层之间最多等几秒', type: 'number' },
             { key: 'keepAlive', label: '处理时保持后台运行', type: 'check', hint: '有请求在跑时放一段听不见的声音，切到别的 App 时页面不容易被暂停；不打断正在放的音乐。日志里会写「后台保活已启动」，页面被暂停过也会写暂停了多少秒' },
             { key: 'keepAliveStrong', label: '后台保活加强', type: 'check', hint: '上面那项开着、日志里仍然出现「页面被暂停了」时再开：改成循环播放一段极小声的音频，有的系统只认这种。可能会把正在放的音乐暂停' },
+            { key: 'resumeStream', label: '断流后接着写', type: 'check', hint: '回复写到一半断了（上游中途不出字了）时，不重头生成：把已经写出来的部分交回给 AI，让它从断的地方往下写，省掉重复的那几万字。接口不接受时自动改回重头生成' },
             { key: 'bgReceive', label: '用独立线程接收回复', type: 'check', hint: '页面不在最前面（切到别的 App、开小窗）时，有的浏览器内核会暂停页面里的数据接收，回复收到一半就停。开着时由独立线程接收，超时也由它判断，回到前台直接接上。遇到请求发不出去再关掉' },
         ],
     };
@@ -1126,6 +1129,8 @@ onmessage = async (e) => {
             if (e.name === 'AbortError') {
                 const err = new Error(`响应中断：太久没有收到新数据${stallNote(e)}`);
                 err.retryable = !State.stopped;
+                err.midStream = (e.partialText || '').length > 0;
+                err.partialText = e.partialText;
                 throw err;
             }
             // 回复传到一半断了（网络抖动、中转站报流式错误）：和连不上一样，等一会儿再试
@@ -1181,7 +1186,10 @@ onmessage = async (e) => {
             } catch (e) {
                 // 结束标记都到了才断的，正文是全的
                 if (finished && !State.stopped) break;
-                if (e && typeof e === 'object') e.partial = { chars: full.length, think: think.length };
+                if (e && typeof e === 'object') {
+                    e.partial = { chars: full.length, think: think.length };
+                    e.partialText = full;
+                }
                 throw e;
             }
             pending = null;
@@ -1229,10 +1237,29 @@ onmessage = async (e) => {
     }
 
     /** 给引擎用：网络错误自己退避重试，格式错误交给引擎重试 */
+    /** 接着写回来的那段，开头常常把断点前的几十个字又写了一遍：重的部分去掉 */
+    function joinCont(a, b) {
+        if (!a) return b;
+        if (!b) return a;
+        // 整个从头重写了一遍：直接用新的
+        if (b.length > 200 && a.startsWith(b.slice(0, 200))) return b;
+        const max = Math.min(600, a.length, b.length);
+        for (let n = max; n >= 24; n--) {
+            if (a.endsWith(b.slice(0, n))) return a + b.slice(n);
+        }
+        return a + b;
+    }
+
+    const RESUME_MAX = 8;
+
     async function callModel(messages, info) {
         let last;
         // 传到一半才断的，前面那段已经花了 token：最多再试 3 次，免得一直出同样的错还一直花钱
         let midStream = 0;
+        // 断流后接着写：carry 是已经写出来的正文，交回给 AI 当开头，让它往下写
+        let carry = '';
+        let resumed = 0;
+        let resumeOk = true;
         for (let k = 0; k <= NET_BACKOFF.length; k++) {
             if (State.stopped) throw new Error('ABORTED');
             try {
@@ -1245,11 +1272,14 @@ onmessage = async (e) => {
                 State.streamThinking = false;
                 let text;
                 try {
+                    // 接着写：最后放一条 assistant 消息当开头（结尾不能留空白，有的接口会报错）
+                    const sent = carry ? [...messages, { role: 'assistant', content: carry }] : messages;
                     text = await callAPI(
-                        messages,
+                        sent,
                         (_d, full, think) => {
-                            live.text = liveText(full, think);
-                            live.body = full.length;
+                            const whole = carry ? joinCont(carry, full) : full;
+                            live.text = liveText(whole, think);
+                            live.body = whole.length;
                             live.thinking = !!think && !full;
                             State.lastLive = live;
                             renderStream(info);
@@ -1260,10 +1290,30 @@ onmessage = async (e) => {
                     if (State.lives.get(info.layer) === live) State.lives.delete(info.layer);
                 }
                 // 思考（reasoning_content）也交给引擎记在这次请求上，原始输出里能看到
-                return { text, usage: meta.usage, think: meta.think || '' };
+                return { text: carry ? joinCont(carry, text) : text, usage: meta.usage, think: meta.think || '' };
             } catch (e) {
                 last = e;
+                // 接口不收「接着写」那条消息：这次不算，改回重头生成
+                if (carry && e.retryable === false && /API 返回 4\d\d/.test(e.message || '')) {
+                    log(`第 ${info.layer + 1} 层：这个接口不接受接着写，改回重头生成`);
+                    carry = '';
+                    resumeOk = false;
+                    k--;
+                    continue;
+                }
                 if (!e.retryable || k === NET_BACKOFF.length) throw e;
+                const part = e.partialText || '';
+                const grew = resumeOk && State.settings.resumeStream !== false && resumed < RESUME_MAX && part.length >= 500 && joinCont(carry, part).length > carry.length + 200;
+                if (grew) {
+                    // 又往前写了一段：接着这段往下写，断在半路不算白花
+                    carry = joinCont(carry, part).replace(/\s+$/, '');
+                    resumed++;
+                    midStream = 0;
+                    log(`第 ${info.layer + 1} 层断在 ${carry.length} 字，${NET_BACKOFF[k]} 秒后从这里接着写，不重头生成：${e.message}`);
+                    for (let t = 0; t < NET_BACKOFF[k] && !State.stopped; t++) await sleep(1000);
+                    k = -1;
+                    continue;
+                }
                 if (e.midStream && ++midStream > 3) throw e;
                 log(`第 ${info.layer + 1} 层请求失败，${NET_BACKOFF[k]} 秒后重试：${e.message}`);
                 // 等的时候每秒看一眼，点了停止马上停
