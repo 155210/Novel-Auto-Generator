@@ -229,6 +229,12 @@ describe('补丁段号写错', () => {
 });
 
 describe('称呼替换', () => {
+    it('名字带「君」「酱」等敬称时只换名字，后缀保留', () => {
+        expect(C.applyAliases('文雄君来了，文雄说。小文酱也在。', ['文雄', '文雄君', '小文酱'], '{{user}}')).toBe('{{user}}君来了，{{user}}说。{{user}}酱也在。');
+        // 「哥」「姐」只在前面确实是主角名字时才拆
+        expect(C.applyAliases('文雄哥和大哥', ['文雄', '文雄哥', '大哥'], '{{user}}')).toBe('{{user}}哥和{{user}}');
+    });
+
     it('长的称呼先替换', () => {
         const t = C.applyAliases('长安道人路长远，路公子。', ['路长远', '长安道人', '路公子'], 'fary');
         expect(t).toBe('faryfary，fary。');
