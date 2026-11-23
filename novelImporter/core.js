@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.19';
+    const VERSION = '1.6.20';
 
     // ============================================
     // 默认配置
@@ -1307,7 +1307,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         const wrLines = aiReplaceLines(s);
         const target = aliasTargetOf(s);
         const reminders = [];
-        if (aiUserName(s, state, tr)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr ? `主角的易混称呼（${aiAliasesOf(s, state).join('、')}）确实指主角时写成 ${target}，全名不用管；本层出现新的昵称也照这个办法判断` : `指主角的名字和称呼一律写成 ${target}`);
+        if (aiUserName(s, state, tr)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr ? `主角的易混称呼（${aiAliasesOf(s, state).join('、')}）确实指主角时写成 ${target}，全名不用管；本层出现新的昵称也照这个办法判断；带「君」「酱」「同学」等后缀的只换名字部分，后缀保留（「${target}君」）` : `指主角的名字和称呼一律写成 ${target}；带「君」「酱」「同学」等后缀的只换名字部分，后缀保留（「${target}君」）`);
         if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
         if (custom.length) reminders.push(`每层都要输出 ${custom.map((t) => `<${t.tag}>`).join('、')}，写在正文后面（不要夹在正文里），按上一份的内容和本层剧情更新，没变化也照抄完整的一份`);
         if ((extra.outputRules || '').trim()) reminders.push('正文（补丁的补充内容、<改写正文>、译文）照「输出要求（来自酒馆里开着的世界书）」里的每一条写，剧情改写时也一样');
@@ -1917,6 +1917,24 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
         return out;
     }
 
+    /**
+     * 名字后面的敬称、昵称后缀：「文雄君」换成「{{user}}君」，不是整个换成 {{user}}。
+     * 只认名字 + 这些后缀的写法；「路公子」这种本身就是称呼的不拆。
+     */
+    const NAME_SUFFIXES = ['君', '酱', '桑', 'さん', 'くん', 'ちゃん', 'たん', '様', '样', '殿', '氏', '同学', '同學', '前辈', '学长', '学姐', '欧尼酱', '哥哥', '姐姐', '哥', '姐'];
+    function aliasReplacement(alias, target, aliases = []) {
+        const a = String(alias || '');
+        for (const suf of NAME_SUFFIXES.slice().sort((x, y) => y.length - x.length)) {
+            if (a.length > suf.length && a.endsWith(suf)) {
+                const base = a.slice(0, -suf.length);
+                // 「哥」「姐」这种只在前面确实是主角名字（或称呼）时才拆，免得「大哥」「表姐」被拆成「{{user}}哥」
+                if ((suf === '哥' || suf === '姐') && !(aliases || []).includes(base)) continue;
+                return target + suf;
+            }
+        }
+        return target;
+    }
+
     /** 长的先换，避免「阿诺斯·沃勒迪戈」被「阿诺斯」先截掉一半 */
     function applyAliases(text, aliases, target, protect = []) {
         const list = uniq(aliases || []).filter((a) => a !== target).sort((a, b) => b.length - a.length);
@@ -1933,7 +1951,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
                 return `\uE010${held.length - 1}\uE011`;
             });
         }
-        out = out.replace(new RegExp(list.map(escapeRegExp).join('|'), 'g'), target);
+        out = out.replace(new RegExp(list.map(escapeRegExp).join('|'), 'g'), (m) => aliasReplacement(m, target, list));
         return held.length ? out.replace(/\uE010(\d+)\uE011/g, (_, k) => held[Number(k)]) : out;
     }
 
@@ -2326,6 +2344,7 @@ ${translate ? '- 本层译文同样要按上面的改动改写' : '- 本层要�
             return `## 主角的易混称呼写成 ${target}（用户的硬性要求，必须执行）
 - 主角${name ? `「${name}」` : ''}的这几个称呼（昵称、外号、尊称）可能别人也会被这么叫：${amb.map((a) => `「${a}」`).join('、')}。只在它们确实指主角时换成 ${target}；别的角色恰好也用这个字、这个称呼时不换
 - 主角的全名不用你换，程序导出时会统一处理，不要为全名写补丁或改动
+- 称呼带敬称、后缀时保留后缀，只把名字部分换掉：例如「文雄君」→「${target}君」，「小雪酱」→「${target}酱」，「春日同学」→「${target}同学」；不能把「君」「酱」「同学」一起换掉
 ${keepTitlesLine(s)}
 ${tr ? '' : `- 原文里确实指主角的这几个称呼，用「=」补丁换成 ${target}：锚点从原文复制包含它的一小段，一段里出现几次就写几条，锚点互不重叠；不指主角的不写补丁
 `}- <称呼> 里照常写原文里指主角的称呼（原来的写法），<主角> 里写主角原来的名字`;
@@ -2334,7 +2353,7 @@ ${tr ? '' : `- 原文里确实指主角的这几个称呼，用「=」补丁换�
         return `## 主角在输出里写成 ${target}（用户的硬性要求，必须执行）
 - ${who}在${tr ? '译文' : '你写的补丁、补充内容'}、标题、摘要、世界书、表格里，凡是指主角的名字、姓、名、单字昵称、专属外号，一律写成 ${target}
 ${keepTitlesLine(s)}
-- 称呼带后缀、敬称时保留后缀，只把名字部分换掉：例如「真君」「真くん」→「${target}君」，「春日同学」→「${target}同学」
+- 称呼带后缀、敬称时保留后缀，只把名字部分换掉：例如「真君」「真くん」→「${target}君」，「春日同学」→「${target}同学」；不能把「君」「酱」「同学」一起换掉
 - 按语境判断：只换真正指主角的地方；别的角色恰好用同一个字、同一个名字时（例如另一个人也叫「真」），那个人不换，照常写他的名字
 - 不要以「原文就是这个名字」「保持原文设定」为理由不换；第一人称的「我」不用换
 ${tr ? '' : `- 原文里指主角的名字和称呼，用「=」补丁换成 ${target}：锚点从原文复制包含名字的一小段，替换内容写换好之后的这段；一段里出现几次就写几条，锚点互不重叠
@@ -3977,7 +3996,7 @@ ${blocks}`;
                 parts.push(`## 这一层上次输出的表格操作\n${tb.closed && tb.content.trim() ? tb.content.trim() : '{}'}`);
             }
             const reminders = [];
-            if (aiUserName(s, st, tr)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr ? `主角的易混称呼（${aiAliasesOf(s, st).join('、')}）确实指主角时写成 ${aliasTargetOf(s)}，全名不用管` : `指主角的名字和称呼一律写成 ${aliasTargetOf(s)}`);
+            if (aiUserName(s, st, tr)) reminders.push((s.aliasReplaceBy || 'mixed') === 'mixed' && !tr ? `主角的易混称呼（${aiAliasesOf(s, st).join('、')}）确实指主角时写成 ${aliasTargetOf(s)}，全名不用管；带「君」「酱」等后缀的只换名字部分，后缀保留` : `指主角的名字和称呼一律写成 ${aliasTargetOf(s)}；带「君」「酱」等后缀的只换名字部分，后缀保留`);
             const wrLines = aiReplaceLines(s);
             if (wrLines.length) reminders.push(`按「名称和称呼替换」换掉：${wrLines.join('；')}`);
             if ((cfg.outputRules || '').trim()) reminders.push('改出来的正文照「输出要求」里的每一条写');
