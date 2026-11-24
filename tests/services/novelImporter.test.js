@@ -1509,6 +1509,16 @@ describe('运行引擎', () => {
         expect(engine.running).toBe(false);
     });
 
+    it('前面有层在重做时，只看后面某一层也能显示正文', async () => {
+        const { engine } = makeEngine((layer) => normal(layer));
+        await engine.run();
+        const body2 = engine.renderFloors().find((f) => f.layer === 2).body;
+        engine.results[1] = { ...engine.results[1], status: 'running' };
+        expect(engine.renderFloors().map((f) => f.layer)).toEqual([0]);
+        const f = engine.renderFloors({ gaps: true }).find((x) => x.layer === 2);
+        expect(f && f.body).toBe(body2);
+    });
+
     it('改到最后时点暂停：当前层写完就停，后面的层不动', async () => {
         let engineRef;
         const { engine } = makeEngine((layer, last) => {

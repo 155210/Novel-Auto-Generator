@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.20';
+    const VERSION = '1.6.21';
 
     // ============================================
     // 默认配置
@@ -4741,13 +4741,19 @@ ${blocks}`;
         /** 渲染所有已完成的层为楼层（称呼按最终称呼表统一替换） */
         /** opts.highlight：mark / color 时楼层正文（mes）里标出 AI 补充的字，floor.body 仍是干净的 */
         function renderFloors(opts = {}) {
+            // 导出只要从头连续完成的层；opts.gaps（只看某一层时）跳过中间没完成的层，前面有层在重做时后面的层照样能看
             const done = [];
+            let prefix = 0;
             for (let i = 0; i < E.layers.length; i++) {
                 const r = E.results[i];
-                if (!r || r.status !== 'done') break;
+                if (!r || r.status !== 'done') {
+                    if (!opts.gaps) break;
+                    continue;
+                }
+                if (prefix === i) prefix++;
                 done.push(i);
             }
-            const st = replay(done.length);
+            const st = replay(prefix);
             const conv = (s) => outText(s, st);
             let lastHeading = '';
             return done.filter((i) => !E.results[i].skipped).map((i) => {

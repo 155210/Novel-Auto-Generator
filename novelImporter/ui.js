@@ -5787,7 +5787,7 @@ onmessage = async (e) => {
         if (r && r.status === 'done' && r.skipped) {
             pBody += '<div class="nim-alert">这层在剧情地图里标了「跳过」：没有调用 AI，也不出楼层。要处理的话去剧情地图取消跳过，再从这层重新处理。</div>';
         } else if (done) {
-            const floor = e.renderFloors().find((f) => f.layer === i);
+            const floor = e.renderFloors({ gaps: true }).find((f) => f.layer === i);
             const d = r.parsed.divergence;
             if (r.warnings && r.warnings.length) pBody += `<div class="nim-alert warn">${esc(r.warnings.join('；'))}</div>`;
             pBody += d.triggered || r.inDivergence ? `<div class="nim-alert warn"><b>这层在改写剧情</b>　${esc(d.rule)} ${esc(d.note)}${d.resume ? '（本层接回原文）' : ''}</div>` : '';
@@ -6068,7 +6068,7 @@ onmessage = async (e) => {
         if (allBtn)
             allBtn.onclick = () => {
                 const NAME = { layer: '正文请求', repair: '修 JSON 格式', json: '只重新输出 JSON', edit: '按意见只改几处', 'wb-merge': '合并世界书旧条目' };
-                const floor = r.status === 'done' ? e.renderFloors().find((f) => f.layer === i) : null;
+                const floor = r.status === 'done' ? e.renderFloors({ gaps: true }).find((f) => f.layer === i) : null;
                 const parts = [`第 ${i + 1} 层 · ${e.layers[i].chars} 字原文 · 状态：${r.status}${r.error ? `（${r.error}）` : ''}${r.warnings && r.warnings.length ? ` · 提示：${r.warnings.join('；')}` : ''}`];
                 if (floor) parts.push(`===== 楼层正文（${String(floor.mes || '').length} 字）=====\n${floor.mes}`);
                 (r.calls || []).forEach((c, k) => {
