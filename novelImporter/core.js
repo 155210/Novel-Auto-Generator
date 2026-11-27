@@ -15,7 +15,7 @@
 (function (root) {
     'use strict';
 
-    const VERSION = '1.6.21';
+    const VERSION = '1.6.22';
 
     // ============================================
     // 默认配置
@@ -432,6 +432,26 @@ P段号 |  | ++新段落          在该段之后另起一段
      * AI 有时把别的标签（状态栏、Calculated_data 之类）写进 <正文> 里。
      * 独占行的 <X>…</X> 整块拿出来：协议标签丢掉，其余放到正文后面（extras）。
      */
+    /** 「其他标签」编辑框的文本拆回一个个 <X>…</X> 块；标签外面有字就报错，免得悄悄丢掉 */
+    function parseTagBlocks(text) {
+        const src = String(text || '').replace(/\r\n?/g, '\n');
+        const re = /<([^<>\/\s][^<>\/]{0,40}?)>[\s\S]*?<\/\1>/g;
+        const blocks = [];
+        let last = 0;
+        let m;
+        const stray = (a, b) => {
+            const t = src.slice(a, b).trim();
+            if (t) throw new Error(`「其他标签」里有写在标签外面的字：${t.slice(0, 30)}${t.length > 30 ? '…' : ''}（每段要用 <标签名>…</标签名> 包起来）`);
+        };
+        while ((m = re.exec(src))) {
+            stray(last, m.index);
+            blocks.push(m[0].trim());
+            last = re.lastIndex;
+        }
+        stray(last, src.length);
+        return blocks;
+    }
+
     function splitBodyBlocks(text, bodyTag) {
         const extras = [];
         const re = /^[ \t\uE000\uE001]*<([^<>\/\s][^<>\/]{0,40}?)>[\s\S]*?<\/\1>[ \t\uE000\uE001]*$/gm;
@@ -4506,7 +4526,7 @@ ${blocks}`;
 
         /**
          * 手动编辑第 i 层：标题、正文、摘要直接换成用户写的。之后的层保留，世界书、表格按这层重算；可以撤销。
-         * edit：{ title?, body?, summary? }，没给的不变。返回新结果。
+         * edit：{ title?, body?, summary?, tags? }，没给的不变；tags 是正文以外的标签块（一整段文本，空 = 全删）。返回新结果。
          */
         function manualEditLayer(i, edit = {}) {
             if (E.running || E.editing.has(i)) throw new Error('这层正在处理中');
@@ -4525,7 +4545,19 @@ ${blocks}`;
                     nr.markedParas = null; // 高亮对不上了，不标
                 }
             }
-            if (JSON.stringify([nr.finalParas, parsed.title, parsed.summary]) === JSON.stringify([r.finalParas, r.parsed.title, r.parsed.summary])) return null;
+            if (typeof edit.tags === 'string') {
+                const blocks = parseTagBlocks(edit.tags);
+                if (JSON.stringify(blocks) !== JSON.stringify(layerTagBlocks(i))) {
+                    nr.tagBlocks = blocks;
+                    // 正文里夹着的标签块已经算进上面那份了，从正文里拿掉，免得删了又冒出来
+                    const split = splitBodyBlocks((nr.finalParas || []).join('\n'), settings.bodyTag);
+                    if (split.extras.length) {
+                        nr.finalParas = split.body.split('\n').filter((l) => l.trim());
+                        nr.markedParas = null;
+                    }
+                }
+            }
+            if (JSON.stringify([nr.finalParas, parsed.title, parsed.summary, nr.tagBlocks]) === JSON.stringify([r.finalParas, r.parsed.title, r.parsed.summary, r.tagBlocks])) return null;
             nr.manualEdited = (r.manualEdited || 0) + 1;
             pushUndo(nr, r, '手动编辑');
             E.results[i] = nr;
@@ -4867,12 +4899,25 @@ ${blocks}`;
         function floorTagLayout(r, extras) {
             const beforeNames = splitTagList(settings.floorTagsBefore);
             const isBefore = (x) => beforeNames.some((t) => x.startsWith(`<${t}>`));
+            // 手动编辑过标签块：只用编辑后的那份（正文里之后又夹进来的照样带上），不再从回复里补
+            if (Array.isArray(r.tagBlocks)) {
+                const all = r.tagBlocks.concat(extras.filter((x) => !r.tagBlocks.includes(x)));
+                return { before: all.filter(isBefore), after: all.filter((x) => !isBefore(x)) };
+            }
             const before = extras.filter(isBefore);
             const after = extras.filter((x) => !isBefore(x));
             return {
                 before: before.concat(floorTagBlocks(r, extras, settings.floorTagsBefore)),
                 after: after.concat(floorTagBlocks(r, extras, splitTagList(settings.floorTags).concat(parseCustomTags(settings.customTags).map((t) => t.tag).filter((t) => !beforeNames.includes(t))).join(','))),
             };
+        }
+
+        /** 第 i 层楼里正文以外的标签块（状态栏之类，没换称呼的原样），按楼里的先后顺序 */
+        function layerTagBlocks(i) {
+            const r = E.results[i];
+            if (!r || r.status !== 'done') return [];
+            const layout = floorTagLayout(r, floorParts(i, r.finalParas || []).extras);
+            return layout.before.concat(layout.after);
         }
 
         /** 楼层正文拆成：正文段落（别的标签块拿掉）+ 拿出来的标签块 */
@@ -5482,6 +5527,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
             undoLayer,
             appendText,
             manualEditLayer,
+            layerTagBlocks,
             editEntry,
             deleteEntry,
             setEntryConfig,
@@ -5778,6 +5824,7 @@ ${shown.map((x, k) => `${k + 1}. 【${x.dn}】\n现有关键词：${x.dk.join('�
         formatHeading,
         formatBodyHeadings,
         splitBodyBlocks,
+        parseTagBlocks,
         fixSeparators,
         parseWordReplace,
         REPLACE_SCOPES,

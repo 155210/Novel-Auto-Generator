@@ -1413,6 +1413,29 @@ describe('运行引擎', () => {
         expect(plain.engine.renderFloors()[0].mes).not.toContain('Plotline');
     });
 
+    it('手动编辑其他标签：能改能删，正文里夹的也算，可以撤销', async () => {
+        const { engine } = makeEngine((layer) => normal(layer) + '\n<Plotline>伏笔一</Plotline>\n<Calculated_data>次数: 1</Calculated_data>', { floorTags: 'Plotline,Calculated_data' });
+        await engine.run();
+        engine.results[0].finalParas = [...engine.results[0].finalParas, '<状态栏>血量 10</状态栏>'];
+        const blocks = engine.layerTagBlocks(0);
+        expect(blocks).toEqual(['<状态栏>血量 10</状态栏>', '<Plotline>\n伏笔一\n</Plotline>', '<Calculated_data>\n次数: 1\n</Calculated_data>']);
+        expect(engine.manualEditLayer(0, { tags: blocks.join('\n\n') })).toBeNull();
+        expect(() => engine.manualEditLayer(0, { tags: '<Plotline>x</Plotline>\n漏了标签' })).toThrow('标签外面');
+        engine.manualEditLayer(0, { tags: '<Plotline>\n伏笔二\n</Plotline>' });
+        const mes = engine.renderFloors()[0].mes;
+        expect(mes).toContain('伏笔二');
+        expect(mes).not.toContain('伏笔一');
+        expect(mes).not.toContain('Calculated_data');
+        expect(mes).not.toContain('状态栏');
+        expect(engine.results[0].finalParas.join('\n')).not.toContain('状态栏');
+        engine.manualEditLayer(0, { tags: '' });
+        expect(engine.renderFloors()[0].mes).not.toContain('Plotline');
+        engine.undoLayer(0);
+        engine.undoLayer(0);
+        expect(engine.renderFloors()[0].mes).toContain('<状态栏>血量 10</状态栏>');
+        expect(engine.renderFloors()[0].mes).toContain('伏笔一');
+    });
+
     it('只重新输出 JSON：正文不动，表格换成新的，之后的层保留', async () => {
         let runningDuring = null;
         let jsonReply = '<表格>{"事件历史": [{"操作": "插入", "数据": {"事件": "补上的事件"}}]}</表格>';
