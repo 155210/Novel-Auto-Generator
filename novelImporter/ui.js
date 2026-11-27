@@ -5834,10 +5834,12 @@ onmessage = async (e) => {
               <div class="nim-row"><button id="nim-json-go" class="nim-btn sm">只重新输出这部分</button><span class="nim-muted">正文不动；不勾「改到最后」时之后的层保留</span></div>
             </details>`;
             }
-            pMore += `<details class="nim-fold" id="nim-medit"><summary>手动编辑这层（标题、正文、摘要）</summary>
+            const tagText = (e.layerTagBlocks ? e.layerTagBlocks(i) : []).join('\n\n');
+            pMore += `<details class="nim-fold" id="nim-medit"><summary>手动编辑这层（标题、正文、摘要、其他标签）</summary>
               <div class="nim-field"><label>标题</label><input id="nim-medit-title" class="nim-input" value="${esc(r.parsed.title || '')}"></div>
               <div class="nim-field"><label>正文<span class="nim-muted">（一行一段；&lt;bbi_image&gt;、插图标记那几行别删）</span></label><textarea id="nim-medit-body" class="nim-input nim-textarea" rows="14">${esc((r.finalParas || []).join('\n'))}</textarea></div>
               <div class="nim-field"><label>摘要</label><textarea id="nim-medit-sum" class="nim-input nim-textarea" rows="4">${esc(r.parsed.summary || '')}</textarea></div>
+              <div class="nim-field"><label>其他标签<span class="nim-muted">（楼里正文以外的标签，比如状态栏；每段用 &lt;标签名&gt;…&lt;/标签名&gt; 包着，整段删掉就是不要了）</span></label><textarea id="nim-medit-tags" class="nim-input nim-textarea" rows="6" placeholder="这层没有其他标签">${esc(tagText)}</textarea></div>
               <div class="nim-row"><button id="nim-medit-save" class="nim-btn sm primary">保存修改</button><span class="nim-muted">后面的层保留；改错了可以点底部的「撤销」</span></div>
             </details>`;
         } else if (r && r.status === 'failed') {
@@ -6168,7 +6170,7 @@ onmessage = async (e) => {
                 if (e.running) return toast('正在处理中，先暂停再改', 'warning');
                 let nr;
                 try {
-                    nr = e.manualEditLayer(i, { title: $('nim-medit-title').value, body: $('nim-medit-body').value, summary: $('nim-medit-sum').value });
+                    nr = e.manualEditLayer(i, { title: $('nim-medit-title').value, body: $('nim-medit-body').value, summary: $('nim-medit-sum').value, tags: $('nim-medit-tags').value });
                 } catch (err) {
                     return toast(err.message, 'error');
                 }
